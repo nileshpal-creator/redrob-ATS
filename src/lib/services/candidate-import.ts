@@ -100,8 +100,10 @@ function splitList(value: string | undefined): string[] {
  * Expected columns (case-insensitive): name, phone, email, location,
  * currentCompensation, expectedCompensation, noticePeriodDays,
  * earliestAvailability, totalExperienceYears, skills, tags, sourceId,
- * consentGivenAt. `consentGivenAt` defaults to the time of import if the
- * file doesn't include it — an explicit assumption, see Phase 3 write-up.
+ * consentGivenAt. `consentGivenAt` is never fabricated — a row whose file
+ * doesn't supply a real value is left undefined, which candidateCreateSchema
+ * then rejects as invalid (no consent timestamp may be invented on a
+ * candidate's behalf, per §13's GDPR-aligned consent capture).
  */
 function mapImportRow(row: Record<string, string>): Record<string, unknown> {
   const numberField = (value: string | undefined) => (value ? Number(value) : undefined);
@@ -119,7 +121,7 @@ function mapImportRow(row: Record<string, string>): Record<string, unknown> {
     skills: splitList(getField(row, "skills")),
     tags: splitList(getField(row, "tags")),
     sourceId: getField(row, "sourceId"),
-    consentGivenAt: getField(row, "consentGivenAt") ?? new Date().toISOString(),
+    consentGivenAt: getField(row, "consentGivenAt"),
   };
 }
 

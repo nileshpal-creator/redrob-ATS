@@ -402,6 +402,15 @@ describe("CandidateService", () => {
     expect(preview.rows[2].status).toBe("invalid");
   });
 
+  it("never fabricates a consent timestamp for an import row missing one — treats it as invalid instead", async () => {
+    const csv = ["name,phone", "No Consent Column,+1 555-0135"].join("\n");
+
+    const preview = await previewCandidateImport(recruiter, Buffer.from(csv), "candidates.csv");
+    expect(preview.rows).toHaveLength(1);
+    expect(preview.rows[0].status).toBe("invalid");
+    expect(preview.rows[0].data.consentGivenAt).toBeUndefined();
+  });
+
   it("commits an import, creating valid rows and skipping duplicates", async () => {
     const existing = await createCandidate(recruiter, baseInput({ phone: "+1 555-0129" }));
 

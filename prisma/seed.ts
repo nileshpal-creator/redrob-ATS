@@ -103,10 +103,13 @@ const DIRECTORY_ROLE_PERMISSIONS = [
 
 // Module 3 default grants — ownership resolves against
 // Candidate.createdById (§9 gives Candidate no "assigned recruiter"
-// concept, unlike Job; see the Phase 1 decision). Recruiter owns the
-// candidates they add (OWN); Recruiting Manager oversees their team's
-// (TEAM); Hiring Manager and HR/Onboarding only need to review profiles
-// per their PRD personas (§8), not create or remove candidate records.
+// concept, unlike Job; see the Phase 1 decision). Recruiter and Recruiting
+// Manager are the only roles §11.2's requirements are actually about
+// (creating, owning, and overseeing candidate records); Hiring Manager and
+// HR/Onboarding interact with candidates through Application/Offer-level
+// views that don't exist until a later module, so no default grant is
+// seeded for them here — an admin can add one via the Roles screen if a
+// given organization wants it sooner.
 const CANDIDATE_ROLE_PERMISSIONS = [
   { role: "Recruiter", action: "CREATE", scope: "ALL" },
   { role: "Recruiter", action: "READ", scope: "ALL" },
@@ -116,8 +119,6 @@ const CANDIDATE_ROLE_PERMISSIONS = [
   { role: "Recruiting Manager", action: "READ", scope: "TEAM" },
   { role: "Recruiting Manager", action: "UPDATE", scope: "TEAM" },
   { role: "Recruiting Manager", action: "DELETE", scope: "TEAM" },
-  { role: "Hiring Manager", action: "READ", scope: "ALL" },
-  { role: "HR / Onboarding", action: "READ", scope: "ALL" },
 ] as const;
 
 async function main() {
