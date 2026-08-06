@@ -41,3 +41,6 @@ yarn-error.log*
 next-env.d.ts
 
 /src/generated/prisma
+
+# local candidate-document storage (Module 3) — see src/lib/storage
+/storage

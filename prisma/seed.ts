@@ -101,6 +101,25 @@ const DIRECTORY_ROLE_PERMISSIONS = [
   { role: "Recruiting Manager", resource: "USER", action: "READ", scope: "ALL" },
 ] as const;
 
+// Module 3 default grants — ownership resolves against
+// Candidate.createdById (§9 gives Candidate no "assigned recruiter"
+// concept, unlike Job; see the Phase 1 decision). Recruiter owns the
+// candidates they add (OWN); Recruiting Manager oversees their team's
+// (TEAM); Hiring Manager and HR/Onboarding only need to review profiles
+// per their PRD personas (§8), not create or remove candidate records.
+const CANDIDATE_ROLE_PERMISSIONS = [
+  { role: "Recruiter", action: "CREATE", scope: "ALL" },
+  { role: "Recruiter", action: "READ", scope: "ALL" },
+  { role: "Recruiter", action: "UPDATE", scope: "OWN" },
+  { role: "Recruiter", action: "DELETE", scope: "OWN" },
+  { role: "Recruiting Manager", action: "CREATE", scope: "ALL" },
+  { role: "Recruiting Manager", action: "READ", scope: "TEAM" },
+  { role: "Recruiting Manager", action: "UPDATE", scope: "TEAM" },
+  { role: "Recruiting Manager", action: "DELETE", scope: "TEAM" },
+  { role: "Hiring Manager", action: "READ", scope: "ALL" },
+  { role: "HR / Onboarding", action: "READ", scope: "ALL" },
+] as const;
+
 async function main() {
   const organization = await prisma.organization.upsert({
     where: { id: "default" },
@@ -162,6 +181,16 @@ async function main() {
     });
   }
   console.log(`Seeded ${DIRECTORY_ROLE_PERMISSIONS.length} directory role permissions`);
+
+  for (const grant of CANDIDATE_ROLE_PERMISSIONS) {
+    const role = await prisma.role.findUniqueOrThrow({ where: { name: grant.role } });
+    await prisma.rolePermission.upsert({
+      where: { roleId_resource_action: { roleId: role.id, resource: "CANDIDATE", action: grant.action } },
+      update: { scope: grant.scope },
+      create: { roleId: role.id, resource: "CANDIDATE", action: grant.action, scope: grant.scope },
+    });
+  }
+  console.log(`Seeded ${CANDIDATE_ROLE_PERMISSIONS.length} default Candidate role permissions`);
 
   const adminEmail = process.env.SEED_ADMIN_EMAIL;
   const adminPassword = process.env.SEED_ADMIN_PASSWORD;

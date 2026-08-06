@@ -25,6 +25,14 @@ export const AUDIT_ACTIONS = {
   JOB_UPDATED: "job.updated",
   JOB_STATUS_CHANGED: "job.status_changed",
   JOB_RECRUITERS_UPDATED: "job.recruiters_updated",
+  CANDIDATE_CREATED: "candidate.created",
+  CANDIDATE_UPDATED: "candidate.updated",
+  CANDIDATE_DELETED: "candidate.deleted",
+  CANDIDATE_MERGED: "candidate.merged",
+  CANDIDATE_DOCUMENT_ADDED: "candidate.document_added",
+  CANDIDATE_DOCUMENT_DELETED: "candidate.document_deleted",
+  CANDIDATE_NOTE_ADDED: "candidate.note_added",
+  CANDIDATE_EXPORTED: "candidate.exported",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];

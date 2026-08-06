@@ -3,7 +3,7 @@ import { ZodError } from "zod";
 
 import { getSessionContext, type SessionContext } from "@/lib/authz/session-context";
 import { ForbiddenError } from "@/lib/authz/authorize";
-import { ConflictError, NotFoundError, ValidationError } from "@/lib/errors";
+import { ConflictError, DuplicateCandidateError, NotFoundError, ValidationError } from "@/lib/errors";
 
 /**
  * Wraps a route handler with: session resolution (401 if absent), and a
@@ -26,6 +26,12 @@ export function withApiHandler<T, P = Record<string, never>>(
 
       const params = await routeContext.params;
       const result = await handler(context, request, params);
+      // File-serving routes (candidate document download, candidate export)
+      // build their own NextResponse (binary body, Content-Disposition) —
+      // pass it through instead of re-wrapping it as JSON.
+      if (result instanceof NextResponse) {
+        return result;
+      }
       return NextResponse.json(result ?? { ok: true });
     } catch (error) {
       return toErrorResponse(error);
@@ -42,6 +48,12 @@ export function toErrorResponse(error: unknown) {
   }
   if (error instanceof ValidationError) {
     return NextResponse.json({ error: error.message }, { status: 400 });
+  }
+  if (error instanceof DuplicateCandidateError) {
+    return NextResponse.json(
+      { error: error.message, existingCandidateId: error.existingCandidateId },
+      { status: 409 },
+    );
   }
   if (error instanceof ConflictError) {
     return NextResponse.json({ error: error.message }, { status: 409 });

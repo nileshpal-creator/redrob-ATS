@@ -50,6 +50,10 @@ model User {
   jobRecruiterAssignments JobRecruiterAssignment[]
   jobStatusChangesActed   JobStatusChange[]
 
+  candidatesCreated          Candidate[]         @relation("CandidateCreatedBy")
+  candidateDocumentsUploaded CandidateDocument[] @relation("CandidateDocumentUploadedBy")
+  candidateNotesAuthored     CandidateNote[]     @relation("CandidateNoteAuthor")
+
   @@index([isActive])
   @@index([managerId])
 }
@@ -205,6 +209,9 @@ model ControlledListValue {
   jobsAsDepartment Job[]             @relation("JobDepartment")
   jobsAsLocation   Job[]             @relation("JobLocation")
   jobStatusChanges JobStatusChange[]
+
+  candidatesAsSource       Candidate[]         @relation("CandidateSource")
+  candidateDocumentsAsType CandidateDocument[] @relation("CandidateDocumentType")
 
   @@unique([listId, value])
 }
@@ -444,4 +451,105 @@ model JobStatusChange {
   actor  User                 @relation(fields: [actorId], references: [id])
 
   @@index([jobId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Module 3 — Candidate Database (§11.2)
+// ---------------------------------------------------------------------------
+
+// "A person, held once globally" (§9) — phone is the PRD's stated unique key;
+// email is only a secondary signal for duplicate detection (see
+// checkCandidateDuplicates in src/lib/services/candidates.ts), so it is not
+// unique-constrained here.
+model Candidate {
+  id String @id @default(cuid())
+
+  name                 String
+  phone                String    @unique
+  email                String?
+  location             String?
+  currentCompensation  Decimal?  @db.Decimal(12, 2)
+  expectedCompensation Decimal?  @db.Decimal(12, 2)
+  noticePeriodDays     Int?
+  earliestAvailability DateTime?
+  // §9 lists "experience" as its own Candidate field, distinct from the
+  // detailed work-history entries §11.2 asks to store as "professional...
+  // data" (below) — kept as two fields per the Phase 2 design.
+  totalExperienceYears Decimal?  @db.Decimal(4, 1)
+  skills               String[]  @default([])
+  tags                 String[]  @default([])
+  // Each entry: { company, title, startDate, endDate?, description? } —
+  // shape validated by candidateCreateSchema, not DB-enforced (same pattern
+  // as Job's customFields).
+  experienceHistory    Json?
+  // Each entry: { institution, degree, fieldOfStudy?, startYear?, endYear? }
+  educationHistory     Json?
+  // GDPR-aligned consent capture (§13, §9) — required at creation; there is
+  // no "create without consent" path.
+  consentGivenAt       DateTime
+
+  customFields Json?
+
+  sourceId String?
+  source   ControlledListValue? @relation("CandidateSource", fields: [sourceId], references: [id])
+
+  // Ownership anchor for OWN/TEAM permission scope, per the Phase 1 decision:
+  // §9's Candidate has no "assigned recruiter" concept (that only exists once
+  // the Application entity exists, in a future module), so scope resolves
+  // against whoever created the record instead.
+  createdById String
+  createdBy   User   @relation("CandidateCreatedBy", fields: [createdById], references: [id])
+
+  // Optimistic locking — purely internal, no user-facing surface, same
+  // pattern as Job.version.
+  version Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  documents CandidateDocument[]
+  notes     CandidateNote[]
+
+  @@index([email])
+  @@index([sourceId])
+  @@index([createdById])
+}
+
+// Multi-document attachment (§11.2). `storageKey` is an opaque handle into
+// whichever StorageProvider is configured (src/lib/storage) — never a raw
+// filesystem path exposed to clients, so the backing store can change without
+// touching this table.
+model CandidateDocument {
+  id             String   @id @default(cuid())
+  candidateId    String
+  documentTypeId String
+  fileName       String
+  mimeType       String
+  fileSize       Int
+  storageKey     String
+  uploadedById   String
+  uploadedAt     DateTime @default(now())
+
+  candidate    Candidate           @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  documentType ControlledListValue @relation("CandidateDocumentType", fields: [documentTypeId], references: [id])
+  uploadedBy   User                @relation("CandidateDocumentUploadedBy", fields: [uploadedById], references: [id])
+
+  @@index([candidateId])
+}
+
+// Team-visible comment feed for the candidate timeline (§11.2, §9). §9
+// describes this category ("Task, Note, Activity") as an immutable audit
+// log, so there is deliberately no update/delete on this model or its API —
+// see src/lib/services/candidates.ts.
+model CandidateNote {
+  id          String   @id @default(cuid())
+  candidateId String
+  body        String
+  authorId    String
+  createdAt   DateTime @default(now())
+
+  candidate Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  author    User      @relation("CandidateNoteAuthor", fields: [authorId], references: [id])
+
+  @@index([candidateId, createdAt])
 }
