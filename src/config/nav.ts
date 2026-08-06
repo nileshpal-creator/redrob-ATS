@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import { LayoutDashboard, ScrollText, ShieldCheck, SlidersHorizontal, Users } from "lucide-react";
+import { Briefcase, LayoutDashboard, ScrollText, ShieldCheck, SlidersHorizontal, Users } from "lucide-react";
 
 export type NavItem = {
   title: string;
@@ -10,6 +10,9 @@ export type NavItem = {
 export const primaryNav: NavItem[] = [
   { title: "Dashboard", href: "/", icon: LayoutDashboard },
 ];
+
+/** Shown only when the viewer has JOB:READ — see (app)/layout.tsx. */
+export const jobsNavItem: NavItem = { title: "Jobs", href: "/jobs", icon: Briefcase };
 
 /** Rendered only for super-admin roles — see AppSidebar. Every module adds its admin screens here. */
 export const adminNav: NavItem[] = [

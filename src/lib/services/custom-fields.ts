@@ -29,12 +29,17 @@ async function assertKnownEntityType(entityType: string) {
   }
 }
 
+// Deliberately not permission-gated: a field *definition* is schema
+// metadata (its name, type, options), not business data — every entity's
+// create/edit form needs to read it to know what dynamic fields to render,
+// regardless of whether that user can administer the customization engine.
+// Mutations (create/update/delete below) remain gated; `context` stays a
+// required parameter so a caller can't forget it's only reachable by an
+// authenticated session (enforced by withApiHandler at the route layer).
 export async function listCustomFieldDefinitions(
-  context: SessionContext,
+  _context: SessionContext,
   entityType?: string,
 ) {
-  await requirePermission(context, ENTITY.CUSTOM_FIELD_DEFINITION, "READ");
-
   return prisma.customFieldDefinition.findMany({
     where: entityType ? { entityType } : undefined,
     orderBy: [{ entityType: "asc" }, { sortOrder: "asc" }],

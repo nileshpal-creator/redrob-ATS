@@ -8,7 +8,8 @@ import { ConflictError, NotFoundError, ValidationError } from "@/lib/errors";
 import { recordAudit } from "@/lib/audit/log";
 import { AUDIT_ACTIONS } from "@/lib/audit/actions";
 import { buildCustomFieldValueSchema } from "@/lib/custom-fields/dynamic-schema";
-import { findTransition } from "@/lib/jobs/status-machine";
+import { findTransition, getLegalActions, type JobTransition } from "@/lib/jobs/status-machine";
+import type { JobStatus } from "@/generated/prisma/enums";
 import type {
   JobCreateInput,
   JobQuery,
@@ -128,6 +129,26 @@ export async function getJobById(context: SessionContext, id: string) {
   }
   await assertJobAccess(context, job, "READ");
   return job;
+}
+
+/** Which status-change buttons a detail page should offer this viewer, right now. */
+export async function getAvailableTransitions(
+  context: SessionContext,
+  job: JobOwnership & { status: JobStatus },
+): Promise<JobTransition[]> {
+  const candidates = getLegalActions(job.status);
+  const allowed: JobTransition[] = [];
+
+  for (const transition of candidates) {
+    if (
+      (await can(context, ENTITY.JOB, transition.requiredAction)) ||
+      (await can(context, ENTITY.JOB, transition.requiredAction, { ownerId: job.primaryRecruiterId }))
+    ) {
+      allowed.push(transition);
+    }
+  }
+
+  return allowed;
 }
 
 export async function createJob(context: SessionContext, input: JobCreateInput) {

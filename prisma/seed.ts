@@ -91,6 +91,16 @@ const JOB_ROLE_PERMISSIONS = [
   { role: "Recruiting Manager", action: "APPROVE", scope: "TEAM" },
 ] as const;
 
+// Assigning a recruiter to a job (§11.1) requires seeing a directory of
+// colleagues to assign — a distinct need from administering user accounts
+// (create/deactivate), which stays System-Administrator-only. ALL scope
+// here only grants READ, not any write capability.
+const DIRECTORY_ROLE_PERMISSIONS = [
+  { role: "Recruiter", resource: "USER", action: "READ", scope: "ALL" },
+  { role: "Hiring Manager", resource: "USER", action: "READ", scope: "ALL" },
+  { role: "Recruiting Manager", resource: "USER", action: "READ", scope: "ALL" },
+] as const;
+
 async function main() {
   const organization = await prisma.organization.upsert({
     where: { id: "default" },
@@ -142,6 +152,16 @@ async function main() {
     });
   }
   console.log(`Seeded ${JOB_ROLE_PERMISSIONS.length} default Job role permissions`);
+
+  for (const grant of DIRECTORY_ROLE_PERMISSIONS) {
+    const role = await prisma.role.findUniqueOrThrow({ where: { name: grant.role } });
+    await prisma.rolePermission.upsert({
+      where: { roleId_resource_action: { roleId: role.id, resource: grant.resource, action: grant.action } },
+      update: { scope: grant.scope },
+      create: { roleId: role.id, resource: grant.resource, action: grant.action, scope: grant.scope },
+    });
+  }
+  console.log(`Seeded ${DIRECTORY_ROLE_PERMISSIONS.length} directory role permissions`);
 
   const adminEmail = process.env.SEED_ADMIN_EMAIL;
   const adminPassword = process.env.SEED_ADMIN_PASSWORD;

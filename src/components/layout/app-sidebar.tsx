@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-import { adminNav, primaryNav, type NavItem } from "@/config/nav";
+import { adminNav, jobsNavItem, primaryNav, type NavItem } from "@/config/nav";
 import { cn } from "@/lib/utils";
 
 function NavLink({ item }: { item: NavItem }) {
@@ -27,7 +27,13 @@ function NavLink({ item }: { item: NavItem }) {
   );
 }
 
-export function AppSidebar({ showAdminNav }: { showAdminNav: boolean }) {
+export function AppSidebar({
+  showAdminNav,
+  showJobsNav,
+}: {
+  showAdminNav: boolean;
+  showJobsNav: boolean;
+}) {
   return (
     <aside className="hidden w-60 shrink-0 border-r border-sidebar-border bg-sidebar md:flex md:flex-col">
       <div className="flex h-14 items-center border-b border-sidebar-border px-4">
@@ -37,6 +43,7 @@ export function AppSidebar({ showAdminNav }: { showAdminNav: boolean }) {
         {primaryNav.map((item) => (
           <NavLink key={item.href} item={item} />
         ))}
+        {showJobsNav ? <NavLink item={jobsNavItem} /> : null}
 
         {showAdminNav ? (
           <>
