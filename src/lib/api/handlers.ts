@@ -3,7 +3,7 @@ import { ZodError } from "zod";
 
 import { getSessionContext, type SessionContext } from "@/lib/authz/session-context";
 import { ForbiddenError } from "@/lib/authz/authorize";
-import { NotFoundError, ValidationError } from "@/lib/errors";
+import { ConflictError, NotFoundError, ValidationError } from "@/lib/errors";
 
 /**
  * Wraps a route handler with: session resolution (401 if absent), and a
@@ -42,6 +42,9 @@ export function toErrorResponse(error: unknown) {
   }
   if (error instanceof ValidationError) {
     return NextResponse.json({ error: error.message }, { status: 400 });
+  }
+  if (error instanceof ConflictError) {
+    return NextResponse.json({ error: error.message }, { status: 409 });
   }
   if (error instanceof ZodError) {
     return NextResponse.json({ error: "Invalid input", issues: error.issues }, { status: 400 });

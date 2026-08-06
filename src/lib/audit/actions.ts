@@ -21,6 +21,10 @@ export const AUDIT_ACTIONS = {
   CONTROLLED_LIST_VALUE_CREATED: "controlled_list_value.created",
   CONTROLLED_LIST_VALUE_UPDATED: "controlled_list_value.updated",
   CONTROLLED_LIST_VALUE_DELETED: "controlled_list_value.deleted",
+  JOB_CREATED: "job.created",
+  JOB_UPDATED: "job.updated",
+  JOB_STATUS_CHANGED: "job.status_changed",
+  JOB_RECRUITERS_UPDATED: "job.recruiters_updated",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];

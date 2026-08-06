@@ -11,7 +11,7 @@ export type RoleUpdateInput = z.infer<typeof roleUpdateSchema>;
 
 const permissionGrantSchema = z.object({
   resource: z.string().min(1),
-  action: z.enum(["CREATE", "READ", "UPDATE", "DELETE"]),
+  action: z.enum(["CREATE", "READ", "UPDATE", "DELETE", "APPROVE"]),
   scope: z.enum(["OWN", "TEAM", "ALL"]),
 });
 

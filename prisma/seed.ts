@@ -45,8 +45,48 @@ const CONTROLLED_LISTS = [
   {
     key: "LOCATION",
     label: "Locations",
-    values: ["Remote"],
+    values: ["Remote", "Head Office"],
   },
+  // Module 2 — Requisition / Job Management (§11.1, per-decision controlled lists)
+  {
+    key: "DEPARTMENT",
+    label: "Departments",
+    values: ["Engineering", "Sales", "Marketing", "Finance", "Human Resources", "Operations"],
+  },
+  {
+    key: "JOB_HOLD_REASON",
+    label: "Job Hold Reasons",
+    values: ["Budget freeze", "Awaiting leadership sign-off", "Business priority change"],
+  },
+  {
+    key: "JOB_CLOSE_REASON",
+    label: "Job Close Reasons",
+    values: ["Position filled", "Position no longer needed", "Merged with another requisition"],
+  },
+  {
+    key: "JOB_CANCEL_REASON",
+    label: "Job Cancel Reasons",
+    values: ["Duplicate requisition", "Budget not approved", "Role no longer required"],
+  },
+] as const;
+
+// Module 2 default grants — without these, no role but System Administrator
+// (which bypasses checks entirely) could do anything with Jobs. Scope choices
+// mirror each persona's PRD description (§8): Recruiter owns day-to-day
+// pipeline work (OWN), Hiring Manager approves what's assigned to them
+// (their OWN as hiring manager), Recruiting Manager oversees their team.
+const JOB_ROLE_PERMISSIONS = [
+  { role: "Recruiter", action: "CREATE", scope: "ALL" },
+  { role: "Recruiter", action: "READ", scope: "ALL" },
+  { role: "Recruiter", action: "UPDATE", scope: "OWN" },
+  { role: "Hiring Manager", action: "CREATE", scope: "ALL" },
+  { role: "Hiring Manager", action: "READ", scope: "ALL" },
+  { role: "Hiring Manager", action: "UPDATE", scope: "OWN" },
+  { role: "Hiring Manager", action: "APPROVE", scope: "OWN" },
+  { role: "Recruiting Manager", action: "CREATE", scope: "ALL" },
+  { role: "Recruiting Manager", action: "READ", scope: "TEAM" },
+  { role: "Recruiting Manager", action: "UPDATE", scope: "TEAM" },
+  { role: "Recruiting Manager", action: "APPROVE", scope: "TEAM" },
 ] as const;
 
 async function main() {
@@ -90,6 +130,16 @@ async function main() {
     }
   }
   console.log(`Seeded ${CONTROLLED_LISTS.length} controlled lists`);
+
+  for (const grant of JOB_ROLE_PERMISSIONS) {
+    const role = await prisma.role.findUniqueOrThrow({ where: { name: grant.role } });
+    await prisma.rolePermission.upsert({
+      where: { roleId_resource_action: { roleId: role.id, resource: "JOB", action: grant.action } },
+      update: { scope: grant.scope },
+      create: { roleId: role.id, resource: "JOB", action: grant.action, scope: grant.scope },
+    });
+  }
+  console.log(`Seeded ${JOB_ROLE_PERMISSIONS.length} default Job role permissions`);
 
   const adminEmail = process.env.SEED_ADMIN_EMAIL;
   const adminPassword = process.env.SEED_ADMIN_PASSWORD;

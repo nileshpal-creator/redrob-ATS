@@ -88,6 +88,41 @@ export async function getTeamMemberIds(userId: string): Promise<string[]> {
   return [userId, ...directReports.map((report) => report.id)];
 }
 
+export type EffectiveScope = "ALL" | "TEAM" | "OWN" | null;
+
+/**
+ * The broadest scope a user's roles grant for (resource, action), independent
+ * of any single record. `can()` answers "is this one record accessible?";
+ * this answers "what WHERE clause should a list query use?" — a list
+ * endpoint can't call `can()` once per row before it has rows. Returns null
+ * when the user has no grant at all (the caller should treat that as
+ * forbidden, not as an empty result set).
+ */
+export async function getEffectiveScope(
+  context: SessionContext,
+  resource: string,
+  action: PermissionAction,
+): Promise<EffectiveScope> {
+  if (context.isSuperAdmin) {
+    return "ALL";
+  }
+
+  const roleIds = context.roles.map((role) => role.id);
+  if (roleIds.length === 0) {
+    return null;
+  }
+
+  const grants = await prisma.rolePermission.findMany({
+    where: { roleId: { in: roleIds }, resource, action },
+    select: { scope: true },
+  });
+
+  if (grants.some((grant) => grant.scope === "ALL")) return "ALL";
+  if (grants.some((grant) => grant.scope === "TEAM")) return "TEAM";
+  if (grants.some((grant) => grant.scope === "OWN")) return "OWN";
+  return null;
+}
+
 export type FieldAccessMap = Record<string, "HIDDEN" | "READ" | "WRITE">;
 
 /**

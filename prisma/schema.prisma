@@ -38,12 +38,18 @@ model User {
   // src/lib/authz/authorize.ts: a manager's TEAM grant covers their direct
   // reports' records. Revisit if a later module needs multi-level teams.
   managerId String?
-  manager   User?  @relation("UserManager", fields: [managerId], references: [id], onDelete: SetNull)
+  manager   User?   @relation("UserManager", fields: [managerId], references: [id], onDelete: SetNull)
 
-  directReports User[]     @relation("UserManager")
+  directReports User[]               @relation("UserManager")
   roles         UserRole[]
   auditLogs     AuditLog[]
   customRecords CustomObjectRecord[]
+
+  jobsCreated             Job[]                    @relation("JobCreatedBy")
+  jobsAsPrimaryRecruiter  Job[]                    @relation("JobPrimaryRecruiter")
+  jobsAsHiringManager     Job[]                    @relation("JobHiringManager")
+  jobRecruiterAssignments JobRecruiterAssignment[]
+  jobStatusChangesActed   JobStatusChange[]
 
   @@index([isActive])
   @@index([managerId])
@@ -88,6 +94,10 @@ enum PermissionAction {
   READ
   UPDATE
   DELETE
+  // Not every resource has an approval concept — src/lib/authz/resource-actions.ts
+  // maps each resource to the subset of actions that apply to it, so the role
+  // permission matrix doesn't offer an "Approve Users" checkbox.
+  APPROVE
 }
 
 enum PermissionScope {
@@ -192,6 +202,10 @@ model ControlledListValue {
   updatedAt DateTime @updatedAt
 
   list ControlledList @relation(fields: [listId], references: [id], onDelete: Cascade)
+
+  jobsAsDepartment Job[]             @relation("JobDepartment")
+  jobsAsLocation   Job[]             @relation("JobLocation")
+  jobStatusChanges JobStatusChange[]
 
   @@unique([listId, value])
 }
@@ -304,4 +318,146 @@ model AuditLog {
   @@index([entityType, entityId])
   @@index([actorId])
   @@index([createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Module 2 — Requisition / Job Management (§11.1)
+// ---------------------------------------------------------------------------
+
+enum JobStatus {
+  DRAFT
+  PENDING_APPROVAL
+  OPEN
+  ON_HOLD
+  CLOSED
+  CANCELLED
+}
+
+enum EmploymentType {
+  FULL_TIME
+  PART_TIME
+  CONTRACT
+  INTERNSHIP
+  TEMPORARY
+}
+
+enum JobPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+model Job {
+  id             String @id @default(cuid())
+  // Real DB-generated sequence, never exposed — `code` (e.g. "REQ-000042") is
+  // what users see. See src/lib/services/jobs.ts#nextJobCode for how a value
+  // is reserved from this column's sequence before the row exists.
+  sequenceNumber Int    @unique @default(autoincrement())
+  code           String @unique
+
+  title                String
+  departmentId         String
+  locationId           String
+  employmentType       EmploymentType
+  priority             JobPriority
+  status               JobStatus      @default(DRAFT)
+  positionsCount       Int
+  // Written only by the future Offer module (hire confirmed). No API route in
+  // this module accepts a value for it — see src/lib/validations/job.ts.
+  positionsFilledCount Int            @default(0)
+  targetDate           DateTime?
+  description          String?
+  mustHaveCriteria     String[]       @default([])
+  goodToHaveCriteria   String[]       @default([])
+
+  // Salary band is optional and, when set, always carries a currency.
+  // `salaryVisible` is a business flag for external/candidate-facing display
+  // (job boards, offer letters) — independent of FieldPermission, which
+  // separately governs whether *internal* roles can see these columns at all.
+  salaryMin     Int?
+  salaryMax     Int?
+  currency      String?
+  salaryVisible Boolean @default(false)
+
+  customFields Json?
+
+  // "One need splits into multiple roles" (§11.1) — intentionally unconstrained.
+  parentJobId String?
+  parentJob   Job?    @relation("JobParent", fields: [parentJobId], references: [id], onDelete: SetNull)
+  childJobs   Job[]   @relation("JobParent")
+
+  // Denormalized onto Job (in addition to the full list in
+  // JobRecruiterAssignment) so every permission check and list-scope filter
+  // is a plain column comparison instead of a join. Kept in sync with the
+  // JobRecruiterAssignment.isPrimary row inside the same transaction —
+  // see updateJobRecruiters in src/lib/services/jobs.ts.
+  primaryRecruiterId String
+  primaryRecruiter   User   @relation("JobPrimaryRecruiter", fields: [primaryRecruiterId], references: [id])
+
+  hiringManagerId String
+  hiringManager   User   @relation("JobHiringManager", fields: [hiringManagerId], references: [id])
+
+  createdById String
+  createdBy   User   @relation("JobCreatedBy", fields: [createdById], references: [id])
+
+  // Optimistic locking: every update/transition must supply the version it
+  // read. See ConflictError in src/lib/errors.ts.
+  version Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  department    ControlledListValue      @relation("JobDepartment", fields: [departmentId], references: [id])
+  location      ControlledListValue      @relation("JobLocation", fields: [locationId], references: [id])
+  recruiters    JobRecruiterAssignment[]
+  statusChanges JobStatusChange[]
+
+  @@index([status])
+  @@index([departmentId])
+  @@index([locationId])
+  @@index([parentJobId])
+  @@index([primaryRecruiterId])
+  @@index([hiringManagerId])
+}
+
+model JobRecruiterAssignment {
+  jobId      String
+  userId     String
+  isPrimary  Boolean  @default(false)
+  assignedAt DateTime @default(now())
+
+  job  Job  @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([jobId, userId])
+}
+
+// A partial unique index enforcing "at most one primary recruiter per job" at
+// the database level is added by hand in the generated migration (Prisma has
+// no schema syntax for partial indexes as of this version):
+//   CREATE UNIQUE INDEX "job_recruiter_one_primary"
+//     ON "JobRecruiterAssignment" ("jobId") WHERE "isPrimary" = true;
+// The service layer is still the primary enforcement (it validates exactly
+// one isPrimary before writing); this index is the belt-and-suspenders
+// backstop against a future bug or a raw SQL write bypassing the service.
+
+model JobStatusChange {
+  id         String    @id @default(cuid())
+  jobId      String
+  fromStatus JobStatus
+  toStatus   JobStatus
+  // Required by the service for HOLD/CLOSE/CANCEL, null for SUBMIT/APPROVE/
+  // REJECT/RESUME. Points at a ControlledListValue in the
+  // JOB_HOLD_REASON/JOB_CLOSE_REASON/JOB_CANCEL_REASON list matching toStatus.
+  reasonId   String?
+  note       String?
+  actorId    String
+  createdAt  DateTime  @default(now())
+
+  job    Job                  @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  reason ControlledListValue? @relation(fields: [reasonId], references: [id])
+  actor  User                 @relation(fields: [actorId], references: [id])
+
+  @@index([jobId, createdAt])
 }
