@@ -1,0 +1,307 @@
+// Module 1 — Foundation: Auth, RBAC, Custom Field Engine, Admin Settings
+//
+// Design notes (see /docs/architecture/module-1-foundation.md for the full writeup):
+// - `resource`/`entityType` fields below are deliberately plain strings, not Prisma enums.
+//   Every later module (Job, Candidate, Application, ...) plugs into RBAC, custom fields,
+//   and the audit log by registering a key in `src/lib/entity-registry.ts` — no migration
+//   needed to grant a new module access to these cross-cutting engines.
+// - `AuditLog.action` is a namespaced string ("candidate.created") for the same reason:
+//   the set of actions grows every module; a closed enum would need a migration per module.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Identity & RBAC
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String    @id @default(cuid())
+  name         String
+  email        String    @unique
+  passwordHash String
+  isActive     Boolean   @default(true)
+  avatarUrl    String?
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  // One-level reporting line, not a full Team entity — the PRD's "Recruiting
+  // Manager oversees a team's requisitions" (§8) is the only team concept
+  // v1 needs. This is what PermissionScope.TEAM resolves against in
+  // src/lib/authz/authorize.ts: a manager's TEAM grant covers their direct
+  // reports' records. Revisit if a later module needs multi-level teams.
+  managerId String?
+  manager   User?  @relation("UserManager", fields: [managerId], references: [id], onDelete: SetNull)
+
+  directReports User[]     @relation("UserManager")
+  roles         UserRole[]
+  auditLogs     AuditLog[]
+  customRecords CustomObjectRecord[]
+
+  @@index([isActive])
+  @@index([managerId])
+}
+
+model Role {
+  id           String   @id @default(cuid())
+  name         String   @unique
+  description  String?
+  // System roles seeded at install time (see prisma/seed.ts) cannot be deleted,
+  // but their permission grants remain fully editable — nothing in the codebase
+  // special-cases a role by name.
+  isSystem     Boolean  @default(false)
+  // Emergency-access escape hatch: bypasses RolePermission/FieldPermission checks
+  // entirely. Exactly one seeded "System Administrator" role carries this so a
+  // misconfigured permission set can never lock every admin out. Everything else
+  // in the system is data-driven — see src/lib/authz/authorize.ts.
+  isSuperAdmin Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  users            UserRole[]
+  rolePermissions  RolePermission[]
+  fieldPermissions FieldPermission[]
+
+  @@index([isSuperAdmin])
+}
+
+model UserRole {
+  userId     String
+  roleId     String
+  assignedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+}
+
+enum PermissionAction {
+  CREATE
+  READ
+  UPDATE
+  DELETE
+}
+
+enum PermissionScope {
+  OWN
+  TEAM
+  ALL
+}
+
+// Entity-level grant: "Role X can UPDATE JOB records it OWNs".
+model RolePermission {
+  id        String           @id @default(cuid())
+  roleId    String
+  resource  String
+  action    PermissionAction
+  scope     PermissionScope
+  createdAt DateTime         @default(now())
+
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, resource, action])
+  @@index([resource])
+}
+
+enum FieldAccess {
+  HIDDEN
+  READ
+  WRITE
+}
+
+// Field-level override on top of RolePermission, e.g. hide Candidate.compensation
+// from the Interviewer role even though Interviewer can READ Candidate.
+model FieldPermission {
+  id        String      @id @default(cuid())
+  roleId    String
+  resource  String
+  field     String
+  access    FieldAccess
+  createdAt DateTime    @default(now())
+
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, resource, field])
+  @@index([resource, field])
+}
+
+// ---------------------------------------------------------------------------
+// Organization & admin settings (§11.13, §13)
+// ---------------------------------------------------------------------------
+
+// Deliberately unenforced as a DB-level singleton (no natural single-row constraint
+// in Postgres without a trigger); the service layer only ever reads/writes the first
+// row. A second row is a data-integrity bug, not a case the schema needs to prevent.
+model Organization {
+  id               String   @id @default(cuid())
+  name             String
+  timezone         String   @default("UTC")
+  workingDays      Int[]    @default([1, 2, 3, 4, 5])
+  workingHourStart String   @default("09:00")
+  workingHourEnd   String   @default("18:00")
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  holidays Holiday[]
+}
+
+model Holiday {
+  id              String   @id @default(cuid())
+  organizationId  String
+  name            String
+  date            DateTime
+  recurringYearly Boolean  @default(false)
+  createdAt       DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, date])
+}
+
+// Admin-managed controlled vocabularies (§11.13): rejection reasons, sources,
+// document types, locations. New list *types* are created by admins, not by
+// deploying code — ControlledList.key is free-form, seeded with the ones the
+// PRD names explicitly.
+model ControlledList {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  label     String
+  isSystem  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  values ControlledListValue[]
+}
+
+model ControlledListValue {
+  id        String   @id @default(cuid())
+  listId    String
+  value     String
+  label     String
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  list ControlledList @relation(fields: [listId], references: [id], onDelete: Cascade)
+
+  @@unique([listId, value])
+}
+
+// ---------------------------------------------------------------------------
+// Customization engine (§10.1) — custom fields & custom objects
+// ---------------------------------------------------------------------------
+
+enum CustomFieldType {
+  TEXT
+  NUMBER
+  DATE
+  DROPDOWN
+  MULTI_SELECT
+  LOOKUP
+}
+
+// Metadata describing one admin-defined field on a core entity (Job, Candidate,
+// Application, Offer, ...) or on a Custom Object. The *value* lives in that
+// entity's `customFields Json` column — this table only describes shape and
+// validation. `entityType` is validated at the service layer against
+// src/lib/entity-registry.ts, not a DB foreign key, because core entities are
+// not rows in a table.
+model CustomFieldDefinition {
+  id           String          @id @default(cuid())
+  entityType   String
+  key          String
+  label        String
+  fieldType    CustomFieldType
+  isRequired   Boolean         @default(false)
+  isActive     Boolean         @default(true)
+  sortOrder    Int             @default(0)
+  // DROPDOWN/MULTI_SELECT choices, LOOKUP target entityType, min/max/regex, etc.
+  options      Json?
+  defaultValue Json?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  @@unique([entityType, key])
+  @@index([entityType])
+}
+
+// Admin-defined entity (e.g. "Vendor", "Assessment Result") with no dedicated
+// table. Deliberately NOT implemented as runtime DDL (no CREATE TABLE at
+// request time) — an admin-triggered schema mutation is an operational and
+// injection risk out of proportion to the benefit. Records are stored as JSON
+// against a shared table instead; CustomFieldDefinition rows with
+// entityType = CustomObjectDefinition.apiKey describe each object's fields.
+model CustomObjectDefinition {
+  id          String   @id @default(cuid())
+  apiKey      String   @unique
+  name        String
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  records CustomObjectRecord[]
+}
+
+model CustomObjectRecord {
+  id           String   @id @default(cuid())
+  definitionId String
+  data         Json
+  createdById  String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  definition CustomObjectDefinition @relation(fields: [definitionId], references: [id], onDelete: Cascade)
+  createdBy  User?                  @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  relations  CustomObjectRelation[]
+
+  @@index([definitionId])
+}
+
+// Links a custom object record to a core entity (e.g. this "Assessment Result"
+// record relates to Application #123). relatedEntityType is validated the same
+// way as CustomFieldDefinition.entityType.
+model CustomObjectRelation {
+  id                String   @id @default(cuid())
+  recordId          String
+  relatedEntityType String
+  relatedEntityId   String
+  createdAt         DateTime @default(now())
+
+  record CustomObjectRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+
+  @@index([relatedEntityType, relatedEntityId])
+  @@index([recordId])
+}
+
+// ---------------------------------------------------------------------------
+// Audit log (§11.13, §13) — every configuration change and lifecycle action
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  // Namespaced action string, e.g. "role.created", "custom_field.updated".
+  // Each module appends its own actions; see src/lib/audit/actions.ts.
+  action     String
+  entityType String
+  entityId   String
+  // { before, after } snapshot of changed fields only.
+  changes    Json?
+  createdAt  DateTime @default(now())
+
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId])
+  @@index([actorId])
+  @@index([createdAt])
+}
