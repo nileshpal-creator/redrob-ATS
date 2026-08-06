@@ -47,7 +47,6 @@ model User {
 
   jobsCreated             Job[]                    @relation("JobCreatedBy")
   jobsAsPrimaryRecruiter  Job[]                    @relation("JobPrimaryRecruiter")
-  jobsAsHiringManager     Job[]                    @relation("JobHiringManager")
   jobRecruiterAssignments JobRecruiterAssignment[]
   jobStatusChangesActed   JobStatusChange[]
 
@@ -349,12 +348,7 @@ enum JobPriority {
 }
 
 model Job {
-  id             String @id @default(cuid())
-  // Real DB-generated sequence, never exposed — `code` (e.g. "REQ-000042") is
-  // what users see. See src/lib/services/jobs.ts#nextJobCode for how a value
-  // is reserved from this column's sequence before the row exists.
-  sequenceNumber Int    @unique @default(autoincrement())
-  code           String @unique
+  id String @id @default(cuid())
 
   title                String
   departmentId         String
@@ -371,15 +365,6 @@ model Job {
   mustHaveCriteria     String[]       @default([])
   goodToHaveCriteria   String[]       @default([])
 
-  // Salary band is optional and, when set, always carries a currency.
-  // `salaryVisible` is a business flag for external/candidate-facing display
-  // (job boards, offer letters) — independent of FieldPermission, which
-  // separately governs whether *internal* roles can see these columns at all.
-  salaryMin     Int?
-  salaryMax     Int?
-  currency      String?
-  salaryVisible Boolean @default(false)
-
   customFields Json?
 
   // "One need splits into multiple roles" (§11.1) — intentionally unconstrained.
@@ -391,12 +376,12 @@ model Job {
   // JobRecruiterAssignment) so every permission check and list-scope filter
   // is a plain column comparison instead of a join. Kept in sync with the
   // JobRecruiterAssignment.isPrimary row inside the same transaction —
-  // see updateJobRecruiters in src/lib/services/jobs.ts.
+  // see updateJobRecruiters in src/lib/services/jobs.ts. This is also the
+  // sole ownership anchor for OWN/TEAM scope — the PRD's Job data model
+  // (§9) names only "assigned recruiter(s)", so approval ownership resolves
+  // against this same column rather than a separate hiring-manager field.
   primaryRecruiterId String
   primaryRecruiter   User   @relation("JobPrimaryRecruiter", fields: [primaryRecruiterId], references: [id])
-
-  hiringManagerId String
-  hiringManager   User   @relation("JobHiringManager", fields: [hiringManagerId], references: [id])
 
   createdById String
   createdBy   User   @relation("JobCreatedBy", fields: [createdById], references: [id])
@@ -418,7 +403,6 @@ model Job {
   @@index([locationId])
   @@index([parentJobId])
   @@index([primaryRecruiterId])
-  @@index([hiringManagerId])
 }
 
 model JobRecruiterAssignment {

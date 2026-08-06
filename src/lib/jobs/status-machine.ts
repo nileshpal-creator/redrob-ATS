@@ -30,19 +30,17 @@ export type JobTransition = {
   reasonRequired: boolean;
   /** ControlledList key the reason must belong to, when reasonRequired is true. */
   reasonListKey?: string;
-  /**
-   * When true, ownership for this transition is checked against the job's
-   * hiring manager only. Every other transition accepts either the primary
-   * recruiter or the hiring manager as "the owner" — approval decisions are
-   * specifically the hiring manager's call (§8 persona table).
-   */
-  approverOnly?: boolean;
 };
 
+// Ownership for every transition — APPROVE/REJECT included — resolves
+// against Job.primaryRecruiterId, the only assignee the PRD's Job data
+// model (§9) actually defines. A role that approves without being tied to
+// a specific job (Hiring Manager, Recruiting Manager) is granted TEAM/ALL
+// scope in prisma/seed.ts rather than relying on a per-job "approver" field.
 export const JOB_TRANSITIONS: JobTransition[] = [
   { action: "SUBMIT", from: "DRAFT", to: "PENDING_APPROVAL", requiredAction: "UPDATE", reasonRequired: false },
-  { action: "APPROVE", from: "PENDING_APPROVAL", to: "OPEN", requiredAction: "APPROVE", reasonRequired: false, approverOnly: true },
-  { action: "REJECT", from: "PENDING_APPROVAL", to: "DRAFT", requiredAction: "APPROVE", reasonRequired: false, approverOnly: true },
+  { action: "APPROVE", from: "PENDING_APPROVAL", to: "OPEN", requiredAction: "APPROVE", reasonRequired: false },
+  { action: "REJECT", from: "PENDING_APPROVAL", to: "DRAFT", requiredAction: "APPROVE", reasonRequired: false },
   { action: "HOLD", from: "OPEN", to: "ON_HOLD", requiredAction: "UPDATE", reasonRequired: true, reasonListKey: "JOB_HOLD_REASON" },
   { action: "RESUME", from: "ON_HOLD", to: "OPEN", requiredAction: "UPDATE", reasonRequired: false },
   { action: "CLOSE", from: "OPEN", to: "CLOSED", requiredAction: "UPDATE", reasonRequired: true, reasonListKey: "JOB_CLOSE_REASON" },

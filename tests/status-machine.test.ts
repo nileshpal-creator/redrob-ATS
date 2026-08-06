@@ -18,13 +18,11 @@ describe("job status machine", () => {
     expect(new Set(reasonRequiredActions)).toEqual(new Set(["HOLD", "CLOSE", "CANCEL"]));
   });
 
-  it("gates APPROVE/REJECT behind the APPROVE permission and hiring-manager-only ownership", () => {
+  it("gates APPROVE/REJECT behind the APPROVE permission", () => {
     const approve = findTransition("PENDING_APPROVAL", "APPROVE");
     const reject = findTransition("PENDING_APPROVAL", "REJECT");
     expect(approve?.requiredAction).toBe("APPROVE");
-    expect(approve?.approverOnly).toBe(true);
     expect(reject?.requiredAction).toBe("APPROVE");
-    expect(reject?.approverOnly).toBe(true);
   });
 
   it("routes SUBMIT/HOLD/RESUME/CLOSE/CANCEL through UPDATE, not APPROVE", () => {

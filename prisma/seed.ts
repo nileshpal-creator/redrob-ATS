@@ -71,18 +71,20 @@ const CONTROLLED_LISTS = [
 ] as const;
 
 // Module 2 default grants — without these, no role but System Administrator
-// (which bypasses checks entirely) could do anything with Jobs. Scope choices
-// mirror each persona's PRD description (§8): Recruiter owns day-to-day
-// pipeline work (OWN), Hiring Manager approves what's assigned to them
-// (their OWN as hiring manager), Recruiting Manager oversees their team.
+// (which bypasses checks entirely) could do anything with Jobs. Ownership
+// resolves solely against Job.primaryRecruiterId (the PRD's Job data model
+// has no separate approver field), so scopes mirror each persona's PRD
+// description (§8) against that one anchor: Recruiter owns their own
+// requisitions (OWN); Hiring Manager approves broadly, not tied to being
+// the assigned recruiter (ALL); Recruiting Manager oversees their team
+// (TEAM, resolved via the primary recruiter's manager chain).
 const JOB_ROLE_PERMISSIONS = [
   { role: "Recruiter", action: "CREATE", scope: "ALL" },
   { role: "Recruiter", action: "READ", scope: "ALL" },
   { role: "Recruiter", action: "UPDATE", scope: "OWN" },
   { role: "Hiring Manager", action: "CREATE", scope: "ALL" },
   { role: "Hiring Manager", action: "READ", scope: "ALL" },
-  { role: "Hiring Manager", action: "UPDATE", scope: "OWN" },
-  { role: "Hiring Manager", action: "APPROVE", scope: "OWN" },
+  { role: "Hiring Manager", action: "APPROVE", scope: "ALL" },
   { role: "Recruiting Manager", action: "CREATE", scope: "ALL" },
   { role: "Recruiting Manager", action: "READ", scope: "TEAM" },
   { role: "Recruiting Manager", action: "UPDATE", scope: "TEAM" },

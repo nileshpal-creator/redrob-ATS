@@ -56,10 +56,8 @@ describe("JobService", () => {
       positionsCount: 2,
       mustHaveCriteria: ["5+ years backend"],
       goodToHaveCriteria: [],
-      salaryVisible: false,
       recruiterUserIds: [],
       primaryRecruiterUserId: "",
-      hiringManagerUserId: "",
     }) as JobCreateInput;
 
   beforeAll(async () => {
@@ -81,6 +79,9 @@ describe("JobService", () => {
     });
     recruiterRoleId = recruiterRole.id;
 
+    // No per-job ownership field anchors Hiring Manager approval (the PRD's
+    // Job data model has no such field) — ALL scope is the correct default,
+    // matching prisma/seed.ts.
     const hiringManagerRole = await prisma.role.create({
       data: {
         name: "Test Hiring Manager",
@@ -88,7 +89,7 @@ describe("JobService", () => {
           createMany: {
             data: [
               { resource: "JOB", action: "READ", scope: "ALL" },
-              { resource: "JOB", action: "APPROVE", scope: "OWN" },
+              { resource: "JOB", action: "APPROVE", scope: "ALL" },
             ],
           },
         },
@@ -174,15 +175,13 @@ describe("JobService", () => {
     await prisma.$disconnect();
   });
 
-  it("creates a job with a human-readable code and default counters", async () => {
+  it("creates a job with default counters and no writable positionsFilledCount", async () => {
     const job = await createJob(recruiter, {
       ...baseInput(),
       recruiterUserIds: [recruiter.userId],
       primaryRecruiterUserId: recruiter.userId,
-      hiringManagerUserId: hiringManager.userId,
     });
 
-    expect(job.code).toMatch(/^REQ-\d{6}$/);
     expect(job.status).toBe("DRAFT");
     expect(job.positionsFilledCount).toBe(0);
     expect(job.version).toBe(0);
@@ -195,7 +194,6 @@ describe("JobService", () => {
         ...baseInput(),
         recruiterUserIds: [recruiter.userId],
         primaryRecruiterUserId: recruiter.userId,
-        hiringManagerUserId: hiringManager.userId,
       }),
     ).rejects.toBeInstanceOf(ForbiddenError);
   });
@@ -205,7 +203,6 @@ describe("JobService", () => {
       ...baseInput(),
       recruiterUserIds: [recruiter.userId],
       primaryRecruiterUserId: recruiter.userId,
-      hiringManagerUserId: hiringManager.userId,
     });
 
     const updated = await updateJob(recruiter, job.id, { version: job.version, title: "Staff Backend Engineer" });
@@ -221,7 +218,6 @@ describe("JobService", () => {
       ...baseInput(),
       recruiterUserIds: [recruiter.userId],
       primaryRecruiterUserId: recruiter.userId,
-      hiringManagerUserId: hiringManager.userId,
     });
 
     await updateJob(recruiter, job.id, { version: job.version, title: "First edit" });
@@ -236,7 +232,6 @@ describe("JobService", () => {
       ...baseInput(),
       recruiterUserIds: [recruiter.userId],
       primaryRecruiterUserId: recruiter.userId,
-      hiringManagerUserId: hiringManager.userId,
     });
 
     const submitted = await transitionJobStatus(recruiter, job.id, { action: "SUBMIT", version: job.version });
@@ -259,7 +254,6 @@ describe("JobService", () => {
       ...baseInput(),
       recruiterUserIds: [recruiter.userId],
       primaryRecruiterUserId: recruiter.userId,
-      hiringManagerUserId: hiringManager.userId,
     });
 
     // CLOSE is not a legal transition from DRAFT.
@@ -303,7 +297,6 @@ describe("JobService", () => {
       ...baseInput(),
       recruiterUserIds: [recruiter.userId],
       primaryRecruiterUserId: recruiter.userId,
-      hiringManagerUserId: hiringManager.userId,
     });
 
     const reassigned = await updateJobRecruiters(recruiter, job.id, {
@@ -333,22 +326,18 @@ describe("JobService", () => {
       title: "Mine",
       recruiterUserIds: [recruiter.userId],
       primaryRecruiterUserId: recruiter.userId,
-      hiringManagerUserId: hiringManager.userId,
     });
     await createJob(otherRecruiter, {
       ...baseInput(),
       title: "Not mine",
       recruiterUserIds: [otherRecruiter.userId],
       primaryRecruiterUserId: otherRecruiter.userId,
-      hiringManagerUserId: hiringManager.userId,
     });
 
     const { jobs } = await listJobs(recruiter, { page: 1, pageSize: 25 });
     const ids = jobs.map((job) => job.id);
     expect(ids).toContain(mine.id);
-    expect(jobs.every((job) => job.primaryRecruiterId === recruiter.userId || job.hiringManagerId === recruiter.userId)).toBe(
-      true,
-    );
+    expect(jobs.every((job) => job.primaryRecruiterId === recruiter.userId)).toBe(true);
   });
 
   it("denies listJobs entirely for a role with no JOB:READ grant", async () => {

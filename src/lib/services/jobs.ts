@@ -23,39 +23,21 @@ const jobListInclude = {
   department: true,
   location: true,
   primaryRecruiter: { select: userSummarySelect },
-  hiringManager: { select: userSummarySelect },
   recruiters: { include: { user: { select: userSummarySelect } } },
 } satisfies Prisma.JobInclude;
 
 const jobDetailInclude = {
   ...jobListInclude,
   createdBy: { select: userSummarySelect },
-  parentJob: { select: { id: true, code: true, title: true } },
-  childJobs: { select: { id: true, code: true, title: true, status: true } },
+  parentJob: { select: { id: true, title: true } },
+  childJobs: { select: { id: true, title: true, status: true } },
   statusChanges: {
     orderBy: { createdAt: "desc" },
     include: { actor: { select: userSummarySelect }, reason: true },
   },
 } satisfies Prisma.JobInclude;
 
-type JobOwnership = { primaryRecruiterId: string; hiringManagerId: string };
-
-/** Any client capable of $queryRaw — satisfied by both PrismaClient and a $transaction callback's tx. */
-type QueryRawCapable = { $queryRaw: typeof prisma.$queryRaw };
-
-/**
- * Reserves the next value from the same sequence backing Job.sequenceNumber
- * and formats it as the human-readable code users actually see (§ decision:
- * "do not expose cuid() to users"). Called inside the same transaction as
- * the insert so the reserved number is never orphaned by a failed create.
- */
-async function nextJobCode(client: QueryRawCapable) {
-  const rows = await client.$queryRaw<{ nextval: bigint }[]>`
-    SELECT nextval(pg_get_serial_sequence('"Job"', 'sequenceNumber')) as nextval
-  `;
-  const sequenceNumber = Number(rows[0].nextval);
-  return { sequenceNumber, code: `REQ-${String(sequenceNumber).padStart(6, "0")}` };
-}
+type JobOwnership = { primaryRecruiterId: string };
 
 async function assertControlledListValue(listKey: string, valueId: string, fieldLabel: string) {
   const value = await prisma.controlledListValue.findUnique({
@@ -89,27 +71,15 @@ async function validateCustomFields(customFields: Record<string, unknown> | unde
 }
 
 /**
- * Ownership spans two roles (§ decision: hiring manager added to the Job
- * model): the primary recruiter and the hiring manager can both act as
- * "owner" for OWN/TEAM-scoped grants on ordinary actions. Approval decisions
- * are narrower — only the hiring manager counts — passed via `approverOnly`
- * from the transition table in status-machine.ts.
+ * Ownership resolves against Job.primaryRecruiterId for every action,
+ * including APPROVE/REJECT — the PRD's Job data model (§9) names only
+ * "assigned recruiter(s)", not a separate approver field. Roles that
+ * approve without being the assigned recruiter (Hiring Manager, Recruiting
+ * Manager) are granted ALL/TEAM scope in prisma/seed.ts instead.
  */
-async function assertJobAccess(
-  context: SessionContext,
-  job: JobOwnership,
-  action: PermissionAction,
-  options: { approverOnly?: boolean } = {},
-) {
+async function assertJobAccess(context: SessionContext, job: JobOwnership, action: PermissionAction) {
   if (await can(context, ENTITY.JOB, action)) return;
-
-  if (options.approverOnly) {
-    if (await can(context, ENTITY.JOB, action, { ownerId: job.hiringManagerId })) return;
-  } else {
-    if (await can(context, ENTITY.JOB, action, { ownerId: job.primaryRecruiterId })) return;
-    if (await can(context, ENTITY.JOB, action, { ownerId: job.hiringManagerId })) return;
-  }
-
+  if (await can(context, ENTITY.JOB, action, { ownerId: job.primaryRecruiterId })) return;
   throw new ForbiddenError();
 }
 
@@ -121,10 +91,10 @@ export async function listJobs(context: SessionContext, query: JobQuery) {
 
   let ownerFilter: Prisma.JobWhereInput = {};
   if (scope === "OWN") {
-    ownerFilter = { OR: [{ primaryRecruiterId: context.userId }, { hiringManagerId: context.userId }] };
+    ownerFilter = { primaryRecruiterId: context.userId };
   } else if (scope === "TEAM") {
     const teamIds = await getTeamMemberIds(context.userId);
-    ownerFilter = { OR: [{ primaryRecruiterId: { in: teamIds } }, { hiringManagerId: { in: teamIds } }] };
+    ownerFilter = { primaryRecruiterId: { in: teamIds } };
   }
 
   const where: Prisma.JobWhereInput = {
@@ -134,14 +104,7 @@ export async function listJobs(context: SessionContext, query: JobQuery) {
     locationId: query.locationId,
     priority: query.priority,
     ...(query.recruiterId ? { recruiters: { some: { userId: query.recruiterId } } } : {}),
-    ...(query.q
-      ? {
-          OR: [
-            { title: { contains: query.q, mode: "insensitive" } },
-            { code: { contains: query.q, mode: "insensitive" } },
-          ],
-        }
-      : {}),
+    ...(query.q ? { title: { contains: query.q, mode: "insensitive" } } : {}),
   };
 
   const [jobs, total] = await Promise.all([
@@ -173,7 +136,6 @@ export async function createJob(context: SessionContext, input: JobCreateInput) 
   await assertControlledListValue("DEPARTMENT", input.departmentId, "department");
   await assertControlledListValue("LOCATION", input.locationId, "location");
   await assertActiveUsers(input.recruiterUserIds, "recruiters");
-  await assertActiveUsers([input.hiringManagerUserId], "hiring manager");
 
   if (input.parentJobId) {
     const parent = await prisma.job.findUnique({ where: { id: input.parentJobId }, select: { id: true } });
@@ -184,43 +146,32 @@ export async function createJob(context: SessionContext, input: JobCreateInput) 
 
   const customFields = await validateCustomFields(input.customFields);
 
-  const created = await prisma.$transaction(async (tx) => {
-    const { sequenceNumber, code } = await nextJobCode(tx);
-
-    return tx.job.create({
-      data: {
-        sequenceNumber,
-        code,
-        title: input.title,
-        departmentId: input.departmentId,
-        locationId: input.locationId,
-        employmentType: input.employmentType,
-        priority: input.priority,
-        positionsCount: input.positionsCount,
-        targetDate: input.targetDate,
-        description: input.description,
-        mustHaveCriteria: input.mustHaveCriteria,
-        goodToHaveCriteria: input.goodToHaveCriteria,
-        salaryMin: input.salaryMin,
-        salaryMax: input.salaryMax,
-        currency: input.currency,
-        salaryVisible: input.salaryVisible,
-        customFields: customFields as Prisma.InputJsonValue,
-        parentJobId: input.parentJobId,
-        primaryRecruiterId: input.primaryRecruiterUserId,
-        hiringManagerId: input.hiringManagerUserId,
-        createdById: context.userId,
-        recruiters: {
-          createMany: {
-            data: input.recruiterUserIds.map((userId) => ({
-              userId,
-              isPrimary: userId === input.primaryRecruiterUserId,
-            })),
-          },
+  const created = await prisma.job.create({
+    data: {
+      title: input.title,
+      departmentId: input.departmentId,
+      locationId: input.locationId,
+      employmentType: input.employmentType,
+      priority: input.priority,
+      positionsCount: input.positionsCount,
+      targetDate: input.targetDate,
+      description: input.description,
+      mustHaveCriteria: input.mustHaveCriteria,
+      goodToHaveCriteria: input.goodToHaveCriteria,
+      customFields: customFields as Prisma.InputJsonValue,
+      parentJobId: input.parentJobId,
+      primaryRecruiterId: input.primaryRecruiterUserId,
+      createdById: context.userId,
+      recruiters: {
+        createMany: {
+          data: input.recruiterUserIds.map((userId) => ({
+            userId,
+            isPrimary: userId === input.primaryRecruiterUserId,
+          })),
         },
       },
-      include: jobDetailInclude,
-    });
+    },
+    include: jobDetailInclude,
   });
 
   await recordAudit({
@@ -228,7 +179,7 @@ export async function createJob(context: SessionContext, input: JobCreateInput) 
     action: AUDIT_ACTIONS.JOB_CREATED,
     entityType: ENTITY.JOB,
     entityId: created.id,
-    changes: { after: { code: created.code, title: created.title, status: created.status } },
+    changes: { after: { title: created.title, status: created.status } },
   });
 
   return created;
@@ -243,7 +194,6 @@ export async function updateJob(context: SessionContext, id: string, input: JobU
 
   if (input.departmentId) await assertControlledListValue("DEPARTMENT", input.departmentId, "department");
   if (input.locationId) await assertControlledListValue("LOCATION", input.locationId, "location");
-  if (input.hiringManagerUserId) await assertActiveUsers([input.hiringManagerUserId], "hiring manager");
   if (input.parentJobId) {
     if (input.parentJobId === id) {
       throw new ValidationError("A job cannot be its own parent.");
@@ -268,12 +218,7 @@ export async function updateJob(context: SessionContext, id: string, input: JobU
     ...(input.description !== undefined && { description: input.description }),
     ...(input.mustHaveCriteria !== undefined && { mustHaveCriteria: input.mustHaveCriteria }),
     ...(input.goodToHaveCriteria !== undefined && { goodToHaveCriteria: input.goodToHaveCriteria }),
-    ...(input.salaryMin !== undefined && { salaryMin: input.salaryMin }),
-    ...(input.salaryMax !== undefined && { salaryMax: input.salaryMax }),
-    ...(input.currency !== undefined && { currency: input.currency }),
-    ...(input.salaryVisible !== undefined && { salaryVisible: input.salaryVisible }),
     ...(input.parentJobId !== undefined && { parentJobId: input.parentJobId }),
-    ...(input.hiringManagerUserId !== undefined && { hiringManagerId: input.hiringManagerUserId }),
     ...(customFields !== undefined && { customFields: customFields as Prisma.InputJsonValue }),
     version: { increment: 1 },
   };
@@ -360,9 +305,7 @@ export async function transitionJobStatus(
     throw new ValidationError(`Cannot ${input.action} a job in ${existing.status} status.`);
   }
 
-  await assertJobAccess(context, existing, transition.requiredAction, {
-    approverOnly: transition.approverOnly,
-  });
+  await assertJobAccess(context, existing, transition.requiredAction);
 
   if (transition.reasonRequired) {
     if (!input.reasonId) {

@@ -6,34 +6,11 @@ const EMPLOYMENT_TYPES = ["FULL_TIME", "PART_TIME", "CONTRACT", "INTERNSHIP", "T
 const PRIORITIES = ["LOW", "MEDIUM", "HIGH", "URGENT"] as const;
 const JOB_STATUSES = ["DRAFT", "PENDING_APPROVAL", "OPEN", "ON_HOLD", "CLOSED", "CANCELLED"] as const;
 
-/**
- * Fixed set for v1 rather than a ControlledList — unlike Department/Location,
- * an org's set of transacting currencies is rarely something recruiters need
- * to self-serve edit. Revisit as a ControlledList if that assumption breaks.
- */
-export const CURRENCY_CODES = ["USD", "EUR", "GBP", "INR", "AUD", "CAD", "SGD", "AED"] as const;
-
 const criteriaList = z
   .array(z.string().trim().min(1).max(300))
   .max(50)
   .default([])
   .transform((items) => Array.from(new Set(items)));
-
-const salaryFields = {
-  salaryMin: z.number().int().nonnegative().optional(),
-  salaryMax: z.number().int().nonnegative().optional(),
-  currency: z.enum(CURRENCY_CODES).optional(),
-  salaryVisible: z.boolean().default(false),
-};
-
-function refineSalary(val: { salaryMin?: number; salaryMax?: number; currency?: string }, ctx: z.RefinementCtx) {
-  if (val.salaryMin !== undefined && val.salaryMax !== undefined && val.salaryMin > val.salaryMax) {
-    ctx.addIssue({ code: "custom", path: ["salaryMax"], message: "Max salary must be greater than or equal to min salary" });
-  }
-  if ((val.salaryMin !== undefined || val.salaryMax !== undefined) && !val.currency) {
-    ctx.addIssue({ code: "custom", path: ["currency"], message: "Currency is required when a salary range is set" });
-  }
-}
 
 export const jobCreateSchema = z
   .object({
@@ -47,15 +24,12 @@ export const jobCreateSchema = z
     description: z.string().max(20000).optional(),
     mustHaveCriteria: criteriaList,
     goodToHaveCriteria: criteriaList,
-    ...salaryFields,
     parentJobId: z.string().optional(),
     recruiterUserIds: z.array(z.string()).min(1, "Assign at least one recruiter"),
     primaryRecruiterUserId: z.string().min(1, "Choose a primary recruiter"),
-    hiringManagerUserId: z.string().min(1, "Hiring manager is required"),
     customFields: z.record(z.string(), z.unknown()).optional(),
   })
   .superRefine((val, ctx) => {
-    refineSalary(val, ctx);
     if (!val.recruiterUserIds.includes(val.primaryRecruiterUserId)) {
       ctx.addIssue({
         code: "custom",
@@ -66,28 +40,21 @@ export const jobCreateSchema = z
   });
 export type JobCreateInput = z.infer<typeof jobCreateSchema>;
 
-export const jobUpdateSchema = z
-  .object({
-    version: z.number().int(),
-    title: z.string().trim().min(1).max(200).optional(),
-    departmentId: z.string().min(1).optional(),
-    locationId: z.string().min(1).optional(),
-    employmentType: z.enum(EMPLOYMENT_TYPES).optional(),
-    priority: z.enum(PRIORITIES).optional(),
-    positionsCount: z.number().int().positive().optional(),
-    targetDate: z.coerce.date().optional().nullable(),
-    description: z.string().max(20000).optional(),
-    mustHaveCriteria: criteriaList.optional(),
-    goodToHaveCriteria: criteriaList.optional(),
-    salaryMin: salaryFields.salaryMin,
-    salaryMax: salaryFields.salaryMax,
-    currency: salaryFields.currency,
-    salaryVisible: salaryFields.salaryVisible.optional(),
-    parentJobId: z.string().optional().nullable(),
-    hiringManagerUserId: z.string().min(1).optional(),
-    customFields: z.record(z.string(), z.unknown()).optional(),
-  })
-  .superRefine(refineSalary);
+export const jobUpdateSchema = z.object({
+  version: z.number().int(),
+  title: z.string().trim().min(1).max(200).optional(),
+  departmentId: z.string().min(1).optional(),
+  locationId: z.string().min(1).optional(),
+  employmentType: z.enum(EMPLOYMENT_TYPES).optional(),
+  priority: z.enum(PRIORITIES).optional(),
+  positionsCount: z.number().int().positive().optional(),
+  targetDate: z.coerce.date().optional().nullable(),
+  description: z.string().max(20000).optional(),
+  mustHaveCriteria: criteriaList.optional(),
+  goodToHaveCriteria: criteriaList.optional(),
+  parentJobId: z.string().optional().nullable(),
+  customFields: z.record(z.string(), z.unknown()).optional(),
+});
 export type JobUpdateInput = z.infer<typeof jobUpdateSchema>;
 
 export const jobRecruitersUpdateSchema = z
