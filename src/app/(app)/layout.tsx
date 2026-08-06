@@ -12,11 +12,18 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     redirect("/login");
   }
 
-  const showJobsNav = await can(context, ENTITY.JOB, "READ");
+  const [showJobsNav, showCandidatesNav] = await Promise.all([
+    can(context, ENTITY.JOB, "READ"),
+    can(context, ENTITY.CANDIDATE, "READ"),
+  ]);
 
   return (
     <div className="flex h-svh">
-      <AppSidebar showAdminNav={context.isSuperAdmin} showJobsNav={showJobsNav} />
+      <AppSidebar
+        showAdminNav={context.isSuperAdmin}
+        showJobsNav={showJobsNav}
+        showCandidatesNav={showCandidatesNav}
+      />
       <div className="flex flex-1 flex-col overflow-hidden">
         <AppTopbar name={context.name} email={context.email} />
         <main className="flex-1 overflow-y-auto p-6">{children}</main>
