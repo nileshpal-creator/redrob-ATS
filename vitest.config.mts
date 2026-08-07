@@ -1,9 +1,12 @@
 import { defineConfig } from "vitest/config";
 import path from "node:path";
+import { getTestDatabaseUrl } from "./tests/setup/test-database-url";
 
-// Tests run against a dedicated `ats_test` database — never the dev DB.
-// See tests/setup/global-setup.ts for how it's migrated before the suite runs.
-const TEST_DATABASE_URL = "postgresql://ats:ats@localhost:5432/ats_test?schema=public";
+// Tests run against a dedicated test database (TEST_DATABASE_URL in .env) —
+// never the dev DB. See tests/setup/test-database-url.ts for why this reads
+// from one shared helper instead of a hardcoded literal, and
+// tests/setup/global-setup.ts for how it's migrated before the suite runs.
+const TEST_DATABASE_URL = getTestDatabaseUrl();
 
 export default defineConfig({
   resolve: {

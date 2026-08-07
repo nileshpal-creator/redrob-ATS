@@ -185,7 +185,8 @@ from your `.env`.
 | --- | --- | --- |
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | Credentials for the local Postgres container (`docker-compose.yml`) | `ats` / `ats` / `ats` |
 | `POSTGRES_PORT` | Host port Postgres is published on | `5432` |
-| `DATABASE_URL` | Prisma connection string | `postgresql://ats:ats@localhost:5432/ats?schema=public` |
+| `DATABASE_URL` | Prisma connection string, used by the app and by `prisma migrate`/`generate` | `postgresql://ats:ats@localhost:5432/ats?schema=public` |
+| `TEST_DATABASE_URL` | Connection string for the dedicated test database — `vitest.config.mts` reads this and overrides `DATABASE_URL` with it for every test worker, so tests never touch the dev database. See [Running tests](#running-tests). | `postgresql://ats:ats@localhost:5432/ats_test?schema=public` |
 | `AUTH_SECRET` | Auth.js JWT signing secret — generate with `npx auth secret`, never commit a real value | *(empty — required)* |
 | `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` | Bootstraps the one System Administrator account when `prisma/seed.ts` runs | `admin@example.com` / `ChangeMe123!` |
 | `STORAGE_PROVIDER` | Selects the candidate-document `StorageProvider` implementation. Only `"local"` is implemented today. | `local` (code-level default; not set in `.env.example`) |
@@ -251,8 +252,9 @@ npx prisma db seed
 
 ### Running tests
 
-Tests run against a **dedicated `ats_test` Postgres database — never the dev database**. Create
-it once (the container already exists from `docker compose up -d`):
+Tests run against a **dedicated `ats_test` Postgres database — never the dev database**,
+pointed to by `TEST_DATABASE_URL` in `.env` (see [Environment variables](#environment-variables)).
+Create the database once (the container already exists from `docker compose up -d`):
 
 ```bash
 docker compose exec postgres createdb -U ats ats_test
@@ -265,8 +267,12 @@ npm run test         # runs the full Vitest suite once
 npm run test:watch   # watch mode
 ```
 
-`tests/setup/global-setup.ts` runs `prisma migrate deploy` against `ats_test` before the suite
-starts, so migrations are always applied and the dev database is never touched.
+`vitest.config.mts` reads `TEST_DATABASE_URL` and overrides `DATABASE_URL` with it for every
+test worker — `tests/setup/test-database-url.ts` is the single source of truth both it and
+`global-setup.ts` (which runs `prisma migrate deploy` against `ats_test` before the suite
+starts) read from, so the two can never drift out of sync. If `TEST_DATABASE_URL` is unset,
+Vitest fails immediately with a clear error rather than silently falling back to the dev
+database or a stale credential.
 
 ## Note on shadcn/ui
 
