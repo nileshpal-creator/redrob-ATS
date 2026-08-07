@@ -792,8 +792,8 @@ model Interview {
   // Ownership anchor for OWN/TEAM scope on the scheduling side (who booked
   // this interview) — mirrors Job.primaryRecruiterId / Application.ownerId.
   // A second, independent access path exists for the assigned interviewers
-  // themselves (panelists) — see assertInterviewAccess in
-  // src/lib/services/interviews.ts.
+  // themselves (panelists) — see assertManageAccess / assertReadOrFeedbackAccess
+  // in src/lib/services/interviews.ts.
   scheduledById String
   scheduledBy   User   @relation("InterviewScheduledBy", fields: [scheduledById], references: [id])
 

@@ -1,7 +1,7 @@
 import { notFound, redirect } from "next/navigation";
 
 import { getSessionContext } from "@/lib/authz/session-context";
-import { can, ForbiddenError } from "@/lib/authz/authorize";
+import { can, ForbiddenError, getEffectiveScope, getTeamMemberIds } from "@/lib/authz/authorize";
 import { ENTITY } from "@/lib/entity-registry";
 import { getApplication } from "@/lib/services/applications";
 import { listInterviews } from "@/lib/services/interviews";
@@ -31,13 +31,18 @@ export default async function ApplicationDetailPage({ params }: { params: Promis
     }),
   ]);
 
+  // Compute the manage-scope once rather than calling can() per interview —
+  // every call would re-run the identical role/resource/action grant lookup.
+  const manageScope = interviewsResult ? await getEffectiveScope(context, ENTITY.INTERVIEW, "UPDATE") : null;
+  const teamIds = manageScope === "TEAM" ? await getTeamMemberIds(context.userId) : null;
   const interviews = interviewsResult
-    ? await Promise.all(
-        interviewsResult.interviews.map(async (interview) => ({
-          ...interview,
-          canManage: await can(context, ENTITY.INTERVIEW, "UPDATE", { ownerId: interview.scheduledById }),
-        })),
-      )
+    ? interviewsResult.interviews.map((interview) => ({
+        ...interview,
+        canManage:
+          manageScope === "ALL" ||
+          (manageScope === "OWN" && interview.scheduledById === context.userId) ||
+          (manageScope === "TEAM" && (teamIds?.includes(interview.scheduledById) ?? false)),
+      }))
     : [];
 
   return (

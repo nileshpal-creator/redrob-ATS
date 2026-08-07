@@ -111,7 +111,14 @@ describe("InterviewService", () => {
     const hiringManagerRole = await prisma.role.create({
       data: {
         name: "Test Interview Hiring Manager",
-        rolePermissions: { createMany: { data: [{ resource: "INTERVIEW", action: "READ", scope: "ALL" }] } },
+        rolePermissions: {
+          createMany: {
+            data: [
+              { resource: "INTERVIEW", action: "READ", scope: "ALL" },
+              { resource: "INTERVIEW", action: "UPDATE", scope: "ALL" },
+            ],
+          },
+        },
       },
     });
     hiringManagerRoleId = hiringManagerRole.id;
@@ -390,6 +397,15 @@ describe("InterviewService", () => {
       await expect(
         updateInterview(interviewer1, interview.id, { version: 0, roundName: "Renamed" }),
       ).rejects.toBeInstanceOf(ForbiddenError);
+
+      await prisma.interview.delete({ where: { id: interview.id } });
+    });
+
+    it("lets an ALL-scope grantee reschedule an interview they did not schedule themselves", async () => {
+      const interview = await scheduleInterview(recruiter, interviewInput());
+
+      const updated = await updateInterview(hiringManager, interview.id, { version: 0, roundName: "Renamed" });
+      expect(updated.roundName).toBe("Renamed");
 
       await prisma.interview.delete({ where: { id: interview.id } });
     });

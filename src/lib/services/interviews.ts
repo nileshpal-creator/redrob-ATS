@@ -378,16 +378,28 @@ export async function submitInterviewFeedback(
     throw new ConflictError("You have already submitted feedback for this interview. Use update instead.");
   }
 
-  const created = await prisma.interviewFeedback.create({
-    data: {
-      interviewId,
-      interviewerId: context.userId,
-      recommendation: input.recommendation,
-      rating: input.rating,
-      comments: input.comments,
-    },
-    include: { interviewer: { select: userSummarySelect } },
-  });
+  // The findUnique above is a courtesy for a clean error message — it can't
+  // prevent two concurrent submissions from both passing it, so the
+  // @@unique([interviewId, interviewerId]) constraint is the real guard.
+  // Without this catch, a race loses to an unhandled 500 instead of the
+  // 409 the check above was written to produce.
+  const created = await prisma.interviewFeedback
+    .create({
+      data: {
+        interviewId,
+        interviewerId: context.userId,
+        recommendation: input.recommendation,
+        rating: input.rating,
+        comments: input.comments,
+      },
+      include: { interviewer: { select: userSummarySelect } },
+    })
+    .catch((error) => {
+      if (error && typeof error === "object" && "code" in error && error.code === "P2002") {
+        throw new ConflictError("You have already submitted feedback for this interview. Use update instead.");
+      }
+      throw error;
+    });
 
   await recordAudit({
     actorId: context.userId,
@@ -419,17 +431,19 @@ export async function updateInterviewFeedback(
     version: { increment: 1 },
   };
 
-  const result = await prisma.interviewFeedback.updateMany({
-    where: { interviewId, interviewerId: context.userId, version: input.version },
-    data,
-  });
-  if (result.count === 0) {
-    throw new ConflictError("This feedback was changed by someone else. Reload and try again.");
-  }
+  const updated = await prisma.$transaction(async (tx) => {
+    const result = await tx.interviewFeedback.updateMany({
+      where: { interviewId, interviewerId: context.userId, version: input.version },
+      data,
+    });
+    if (result.count === 0) {
+      throw new ConflictError("This feedback was changed by someone else. Reload and try again.");
+    }
 
-  const updated = await prisma.interviewFeedback.findUniqueOrThrow({
-    where: { interviewId_interviewerId: { interviewId, interviewerId: context.userId } },
-    include: { interviewer: { select: userSummarySelect } },
+    return tx.interviewFeedback.findUniqueOrThrow({
+      where: { interviewId_interviewerId: { interviewId, interviewerId: context.userId } },
+      include: { interviewer: { select: userSummarySelect } },
+    });
   });
 
   await recordAudit({

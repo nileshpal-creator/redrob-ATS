@@ -75,6 +75,34 @@ type TimelineItem =
       toStage?: string | null;
       reason?: string | null;
       createdAt: string;
+    }
+  | {
+      type: "interview_scheduled";
+      id: string;
+      jobId: string;
+      jobTitle: string;
+      roundName: string;
+      scheduledAt: string;
+      createdAt: string;
+    }
+  | {
+      type: "interview_completed" | "interview_cancelled";
+      id: string;
+      jobId: string;
+      jobTitle: string;
+      roundName: string;
+      reason: string | null;
+      createdAt: string;
+    }
+  | {
+      type: "interview_feedback_submitted";
+      id: string;
+      jobId: string;
+      jobTitle: string;
+      roundName: string;
+      interviewer: Person;
+      recommendation: "STRONG_YES" | "YES" | "NO" | "STRONG_NO";
+      createdAt: string;
     };
 
 export function CandidateDetailClient({
