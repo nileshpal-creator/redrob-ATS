@@ -1,5 +1,93 @@
 # Changelog
 
+## Module 3 — Candidate Database (PRD §11.2)
+
+### Added
+
+- `Candidate` entity: name, phone (unique — the hard duplicate key), email (soft duplicate
+  signal), location, current/expected compensation, notice period, earliest availability,
+  total experience, skills/tags, structured experience and education history, a Controlled
+  List source, custom fields, a required GDPR-aligned consent timestamp (`consentGivenAt`),
+  and an internal optimistic-locking `version` counter.
+- `CandidateDocument`: uploaded files (resume, cover letter, etc.) attached to a candidate,
+  with type (Controlled List), size (≤10MB), and MIME-type validation (`application/pdf`,
+  `application/msword`, `.docx`, `image/png`, `image/jpeg`).
+- `CandidateNote`: an immutable, create-only timeline note per candidate.
+- **Duplicate detection**: phone is a database-level unique constraint — creation/update onto
+  an in-use phone is rejected with `409` (`DuplicateCandidateError`, carrying the existing
+  candidate's id). Email is a secondary signal only, surfaced as `possibleDuplicateOf` on
+  create, never blocking. `GET /api/candidates/duplicates` runs both checks ahead of time.
+- **Merge**: `POST /api/candidates/[id]/merge` folds a duplicate into a target candidate —
+  filling only the target's empty fields, unioning skills/tags, reassigning the source's
+  documents and notes to the target, then deleting the source. Requires `CANDIDATE:UPDATE` on
+  the target and `CANDIDATE:DELETE` on the source.
+- **Timeline**: `GET /api/candidates/[id]/timeline`, an extensible `{ items: [{ type, ... }]
+  }` read model — today fed only by notes, designed for future modules (Application,
+  Interview, Offer, Communication Hub) to add their own item types without a contract change.
+- **Document management**: upload (`POST .../documents`), download (`GET
+  .../documents/[documentId]`), and delete (`DELETE .../documents/[documentId]`) endpoints.
+- **Storage abstraction**: `StorageProvider` interface (`src/lib/storage/provider.ts`) with a
+  `LocalStorageProvider` implementation (development-only, filesystem-backed) selected via the
+  new `STORAGE_PROVIDER` env var (default `"local"`) and rooted at `LOCAL_STORAGE_ROOT`
+  (default `./storage/candidate-documents`, gitignored, created automatically on first upload).
+- **Bulk import**: a stateless two-phase pipeline — `POST /api/candidates/import/preview`
+  parses a CSV or XLSX file and validates every row without writing anything (`valid`/
+  `invalid`/`duplicate` per row, never fabricating `consentGivenAt`); `POST
+  /api/candidates/import/commit` re-validates and re-checks duplicates server-side before
+  creating, reporting any row skipped as a duplicate rather than aborting the whole commit.
+- **Export**: `GET /api/candidates/export` streams the caller's visible candidates as CSV or
+  XLSX, reusing `CANDIDATE:READ` and the list endpoint's scope filtering rather than a
+  separate export permission; always audit-logged (`candidate.exported`, format + row count).
+- `CandidateService` (`src/lib/services/candidates.ts`), `candidate-import.ts`, and
+  `candidate-export.ts`: all Candidate business logic and permission checks, behind thin API
+  routes — `GET/POST /api/candidates`, `GET/PATCH/DELETE /api/candidates/[id]`, `GET
+  /api/candidates/duplicates`, `POST /api/candidates/[id]/merge`, `POST/GET/DELETE
+  /api/candidates/[id]/documents[/...]`, `GET /api/candidates/[id]/timeline`, `POST
+  /api/candidates/[id]/notes`, `POST /api/candidates/import/preview`, `POST
+  /api/candidates/import/commit`, `GET /api/candidates/export`.
+- `CANDIDATE` registered as a `CUSTOM_FIELD_CAPABLE_ENTITY`, reusing the existing
+  `buildCustomFieldValueSchema` engine unchanged.
+- Eight new audit action strings: `candidate.created`, `candidate.updated`,
+  `candidate.deleted`, `candidate.merged`, `candidate.document_added`,
+  `candidate.document_deleted`, `candidate.note_added`, `candidate.exported`.
+- Seed data: Candidate permission grants for Recruiter only (`CREATE`/`READ` at `ALL` scope,
+  `UPDATE`/`DELETE` at `OWN` scope) — Hiring Manager and HR / Onboarding get no default
+  Candidate access, since the PRD does not name either role as needing it in this module's
+  scope.
+- `ExcelJS` added as a dependency for XLSX parsing (import) and generation (export).
+- Frontend: `/candidates` list with filters/search, `/candidates/new` and
+  `/candidates/[id]/edit` forms (with experience/education history editors and a live
+  duplicate check), `/candidates/[id]` detail page with documents, timeline, notes, and a merge
+  dialog, and an `/candidates/import` wizard; the Candidates nav item, shown only to viewers
+  with `CANDIDATE:READ`.
+- Automated tests: `CandidateService` (creation, duplicate detection, updates with version
+  conflicts, delete with document cleanup, merge, documents, timeline, notes, import,
+  OWN/TEAM/ALL scope enforcement — 54 tests) and the Candidate Zod validation schemas (30
+  tests), bringing the project's automated test count from 55 to 139.
+
+### Fixed
+
+Found during Phase 5 testing:
+
+- **Import preview missed intra-file duplicate phones.** `previewCandidateImport` only checked
+  duplicates against the database, so two rows in the *same* file sharing a phone both showed
+  `"valid"`, even though committing would only ever create the first. Fixed by tracking
+  phones already seen earlier in the same preview pass; a repeat is now marked `"invalid"`
+  naming the row it collides with.
+- **Malformed JSON request bodies returned `500` instead of `400`, app-wide.**
+  `await request.json()` throws a native `SyntaxError` on malformed JSON, which no error
+  branch caught. Fixed centrally in `withApiHandler`'s error mapping
+  (`src/lib/api/handlers.ts`) — a systemic fix benefiting every JSON-body route in the app
+  (Job, Role, User, Custom Field, Custom Object, Candidate), not just Candidate's.
+- **Malformed or absent multipart bodies returned `500` instead of `400`.**
+  `await request.formData()` throws a native `TypeError` on a non-multipart body. Fixed at the
+  two file-upload routes (`POST /api/candidates/[id]/documents`,
+  `POST /api/candidates/import/preview`) by converting the native error into a
+  `ValidationError` (`400`) — handled per-route rather than centrally, since `TypeError` is too
+  broad a native type to safely catch app-wide.
+
+---
+
 ## Module 2 — Requisition / Job Management (PRD §11.1)
 
 ### Added

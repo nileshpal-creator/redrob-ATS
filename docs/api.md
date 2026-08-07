@@ -16,8 +16,10 @@ All routes live under `src/app/api/**/route.ts` and are wrapped in `withApiHandl
 | `ForbiddenError` | `403` | `{ "error": "<message>" }` |
 | `NotFoundError` | `404` | `{ "error": "<message>" }` |
 | `ValidationError` | `400` | `{ "error": "<message>" }` |
+| `DuplicateCandidateError` (extends `ConflictError`) | `409` | `{ "error": "<message>", "existingCandidateId": "<id>" }` |
 | `ConflictError` | `409` | `{ "error": "<message>" }` |
 | `ZodError` (schema parse failure) | `400` | `{ "error": "Invalid input", "issues": [...] }` |
+| malformed JSON body (`SyntaxError`) | `400` | `{ "error": "Malformed request body." }` |
 | anything else | `500` | `{ "error": "Internal server error" }` (logged server-side) |
 
 A successful call returns the service function's return value as JSON with a `200` status
@@ -150,6 +152,247 @@ Move a job through the approval/status workflow. See
 There is intentionally **no `DELETE /api/jobs/[id]`**. Normal workflows move a job to
 `CANCELLED` via the status endpoint instead of deleting it (Phase 1 decision: no hard delete
 from the UI).
+
+## Candidates
+
+### `GET /api/candidates`
+
+List candidates, filtered and scoped to what the caller is permitted to see.
+
+- **Query params** (`candidateQuerySchema`): `q?` (case-insensitive match against name, phone,
+  or email), `skills?` (repeatable, matches any), `tags?` (repeatable, matches any), `location?`
+  (case-insensitive contains), `sourceId?`, `noticePeriodMaxDays?`, `experienceMinYears?`,
+  `experienceMaxYears?`, `compensationMaxExpected?`, `page?` (default `1`), `pageSize?` (default
+  `25`, max `100`).
+- **Response**: `{ candidates: Candidate[], total: number, page: number, pageSize: number }`.
+  Each `Candidate` includes `source`.
+- **Permissions**: `CANDIDATE:READ`. The effective scope (`ALL`/`TEAM`/`OWN`) is resolved via
+  `getEffectiveScope` and applied as a `WHERE createdById ...` filter — `OWN` restricts to
+  candidates the caller created, `TEAM` to the caller and their direct reports.
+- **Status codes**: `200` success · `400` invalid query params · `403` no `CANDIDATE:READ`
+  grant at any scope.
+
+### `POST /api/candidates`
+
+Create a candidate.
+
+- **Request body** (`candidateCreateSchema`):
+  ```json
+  {
+    "name": "string, 1-120 chars",
+    "phone": "string, 7-20 chars, matches /^[0-9+\\-() ]{7,20}$/ — the hard duplicate key",
+    "email": "string, optional, valid email, lowercased — a soft duplicate signal only",
+    "location": "string, optional, max 200 chars",
+    "currentCompensation": "number, optional, >= 0",
+    "expectedCompensation": "number, optional, >= 0",
+    "noticePeriodDays": "integer, optional, >= 0",
+    "earliestAvailability": "ISO date string, optional",
+    "totalExperienceYears": "number, optional, >= 0",
+    "skills": "string[], optional, deduplicated, max 50",
+    "tags": "string[], optional, deduplicated, max 50",
+    "experienceHistory": "[{ company, title, startDate, endDate?, description? }], optional, max 20",
+    "educationHistory": "[{ institution, degree, fieldOfStudy?, startYear?, endYear? }], optional, max 20",
+    "sourceId": "string, optional — must be an active CANDIDATE_SOURCE ControlledListValue id",
+    "consentGivenAt": "ISO date string — required, never inferred",
+    "customFields": "object, optional — validated against active CANDIDATE custom field definitions"
+  }
+  ```
+- **Response**: the created `Candidate` (full detail include: `source`, `createdBy`,
+  `documents`, `notes`), plus `possibleDuplicateOf: string | null` — a matching candidate's id
+  if `email` matched an existing candidate (informational only, never blocking).
+- **Permissions**: `CANDIDATE:CREATE`.
+- **Status codes**: `200` created · `400` schema validation failure (including a missing
+  `consentGivenAt`), or an invalid/inactive `sourceId` or custom field · `403` no
+  `CANDIDATE:CREATE` grant · `409` a candidate with this `phone` already exists — body is
+  `{ "error": "<message>", "existingCandidateId": "<id>" }`.
+
+### `GET /api/candidates/[id]`
+
+Fetch one candidate's full detail.
+
+- **Response**: the `Candidate` with `source`, `createdBy`, `documents` (with `documentType`,
+  `uploadedBy`), and `notes` (with `author`, newest first).
+- **Permissions**: `CANDIDATE:READ` at `ALL` scope, or at `OWN`/`TEAM` scope where the caller
+  (or their team) created the candidate.
+- **Status codes**: `200` success · `403` caller has no qualifying grant for this candidate ·
+  `404` no candidate with that id.
+
+### `PATCH /api/candidates/[id]`
+
+Partially update a candidate. Requires optimistic-locking `version`.
+
+- **Request body** (`candidateUpdateSchema`): `version` (required, integer) plus any subset of
+  `name`, `phone`, `email` (nullable), `location` (nullable), `currentCompensation` (nullable),
+  `expectedCompensation` (nullable), `noticePeriodDays` (nullable), `earliestAvailability`
+  (nullable), `totalExperienceYears` (nullable), `skills`, `tags`, `experienceHistory`,
+  `educationHistory`, `sourceId` (nullable), `customFields`. Note `consentGivenAt` is **not**
+  updatable through this endpoint — it is set once, at creation.
+- **Response**: the updated `Candidate` (full detail include), with `version` incremented by 1.
+- **Permissions**: same ownership rule as `GET /api/candidates/[id]`, but for
+  `CANDIDATE:UPDATE`.
+- **Status codes**: `200` success · `400` schema/reference validation failure · `403` no
+  qualifying grant · `404` candidate not found · `409` the supplied `version` no longer matches
+  the stored row, **or** the new `phone` already belongs to another candidate (body includes
+  `existingCandidateId` in the latter case).
+
+### `DELETE /api/candidates/[id]`
+
+Delete a candidate, including its uploaded documents.
+
+- **Response**: `{ "ok": true }`.
+- **Permissions**: same ownership rule as above, for `CANDIDATE:DELETE`.
+- **Status codes**: `200` success · `403` no qualifying grant · `404` candidate not found.
+
+Every stored document's file is deleted via the configured `StorageProvider` before the
+database row is removed — see
+[architecture.md#storageprovider-abstraction](architecture.md#storageprovider-abstraction).
+
+### `GET /api/candidates/duplicates`
+
+Pre-flight duplicate check for the create form and import wizard — never mutates anything.
+
+- **Query params** (`candidateDuplicateCheckSchema`): `phone` (required), `email?` (valid
+  email).
+- **Response**: `{ hardMatch: Candidate | null, softMatch: Candidate | null }` — `hardMatch` is
+  a phone match (would block creation); `softMatch` is an email match excluding whichever
+  candidate is already `hardMatch` (informational only).
+- **Permissions**: `CANDIDATE:READ` at any scope (checked via `getEffectiveScope`, not against
+  any one record — a plain `OWN`-scope grant, the common Recruiter case, still passes).
+- **Status codes**: `200` success · `400` missing/invalid `phone` or `email` · `403` no
+  `CANDIDATE:READ` grant at any scope.
+
+### `POST /api/candidates/[id]/merge`
+
+Merge another candidate (`sourceCandidateId`) into this one (the target, `[id]`). Fills only
+the target's empty fields from the source, unions `skills`/`tags`, reassigns the source's
+documents and notes to the target, then deletes the source. See
+[architecture.md#merge-workflow](architecture.md#merge-workflow).
+
+- **Request body** (`candidateMergeSchema`): `{ "sourceCandidateId": "string", "version":
+  "integer — the target's current version" }`.
+- **Response**: the updated target `Candidate` (full detail include), with its documents/notes
+  now including the source's.
+- **Permissions**: `CANDIDATE:UPDATE` on the target **and** `CANDIDATE:DELETE` on the source
+  (both checked against each record's own ownership).
+- **Status codes**: `200` success · `400` `sourceCandidateId` equals the target id, or the
+  source candidate doesn't exist · `403` missing either required grant · `404` target
+  candidate not found · `409` the target's `version` no longer matches the stored row.
+
+### `POST /api/candidates/[id]/documents`
+
+Upload a document (resume, cover letter, etc.) for a candidate.
+
+- **Request**: `multipart/form-data` with fields `file` (the file) and `documentTypeId` (an
+  active `DOCUMENT_TYPE` ControlledListValue id).
+- **Response**: the created `CandidateDocument`, with `documentType` and `uploadedBy`.
+- **Permissions**: `CANDIDATE:UPDATE` on the candidate.
+- **Status codes**: `200` created · `400` not a multipart body, missing `file`, invalid/
+  inactive `documentTypeId`, file over 10MB, or an unsupported MIME type (only `application/
+  pdf`, `application/msword`, `application/vnd.openxmlformats-officedocument.
+  wordprocessingml.document`, `image/png`, `image/jpeg` are accepted) · `403` no qualifying
+  grant · `404` candidate not found.
+
+### `GET /api/candidates/[id]/documents/[documentId]`
+
+Download a candidate's document.
+
+- **Response**: the raw file bytes, with `Content-Type` set to the stored `mimeType` and
+  `Content-Disposition: attachment; filename="<fileName>"`.
+- **Permissions**: `CANDIDATE:READ` on the candidate.
+- **Status codes**: `200` success (binary body, not JSON) · `403` no qualifying grant · `404`
+  candidate or document not found (or the document belongs to a different candidate).
+
+### `DELETE /api/candidates/[id]/documents/[documentId]`
+
+Delete a candidate's document (both the database row and the stored file).
+
+- **Response**: `{ "ok": true }`.
+- **Permissions**: `CANDIDATE:UPDATE` on the candidate.
+- **Status codes**: `200` success · `403` no qualifying grant · `404` candidate or document not
+  found.
+
+### `GET /api/candidates/[id]/timeline`
+
+Fetch a candidate's activity timeline.
+
+- **Response**: `{ items: [{ type: "note", id, body, author, createdAt }, ...] }`, newest
+  first. `type` is an extensible discriminant — see
+  [architecture.md#timeline-architecture](architecture.md#timeline-architecture); only `"note"`
+  exists as of Module 3.
+- **Permissions**: `CANDIDATE:READ` on the candidate.
+- **Status codes**: `200` success · `403` no qualifying grant · `404` candidate not found.
+
+### `POST /api/candidates/[id]/notes`
+
+Add a note to a candidate's timeline. Create-only — there is no update or delete endpoint for
+notes.
+
+- **Request body** (`candidateNoteSchema`): `{ "body": "string, 1-5000 chars" }`.
+- **Response**: the created `CandidateNote`, with `author`.
+- **Permissions**: `CANDIDATE:UPDATE` on the candidate.
+- **Status codes**: `200` created · `400` empty or over-length `body` · `403` no qualifying
+  grant · `404` candidate not found.
+
+### `POST /api/candidates/import/preview`
+
+Validate a bulk-import file without writing anything. See
+[architecture.md#import-pipeline](architecture.md#import-pipeline).
+
+- **Request**: `multipart/form-data` with field `file` — a `.csv` or `.xlsx` file with
+  case-insensitive columns: `name`, `phone`, `email`, `location`, `currentCompensation`,
+  `expectedCompensation`, `noticePeriodDays`, `earliestAvailability`, `totalExperienceYears`,
+  `skills` (`;`/`,`-separated), `tags` (same), `sourceId`, `consentGivenAt`.
+- **Response**: `{ rows: [...] }`, one entry per file row, 1-indexed by `row`:
+  ```json
+  { "row": 1, "data": { "...": "parsed candidate fields" }, "status": "valid" }
+  { "row": 2, "data": { "...": "..." }, "status": "invalid", "errors": ["Name is required"] }
+  { "row": 3, "data": { "...": "..." }, "status": "duplicate", "existingCandidateId": "<id>" }
+  ```
+  A row whose phone repeats an earlier `valid` row in the *same file* is marked `invalid` with
+  `errors: ["Duplicate phone with row <n> in this file."]`, since only the first would ever be
+  created on commit.
+- **Permissions**: `CANDIDATE:CREATE` (the permission the eventual commit will need).
+- **Status codes**: `200` success (even if every row is `invalid`/`duplicate` — this endpoint
+  never fails on bad *data*, only on a bad *request*) · `400` not a multipart body, or no `file`
+  field · `403` no `CANDIDATE:CREATE` grant.
+
+### `POST /api/candidates/import/commit`
+
+Create candidates from previously previewed (and corrected) rows. Re-validates and re-checks
+duplicates server-side — it never trusts the client-supplied preview.
+
+- **Request body** (`candidateImportCommitSchema`): `{ "rows": [<candidateCreateSchema
+  object>, ...], "min 1, max 500" }` — typically the `data` of each `valid` row returned by
+  the preview endpoint.
+- **Response**: `{ "created": [Candidate, ...], "skipped": [{ "row": number, "reason": string,
+  "existingCandidateId"?: string }, ...] }`. A row that fails only with a duplicate-phone
+  conflict is skipped and reported rather than aborting the whole commit; any other error
+  aborts the request.
+- **Permissions**: `CANDIDATE:CREATE`.
+- **Status codes**: `200` success (some rows may still be `skipped` — inspect the response body)
+  · `400` schema validation failure, more than 500 rows, or a non-duplicate error on any row ·
+  `403` no `CANDIDATE:CREATE` grant.
+
+### `GET /api/candidates/export`
+
+Export the caller's visible candidates as a file.
+
+- **Query params** (`candidateExportQuerySchema`): the same filters as `GET /api/candidates`
+  (minus `page`/`pageSize` — export always returns every matching row), plus `format?` (`csv`
+  default, or `xlsx`).
+- **Response**: the file's raw bytes, with `Content-Type` set to `text/csv` or
+  `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`, and
+  `Content-Disposition: attachment; filename="candidates-export.<format>"`. Columns: Name,
+  Phone, Email, Location, Current Compensation, Expected Compensation, Notice Period (days),
+  Earliest Availability, Experience (years), Skills, Tags, Source, Created At.
+- **Permissions**: `CANDIDATE:READ` — reuses the same permission and scope filtering as
+  `GET /api/candidates` rather than a separate export permission (see
+  [architecture.md#export-pipeline](architecture.md#export-pipeline)).
+- **Status codes**: `200` success (binary body, not JSON) · `400` invalid query params · `403`
+  no `CANDIDATE:READ` grant at any scope.
+
+Every export is audit-logged (`candidate.exported`) with the requested format and the row
+count actually returned — never a full row dump of exported data.
 
 ## Roles & Permissions
 

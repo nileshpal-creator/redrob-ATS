@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes the system as actually implemented through Module 2, Phase 5. It is
+This document describes the system as actually implemented through Module 3, Phase 6. It is
 kept in sync with the code — if something here and the code disagree, the code is correct and
 this file is stale.
 
@@ -122,6 +122,8 @@ src/
     (app)/                    Authenticated shell
       admin/                  Admin settings: users, roles, custom-fields, audit-log
       jobs/                   Job list, /jobs/new, /jobs/[id], /jobs/[id]/edit
+      candidates/             Candidate list, /candidates/new, /candidates/[id],
+                               /candidates/[id]/edit, /candidates/import
     api/                      Route handlers — thin, one per src/lib/services export
     login/                    Sign-in page (outside the authenticated shell)
   components/
@@ -132,6 +134,8 @@ src/
     authz/                    PermissionGate — UI-level hiding, not enforcement
     custom-fields/            Generic custom-field form section, reused by any entity form
     jobs/                     Job form, recruiter picker, tag input, status action controls
+    candidates/               Candidate form, duplicate check, documents, timeline, notes,
+                               merge dialog, import wizard, experience/education editors
   config/
     nav.ts                    Nav item definitions, gated per-item by permission
   lib/
@@ -140,6 +144,7 @@ src/
     audit/                    actions.ts (audit action registry) + log.ts (recordAudit)
     custom-fields/            dynamic Zod schema builder for admin-defined fields
     jobs/                     status-machine.ts — the Job status transition table
+    storage/                  StorageProvider interface + LocalStorageProvider + factory
     services/                 permission-checked business logic; one file per resource
     validations/              Zod schemas, shared by API routes and client forms
     api/                      withApiHandler — the one place mapping domain errors to HTTP codes
@@ -151,6 +156,7 @@ prisma/
   schema.prisma               Data model
   seed.ts                     Default roles, controlled lists, permission grants, admin user
   migrations/                 One directory per migration, applied in order
+storage/                      Local candidate-document storage root (gitignored, dev-only)
 tests/
   services/, validations/     Vitest suites against the dedicated ats_test database
   setup/global-setup.ts       Runs `prisma migrate deploy` against ats_test before the suite
@@ -255,3 +261,186 @@ rather than diffing individual add/remove operations.
 The [folder structure tree](#folder-structure) under Module 1 already reflects Module 2's
 additions (`src/lib/jobs/`, `src/components/jobs/`, `src/app/(app)/jobs/`,
 `src/app/api/jobs/**`).
+
+## Module 3 — Candidate Database (PRD §11.2)
+
+Module 3 adds one core entity, `Candidate`, plus two supporting tables
+(`CandidateDocument`, `CandidateNote`), and — like Module 2 — layers on the existing Module 1
+primitives:
+
+- **RBAC**: reuses `(resource, action, scope)` with `resource = "CANDIDATE"`. No new
+  `PermissionAction` was needed.
+- **Customization Engine**: `CANDIDATE` is added to `CUSTOM_FIELD_CAPABLE_ENTITIES` — no new
+  engine code, same `buildCustomFieldValueSchema` path Job already used.
+- **Controlled Lists**: `CANDIDATE_SOURCE` and `DOCUMENT_TYPE` are `ControlledListValue` rows
+  (both seeded with starter values since Module 1, reused here for the first time), the same
+  primitive Module 2 used for department/location.
+- **Audit log**: Candidate actions log through `recordAudit`/`AuditLog`, with eight new action
+  strings (`candidate.created`, `candidate.updated`, `candidate.deleted`, `candidate.merged`,
+  `candidate.document_added`, `candidate.document_deleted`, `candidate.note_added`,
+  `candidate.exported`).
+
+New pieces specific to Module 3:
+
+- `src/lib/services/candidates.ts` — all core Candidate business logic: scope-filtered listing,
+  detail reads, duplicate pre-checks, create, update (optimistic locking), delete, merge,
+  document upload/download/delete, timeline reads, and note creation.
+- `src/lib/services/candidate-import.ts` — the bulk-import preview/commit pipeline.
+- `src/lib/services/candidate-export.ts` — the CSV/XLSX export pipeline.
+- `src/lib/storage/` — the `StorageProvider` abstraction (below).
+
+### Candidate module architecture
+
+Candidate follows the same layering the [overall architecture](#overall-architecture) diagram
+describes for every module: thin route handlers under `src/app/api/candidates/**` parse a Zod
+schema and call exactly one function in `src/lib/services/candidates.ts`,
+`candidate-import.ts`, or `candidate-export.ts`; every permission check and all business logic
+lives in those service files, never in a route handler or a client component. The one deviation
+from a plain JSON in/out contract is the two file-serving routes (document download, export) —
+they build their own `NextResponse` with a binary body and `Content-Disposition` header, and
+`withApiHandler` passes a returned `NextResponse` through unwrapped instead of re-wrapping it as
+JSON (see `src/lib/api/handlers.ts`).
+
+### StorageProvider abstraction
+
+Candidate document attachments are written through a narrow interface
+(`src/lib/storage/provider.ts`):
+
+```ts
+interface StorageProvider {
+  save(input: { candidateId; fileName; mimeType; buffer }): Promise<{ storageKey: string }>;
+  read(storageKey: string): Promise<Buffer>;
+  delete(storageKey: string): Promise<void>;
+}
+```
+
+`src/lib/services/candidates.ts` only ever calls `getStorageProvider()`
+(`src/lib/storage/index.ts`) and talks to the returned `StorageProvider` — it never touches a
+filesystem or bucket API directly, so a future S3/blob-storage backend is a new file
+implementing this interface, not a change to any service code. Today the factory always
+returns `LocalStorageProvider` (`src/lib/storage/local-provider.ts`), a **development-only**
+implementation backed by the local filesystem: `STORAGE_PROVIDER` (default `"local"`) selects
+the implementation and throws if set to anything else, since none is implemented yet;
+`LOCAL_STORAGE_ROOT` (default `./storage/candidate-documents`) is the directory it writes
+under, created automatically (`mkdir -p` semantics) on first upload and gitignored. Each saved
+file's `storageKey` is `<candidateId>/<uuid>-<sanitized-filename>` — the filename is stripped to
+safe characters before being used as part of a filesystem path.
+
+### Candidate lifecycle
+
+`Candidate` has no status/workflow field (unlike `Job`) — the PRD's §9 candidate data model
+describes a flat record, not a stateful pipeline (that belongs to the future Application entity,
+§11.4). The lifecycle is: create (with a required consent timestamp) → read/update any number of
+times (optimistic-locked) → optionally merge into another candidate (which deletes it) or
+delete outright. `deleteCandidate` also deletes every one of the candidate's stored documents
+via `StorageProvider.delete()` before removing the database row, so document deletion is never
+silently orphaned.
+
+### Duplicate detection
+
+Two independent signals, with different consequences, per the PRD's business rules (§11.2,
+BR1/BR2):
+
+- **Phone (hard)**: `Candidate.phone` is a database-level `@unique` column. `createCandidate`
+  and `updateCandidate` (on a phone change) both pre-check for an existing row with that phone
+  and throw `DuplicateCandidateError` (extends `ConflictError` → `409`) carrying the existing
+  candidate's id, so a create/update onto a phone in use is always blocked in favor of
+  merge/link — it can never silently create a second record for the same phone.
+- **Email (soft)**: never blocks. `createCandidate` looks up a `findFirst` match on email and
+  returns it as `possibleDuplicateOf` on the create response — a UI hint, not an enforcement
+  point.
+- **Pre-flight check**: `checkCandidateDuplicates` (`GET /api/candidates/duplicates`) runs both
+  checks without creating anything, for the create form and import wizard to call ahead of
+  submission. It uses `getEffectiveScope`, not `requirePermission` — this isn't checked against
+  any one record's ownership, so a caller with a plain `OWN`-scope `READ` grant (the common
+  Recruiter case) must still pass, exactly like `listCandidates`.
+
+### Merge workflow
+
+`mergeCandidates(context, targetId, { sourceCandidateId, version })`:
+
+1. Rejects merging a candidate into itself, then loads both records.
+2. Requires `CANDIDATE:UPDATE` on the target and `CANDIDATE:DELETE` on the source — merging
+   mutates the target and permanently removes the source, so both permissions are checked.
+3. Fills only the target's **empty** fields from the source (`fillIfEmpty`) — a populated target
+   field is never overwritten by the source's value.
+4. Unions `skills` and `tags` (deduplicated) rather than replacing either array.
+5. Merges `customFields`, with the target's values taking precedence on key collisions.
+6. In one transaction: applies the target update (optimistic-locked on `version`), reassigns
+   every `CandidateDocument` and `CandidateNote` row from the source to the target, then deletes
+   the source candidate.
+
+The update uses `Prisma.CandidateUncheckedUpdateManyInput`, not the more common
+`CandidateUpdateManyMutationInput` — the latter's generated type excludes FK scalar fields like
+`sourceId`, which a fill-from-source merge needs to be able to set directly.
+
+### Timeline architecture
+
+`getCandidateTimeline` returns `{ items: [...] }`, where every item has at minimum a `type`
+discriminant. Only one type exists today — `{ type: "note", id, body, author, createdAt }`,
+sourced entirely from `CandidateNote` — but the contract is deliberately extensible: future
+modules (Application, Interview, Offer, Communication Hub) can add their own item `type`s to
+the same feed without changing this contract or requiring timeline consumers to change. Notes
+themselves are **create-only** — §9 describes this category ("Task, Note, Activity") as an
+immutable audit log, so there is no note update or delete endpoint by design.
+
+### Import pipeline
+
+A **stateless two-phase** design (Phase 2 decision): nothing is written until the caller
+explicitly commits.
+
+1. `previewCandidateImport` (`POST /api/candidates/import/preview`) parses an uploaded CSV
+   (hand-rolled parser, handling quoted/escaped cells) or XLSX (via `ExcelJS`) file, maps
+   case-insensitive columns onto `candidateCreateSchema`, and validates every row without
+   writing anything. Each row comes back `valid`, `invalid` (with the Zod error messages), or
+   `duplicate` (an existing candidate's id, from the hard phone-uniqueness check). It also
+   tracks phones already seen earlier in the *same* file (`seenPhones`), so two rows sharing a
+   phone are never both marked `valid` — the second is marked `invalid` naming the row it
+   collides with, since committing would otherwise only ever create the first of the two.
+   `consentGivenAt` is never fabricated: a row whose file doesn't supply a real value is left
+   undefined, which `candidateCreateSchema` then rejects — no candidate's consent may be invented
+   on their behalf (§13).
+2. `commitCandidateImport` (`POST /api/candidates/import/commit`) takes the corrected rows back
+   (typically the `valid` ones after the caller fixes any `invalid` rows) and re-validates and
+   re-checks duplicates from scratch via `createCandidate` for each row — it never trusts the
+   previewed result, since time may have passed and another request may have created a
+   conflicting record. Rows that fail with `DuplicateCandidateError` are reported as `skipped`
+   rather than aborting the whole commit; every other error still propagates.
+
+### Export pipeline
+
+`exportCandidates` (`GET /api/candidates/export`) reuses `CANDIDATE:READ` and the same
+scope-filtered `WHERE` clause as `listCandidates` (via the shared `buildCandidateScopedWhere`
+helper) rather than introducing a separate `EXPORT` permission action — a Phase 3 design
+decision: export is a different *shape* of read, not a different permission. It streams either
+CSV (hand-rolled, with proper quote-escaping) or XLSX (via `ExcelJS`) and is **always
+audit-logged** (`candidate.exported`, with the format and row count — not a full row dump).
+
+### Candidate ownership model
+
+Unlike `Job`, §9's Candidate has no "assigned recruiter" field — that concept only exists once
+the Application entity exists, in a future module. So `OWN`/`TEAM` permission scope resolves
+against `Candidate.createdById` (whoever created the record) instead, via the same
+`assertCandidateAccess`/`buildScopedWhere` pattern Job uses against `primaryRecruiterId`. This
+was an explicit Phase 1 decision to keep ownership resolution uniform across modules — one
+"ownership anchor" column, always resolved the same way by `can()`/`getEffectiveScope()` —
+rather than special-casing Candidate's lack of an assignee field.
+
+### RBAC on Candidate
+
+No changes to the RBAC engine itself — Candidate is a pure consumer of the Module 1 primitives
+described under [RBAC](#rbac) above, with `resource = "CANDIDATE"`. The default seed grants only
+Recruiter `CREATE`/`READ` at `ALL` scope and `UPDATE`/`DELETE` at `OWN` scope; Hiring Manager and
+HR / Onboarding get **no** default Candidate grants (deliberately — the PRD does not name either
+role as needing direct Candidate access in Module 3's scope, unlike Job's approval workflow).
+
+### Custom fields integration
+
+`CANDIDATE` is added to `CUSTOM_FIELD_CAPABLE_ENTITIES` (`src/lib/entity-registry.ts`) and reuses
+`buildCustomFieldValueSchema` unchanged — the same generic dynamic-Zod-schema engine Job already
+exercises. No Customization Engine code was written for Module 3; registering the entity string
+was the only change needed.
+
+The [folder structure tree](#folder-structure) under Module 1 already reflects Module 3's
+additions (`src/lib/storage/`, `src/components/candidates/`, `src/app/(app)/candidates/`,
+`src/app/api/candidates/**`, and the gitignored `/storage` directory).

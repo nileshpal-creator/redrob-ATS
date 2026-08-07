@@ -29,6 +29,12 @@ Job ──N:1── Job                  (parentJobId → "JobParent", self-rela
 Job ──1:N── JobRecruiterAssignment ──N:1── User
 Job ──1:N── JobStatusChange ──N:1── User (actorId)
                              ──N:1── ControlledListValue (reasonId, optional)
+
+Candidate ──N:1── ControlledListValue  (sourceId → "CandidateSource", optional)
+Candidate ──N:1── User                 (createdById → "CandidateCreatedBy")
+Candidate ──1:N── CandidateDocument ──N:1── ControlledListValue (documentTypeId → "CandidateDocumentType")
+                                     ──N:1── User (uploadedById → "CandidateDocumentUploadedBy")
+Candidate ──1:N── CandidateNote ──N:1── User (authorId → "CandidateNoteAuthor")
 ```
 
 ## Module 1 tables
@@ -108,6 +114,93 @@ introduced new user-facing functionality beyond it.
 | `actorId` | `String` | FK → `User` |
 | `createdAt` | `DateTime` | |
 
+## New Module 3 tables
+
+| Table | Purpose |
+| --- | --- |
+| `Candidate` | One candidate record. See columns below. |
+| `CandidateDocument` | One uploaded file (resume, cover letter, etc.) attached to a candidate. |
+| `CandidateNote` | One immutable timeline note on a candidate. |
+
+### `Candidate` columns
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | `String` (cuid) | |
+| `name` | `String` | |
+| `phone` | `String` | **`@unique`** — the PRD's stated hard duplicate key (§9, BR1); creation/update onto an in-use phone is rejected with `409` |
+| `email` | `String?` | optional; a soft duplicate signal only (BR2) — never blocks, surfaced as `possibleDuplicateOf` on create |
+| `location` | `String?` | free text, not a Controlled List (unlike Job's `locationId`) |
+| `currentCompensation` / `expectedCompensation` | `Decimal? @db.Decimal(12, 2)` | optional |
+| `noticePeriodDays` | `Int?` | optional |
+| `earliestAvailability` | `DateTime?` | optional |
+| `totalExperienceYears` | `Decimal? @db.Decimal(4, 1)` | optional; distinct field from `experienceHistory` — §9 lists total experience as its own attribute, separate from the detailed work-history entries §11.2 calls "professional data" |
+| `skills` / `tags` | `String[]` | default `[]`; used by the list/export filters (`hasSome`) |
+| `experienceHistory` | `Json?` | array of `{ company, title, startDate, endDate?, description? }`; shape validated by `candidateCreateSchema`, not DB-enforced — same pattern as `Job.customFields` |
+| `educationHistory` | `Json?` | array of `{ institution, degree, fieldOfStudy?, startYear?, endYear? }`; same validation pattern |
+| `consentGivenAt` | `DateTime` | **required, not nullable** — GDPR-aligned consent capture (§13, §9); there is no "create without consent" path, and import never fabricates this value |
+| `customFields` | `Json?` | validated against active `CustomFieldDefinition` rows for `entityType = "CANDIDATE"` |
+| `sourceId` | `String?` | FK → `ControlledListValue`, must belong to the `CANDIDATE_SOURCE` list and be active |
+| `createdById` | `String` | FK → `User`; the ownership anchor for every permission check on this candidate (§9 has no "assigned recruiter" field the way Job does — see [architecture.md](architecture.md#candidate-ownership-model)) |
+| `version` | `Int` | default `0`; internal optimistic-locking counter, incremented on every update/merge |
+| `createdAt` / `updatedAt` | `DateTime` | |
+
+### `CandidateDocument` columns
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | `String` (cuid) | |
+| `candidateId` | `String` | FK → `Candidate`, **`onDelete: Cascade`** |
+| `documentTypeId` | `String` | FK → `ControlledListValue`, must belong to the `DOCUMENT_TYPE` list and be active |
+| `fileName` | `String` | original uploaded filename, as given by the client |
+| `mimeType` | `String` | must be one of `application/pdf`, `application/msword`, `application/vnd.openxmlformats-officedocument.wordprocessingml.document`, `image/png`, `image/jpeg` |
+| `fileSize` | `Int` | bytes; enforced ≤ 10MB at the service layer |
+| `storageKey` | `String` | opaque key the configured `StorageProvider` uses to locate the file — never a raw filesystem path exposed to clients |
+| `uploadedById` | `String` | FK → `User` |
+| `uploadedAt` | `DateTime` | default `now()` |
+
+Indexed on `candidateId` (`@@index`) for the detail page's document list.
+
+### `CandidateNote` columns
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | `String` (cuid) | |
+| `candidateId` | `String` | FK → `Candidate`, **`onDelete: Cascade`** |
+| `body` | `String` | 1-5,000 chars, validated at the service layer |
+| `authorId` | `String` | FK → `User` |
+| `createdAt` | `DateTime` | default `now()` |
+
+Indexed on `(candidateId, createdAt)` (`@@index`) for the timeline's ordered read. Create-only:
+there is no update or delete on this model or its API — §9 describes this category ("Task,
+Note, Activity") as an immutable audit log.
+
+### Cascade behavior
+
+`CandidateDocument.candidateId` and `CandidateNote.candidateId` both use `onDelete: Cascade`,
+so deleting a `Candidate` row also deletes its documents and notes at the database level. In
+practice `deleteCandidate` deletes each document's file via `StorageProvider.delete()` **before**
+deleting the candidate row, so a stored file is never orphaned by the cascade running first —
+the cascade is a data-integrity backstop, not the primary cleanup path for file storage.
+`mergeCandidates` reassigns (`updateMany candidateId`) rather than deletes documents/notes when
+folding a source candidate into a target, so the cascade never fires during a normal merge —
+only the source `Candidate` row itself is deleted, after its children have already been moved.
+
+### Optimistic locking
+
+`Candidate.version` follows the same pattern as `Job.version`: every update or merge is a single
+`prisma.candidate.updateMany({ where: { id, version: <caller's version> }, data: { ...,
+version: { increment: 1 } } })`. If another request already advanced the version, `updateMany`
+matches zero rows and the service throws `ConflictError` → `409`. Purely an internal
+implementation detail with no user-facing "revision history" surface.
+
+### Controlled list relationships
+
+- **`Candidate.sourceId` → `CANDIDATE_SOURCE`**: optional; validated against `ControlledList.key
+  = "CANDIDATE_SOURCE"` and `isActive: true` at the service layer (`assertControlledListValue`),
+  the same pattern Job uses for `departmentId`/`locationId`.
+- **`CandidateDocument.documentTypeId` → `DOCUMENT_TYPE`**: required; same validation pattern.
+
 ## Relationships
 
 - **User self-relation (`UserManager`)**: `User.managerId → User.id`. Drives
@@ -125,6 +218,17 @@ introduced new user-facing functionality beyond it.
   primary) also appears in `JobRecruiterAssignment`.
 - **JobStatusChange → ControlledListValue** (optional): only populated for transitions whose
   `reasonRequired` is `true` (`HOLD`, `CLOSE`, `CANCEL`).
+- **Candidate → ControlledListValue** (named relation `CandidateSource`, optional): `sourceId`
+  is validated against `ControlledList.key = "CANDIDATE_SOURCE"` at the service layer, the same
+  pattern as Job's department/location FKs.
+- **Candidate → User** (named relation `CandidateCreatedBy`): the ownership anchor for OWN/TEAM
+  permission scope — see [Candidate ownership model](architecture.md#candidate-ownership-model).
+  Unlike Job, there is no separate "assigned recruiter" join table for Candidate.
+- **CandidateDocument → Candidate** (`onDelete: Cascade`), **→ ControlledListValue** (named
+  relation `CandidateDocumentType`, required, validated against `DOCUMENT_TYPE`), **→ User**
+  (named relation `CandidateDocumentUploadedBy`).
+- **CandidateNote → Candidate** (`onDelete: Cascade`), **→ User** (named relation
+  `CandidateNoteAuthor`).
 
 ## Enums
 
@@ -155,13 +259,17 @@ via the admin UI.
 | Key | Seeded starter values | Consumed by |
 | --- | --- | --- |
 | `REJECTION_REASON` | *(none yet — reserved for the future Pipeline/Application module, §11.4)* | — |
-| `CANDIDATE_SOURCE` | *(none yet — reserved for the future Candidate module, §11.2)* | — |
-| `DOCUMENT_TYPE` | *(none yet — reserved for the future Candidate module, §11.2)* | — |
+| `CANDIDATE_SOURCE` | `Referral`, `LinkedIn`, `Indeed`, `Naukri`, `Career Site`, `Agency`, `Direct Application` | `Candidate.sourceId` |
+| `DOCUMENT_TYPE` | `Resume`, `Cover Letter`, `Offer Letter`, `Signed Agreement`, `ID Proof`, `Other` | `CandidateDocument.documentTypeId` |
 | `LOCATION` | `Remote`, `Head Office` | `Job.locationId` |
 | `DEPARTMENT` | `Engineering`, `Sales`, `Marketing`, `Finance`, `Human Resources`, `Operations` | `Job.departmentId` |
 | `JOB_HOLD_REASON` | *(none seeded — add via the admin UI before using HOLD)* | `JobStatusChange.reasonId` on `HOLD` |
 | `JOB_CLOSE_REASON` | *(none seeded)* | `JobStatusChange.reasonId` on `CLOSE` |
 | `JOB_CANCEL_REASON` | *(none seeded)* | `JobStatusChange.reasonId` on `CANCEL` |
+
+`CANDIDATE_SOURCE` and `DOCUMENT_TYPE` have carried these starter values since Module 1's seed
+script — they went unconsumed until Module 3 added the `Candidate` and `CandidateDocument`
+tables that reference them.
 
 Values are read via `GET /api/controlled-lists/[key]` (ungated — see
 [api.md](api.md#get-apicontrolled-listskey)), which returns only active values, sorted by
@@ -185,6 +293,8 @@ Applied in order:
    PRD-alignment refinement: drops `code`, `sequenceNumber`, `hiringManagerId`, `salaryMin`,
    `salaryMax`, `salaryVisible`, and `currency` from `Job`, none of which are named in the
    PRD's §11.1 requirements.
+6. `20260806174139_module3_candidate_database` — adds `Candidate`, `CandidateDocument`,
+   `CandidateNote`.
 
 Run `npx prisma migrate deploy` to apply all migrations without generating a new one (CI,
 production, and the test database's global setup); `npx prisma migrate dev` during local

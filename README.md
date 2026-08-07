@@ -11,7 +11,7 @@ for the data model, [`docs/api.md`](docs/api.md) for the full API reference, and
 
 Next.js 15 (App Router) · TypeScript · TailwindCSS v4 · shadcn/ui (hand-vendored components,
 see "Note on shadcn/ui" below) · Prisma 7 (`@prisma/adapter-pg`) · PostgreSQL · Auth.js v5
-(Credentials + JWT) · React Hook Form · Zod · Vitest
+(Credentials + JWT) · React Hook Form · Zod · ExcelJS (candidate import/export) · Vitest
 
 ## Current features
 
@@ -60,6 +60,67 @@ see "Note on shadcn/ui" below) · Prisma 7 (`@prisma/adapter-pg`) · PostgreSQL 
   (`CUSTOM_FIELD_CAPABLE_ENTITIES`), so admins can add custom fields to job requisitions with no
   code change.
 
+### Module 3 — Candidate Database (PRD §11.2)
+
+- **Candidate records**: name, phone (unique, the PRD's stated hard key), email, location,
+  compensation (current/expected), notice period, earliest availability, total experience,
+  skills/tags, structured experience and education history, a Controlled List source, custom
+  fields, and a required GDPR-aligned consent timestamp (`consentGivenAt`) captured at creation.
+- **Duplicate detection**: phone is a hard database-level unique constraint — creating or
+  updating a candidate onto a phone already in use is rejected (`409`) with the existing
+  candidate's id, so the caller can offer merge/link instead of a blind create. Email is a
+  secondary signal only — it never blocks; a match is surfaced as `possibleDuplicateOf` on the
+  create response. `GET /api/candidates/duplicates` runs the same check ahead of time for the
+  create/import forms.
+- **Merge**: `POST /api/candidates/[id]/merge` folds a duplicate into the target candidate —
+  filling only the target's empty fields from the source (never overwriting populated data),
+  unioning skills/tags, reassigning the source's documents and notes to the target, then
+  deleting the source.
+- **Document storage**: upload/download/delete resumes, cover letters, and other files per
+  candidate (PDF, Word, PNG, JPEG, up to 10MB), behind a swappable `StorageProvider` abstraction
+  — see "Document storage" below.
+- **Timeline & notes**: a per-candidate activity feed (`GET /api/candidates/[id]/timeline`),
+  fed today by create-only Notes (`POST /api/candidates/[id]/notes`) and built with an
+  extensible `{ type, ... }` item contract so future modules (Application, Interview, Offer,
+  Communication Hub) can add their own event types without changing the contract.
+- **Bulk import**: a stateless two-phase preview/commit flow
+  (`POST /api/candidates/import/preview`, `POST /api/candidates/import/commit`) for CSV and
+  XLSX files — see "Import" below.
+- **Export**: `GET /api/candidates/export` streams the caller's visible candidates as CSV or
+  XLSX, reusing the same `CANDIDATE:READ` permission and scope filtering as the list endpoint
+  (no separate export permission), always audit-logged.
+- **Ownership-aware permissions**: §9's Candidate has no "assigned recruiter" concept (unlike
+  Job), so `OWN`/`TEAM` scope resolves against `Candidate.createdById` — whoever created the
+  record — instead.
+- **Custom fields on Candidates**: `CANDIDATE` is registered in the Customization Engine
+  (`CUSTOM_FIELD_CAPABLE_ENTITIES`), so admins can add custom fields to candidate records with
+  no code change.
+
+#### Import
+
+`POST /api/candidates/import/preview` accepts a CSV or XLSX file (case-insensitive columns:
+`name`, `phone`, `email`, `location`, `currentCompensation`, `expectedCompensation`,
+`noticePeriodDays`, `earliestAvailability`, `totalExperienceYears`, `skills`, `tags`,
+`sourceId`, `consentGivenAt`) and validates every row without writing anything, marking each
+`valid`, `invalid` (with reasons), or `duplicate` (an existing candidate's phone). It never
+fabricates `consentGivenAt` — a row with no real consent timestamp fails validation, since no
+candidate's consent may be invented on their behalf. It also catches two rows in the *same*
+file sharing a phone, marking the second `invalid` rather than letting both preview as `valid`.
+`POST /api/candidates/import/commit` takes the corrected `valid` rows back and re-validates and
+re-checks duplicates server-side — it never trusts the client-side preview — creating what it
+can and reporting anything skipped (e.g. a duplicate created by a concurrent request).
+
+#### Document storage
+
+Candidate documents are written through a `StorageProvider` interface
+(`src/lib/storage/provider.ts`) so business logic never talks to a filesystem or bucket
+directly. The only implementation today, `LocalStorageProvider`, is **development-only**: it
+writes to a local directory (default `./storage/candidate-documents`, configurable via
+`LOCAL_STORAGE_ROOT`), which is created automatically on first upload and is gitignored — no
+manual setup step is required. `STORAGE_PROVIDER` selects the implementation (only `"local"` is
+implemented; any other value throws at first use) so a future S3/blob-storage provider is a new
+file behind the same interface, not a change to any service code.
+
 ## Local development
 
 ```bash
@@ -82,6 +143,8 @@ from your `.env`.
 | `DATABASE_URL` | Prisma connection string | `postgresql://ats:ats@localhost:5432/ats?schema=public` |
 | `AUTH_SECRET` | Auth.js JWT signing secret — generate with `npx auth secret`, never commit a real value | *(empty — required)* |
 | `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` | Bootstraps the one System Administrator account when `prisma/seed.ts` runs | `admin@example.com` / `ChangeMe123!` |
+| `STORAGE_PROVIDER` | Selects the candidate-document `StorageProvider` implementation. Only `"local"` is implemented today. | `local` (code-level default; not set in `.env.example`) |
+| `LOCAL_STORAGE_ROOT` | Filesystem root `LocalStorageProvider` writes candidate documents under. Created automatically on first upload; gitignored — never committed. | `./storage/candidate-documents` (code-level default; not set in `.env.example`) |
 
 **Default admin credentials are for local development only.** `prisma/seed.ts` warns and skips
 creating the admin account if these are unset — never leave the defaults in a shared or
@@ -121,9 +184,11 @@ npx prisma db seed
   Interviewer, Recruiting Manager, HR / Onboarding.
 - Eight Controlled Lists: `REJECTION_REASON`, `CANDIDATE_SOURCE`, `DOCUMENT_TYPE`, `LOCATION`,
   `DEPARTMENT`, `JOB_HOLD_REASON`, `JOB_CLOSE_REASON`, `JOB_CANCEL_REASON` — with starter values
-  for `LOCATION` and `DEPARTMENT`.
-- Job permission grants for Recruiter, Hiring Manager, and Recruiting Manager — see
-  `prisma/seed.ts` for the exact `(resource, action, scope)` grants, and
+  for `CANDIDATE_SOURCE`, `DOCUMENT_TYPE`, `LOCATION`, and `DEPARTMENT`.
+- Job permission grants for Recruiter, Hiring Manager, and Recruiting Manager, and Candidate
+  permission grants for Recruiter only (`CREATE`/`READ` at `ALL`, `UPDATE`/`DELETE` at `OWN` —
+  Hiring Manager and HR / Onboarding get no default Candidate access) — see `prisma/seed.ts` for
+  the exact `(resource, action, scope)` grants, and
   [`docs/architecture.md`](docs/architecture.md#rbac) for how grants are structured and
   enforced.
 - A directory-read grant (`USER:READ` at `ALL` scope) for the same three roles, so a Recruiter
