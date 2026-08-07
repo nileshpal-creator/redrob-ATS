@@ -99,6 +99,77 @@ All `M`-priority requirements from §11.4 are implemented:
   this module — they belong to the PRD's Interview Management (§11.5) and Offer Management
   (§11.6) modules, not yet started. ⏸ deferred
 
+### Module 5 — Interview Management (PRD §11.5)
+
+All `M`-priority requirements from §11.5 are implemented:
+
+- Schedule an interview against an Application — round name, mode (onsite/virtual/phone),
+  location/link, date/time, duration, and one or more assigned panelists. ✅
+- Reschedule/edit details, cancel with a required Controlled List reason, and mark complete. ✅
+- Structured feedback per interviewer (recommendation, 1–5 rating, comments), one editable
+  scorecard per interviewer per interview — no separate "submitted" lock. ✅
+- Two independent access paths: whoever scheduled it (OWN/TEAM scope, like Job/Application), and
+  each assigned panelist (their own interviews, to read and file feedback). ✅
+- The candidate timeline (Modules 3–4) gains `interview_scheduled`/`interview_completed`/
+  `interview_cancelled`/`interview_feedback_submitted` item types via the same extensible
+  contract. ✅
+- Custom fields on Interviews via the existing Customization Engine. ✅
+- Interview does not itself decide the pipeline outcome — advancing/rejecting a candidate based
+  on feedback still goes through Application's existing transition endpoint (Module 4), by
+  design (§8: Interview schedules and records, it doesn't decide). ✅ (scoped)
+
+### Module 6 — Offer Management (PRD §11.6)
+
+All `M`-priority requirements from §11.6 are implemented:
+
+- Draft an offer against an Application (compensation, expected joining date, notes); at most
+  one non-terminal offer per application, enforced by a partial unique index, not just a
+  service-layer check. ✅
+- A fixed table-driven status machine — `DRAFT → PENDING_APPROVAL → APPROVED → EXTENDED →
+  ACCEPTED/DECLINED`, plus `REVOKE` from any non-terminal status — mirroring Job's own approval
+  workflow shape. ✅
+- Approval step with its own append-only `OfferApproval` history (one row per submit/resubmit
+  cycle), decided by whoever holds `OFFER:APPROVE` (Hiring Manager, ALL scope), independent of
+  who drafted the offer. ✅
+- Decline/Revoke require a Controlled List reason (`OFFER_OUTCOME_REASON`). ✅
+- Accepting an offer increments the parent Job's `positionsFilledCount` — the first module to
+  actually drive that counter (see Module 2's note above and
+  [Known limitations](#known-limitations)). ✅
+- "HR / Onboarding" (seeded in Module 1, unused until this module) gets its first real grant:
+  read-only visibility into offers. ✅
+- The candidate timeline gains `offer_created`/`offer_approved`/`offer_approval_rejected`/
+  `offer_extended`/`offer_accepted`/`offer_declined`/`offer_revoked` item types. ✅
+- Custom fields on Offers via the existing Customization Engine. ✅
+
+### Module 7 — Onboarding Handoff / HRIS Integration (PRD §11.7)
+
+All `M`-priority requirements from §11.7 are implemented:
+
+- An Offer reaching `ACCEPTED` (Module 6) automatically creates a `HandoffRecord` — no separate
+  create endpoint; a handoff only ever exists as a side effect of an accepted offer. ✅
+- The handoff package is a frozen snapshot taken at creation — candidate profile, final offer
+  terms, and the candidate's full document manifest — captured once and never re-read live, the
+  same "render once, store the result" choice as `ApplicationEmailLog`. ✅
+- An `HrisProvider` abstraction (`src/lib/hris/`) behind which delivery happens; today only a
+  `StructuredExportProvider` is implemented (§12: real HRIS API integrations are out of scope
+  for v1) — mirrors `StorageProvider`'s "interface + one real implementation + env-driven
+  factory" shape exactly. `API_PUSH` is a recognized `HandoffDeliveryMethod` value reserved for
+  a future real connector, never written today. ✅ (scoped)
+- Delivery is attempted immediately on creation and logged as an append-only
+  `HandoffDeliveryAttempt` row; a failed attempt lands the handoff in `EXCEPTION` with the
+  failure reason, and it can be retried — retry re-pushes the *original frozen payload*, it does
+  not re-snapshot the candidate. ✅
+- HR/Onboarding acknowledges a delivered package as `ACCEPTED` or reports an `EXCEPTION` with a
+  reason — reusing the existing global `APPROVE` permission action rather than adding a new one,
+  the same "gatekeeper decision" semantics Job/Offer's `APPROVE` already models. ✅
+- Once acknowledged `ACCEPTED`, the linked Application becomes read-only: it can no longer be
+  rejected/withdrawn/re-staged, and can't collect a new interview or offer — enforced by one
+  shared helper (`assertApplicationNotHandedOff`) called from all three affected services, not a
+  new field on Application itself. ✅
+- The candidate timeline gains `handoff_initiated`/`handoff_delivered`/`handoff_accepted`/
+  `handoff_exception` item types. ✅
+- Custom fields on Handoffs via the existing Customization Engine. ✅
+
 ## Completed phases (Module 2)
 
 1. **Requirements Analysis** — approved decisions: simple approval workflow (not the full
@@ -205,6 +276,48 @@ All `M`-priority requirements from §11.4 are implemented:
    Lists have carried real starter values since Module 1, not "none seeded" as previously and
    incorrectly stated).
 
+## Completed phases (Module 7)
+
+1. **Investigation** — read the Offer module end-to-end (schema, status machine, service,
+   routes, seed) as the closest precedent, plus the candidate timeline, audit system, entity
+   registry, `StorageProvider` (the abstraction `HrisProvider` is modeled on), and the existing
+   `outcome !== "ACTIVE"` guards in `applications.ts`/`interviews.ts`/`offers.ts` that
+   `assertApplicationNotHandedOff` extends.
+2. **Technical Design** — `HandoffRecord`/`HandoffDeliveryAttempt` schema and migration; an
+   `HrisProvider` interface with one `StructuredExportProvider` implementation and an
+   env-driven factory (`src/lib/hris/`); acknowledgement reusing the global `APPROVE`
+   permission action rather than a new one; no table-driven state machine (Handoff's shape is
+   closer to Interview's independent actions than Job/Offer's sequential workflow); read-only
+   archive behavior sourced from `HandoffRecord.status` alone, no new `Application` field.
+3. **Backend Implementation** — schema and migration, validations (`handoff.ts`),
+   `HandoffService` (`buildHandoffPayload`, `createHandoffForOffer`,
+   `assertApplicationNotHandedOff`, `getHandoff`/`listHandoffs`/`retryHandoff`/
+   `acknowledgeHandoff`), thin API routes, registry/seed updates (Handoff role permissions —
+   Recruiter/Recruiting Manager get retry authority over their own initiated handoffs,
+   HR/Onboarding gets read + acknowledge), and cross-module wiring (`transitionOffer`'s ACCEPT
+   branch triggers the handoff; `transitionApplication`, `scheduleInterview`, and `createOffer`
+   each call the new read-only guard).
+4. **Frontend Implementation** — an Onboarding Handoff card on the Application detail page
+   (status, delivery-attempt history, retry and confirm-receipt/report-exception actions, all
+   permission-gated) and an archive banner + hidden create-affordances once a handoff is
+   `ACCEPTED`; candidate-timeline item types for the four handoff milestones.
+5. **Testing** — 34 new automated tests (service layer: creation via both the successful and
+   the deterministic-failure delivery path, access control, retry/acknowledge state gating,
+   optimistic-locking conflicts, two concurrency tests, cascade-delete, cross-module read-only
+   enforcement, candidate-timeline integration; validation-schema edge cases), plus a targeted
+   fix to an existing Module 6 test whose cleanup predates Module 7's new `HandoffRecord` foreign
+   key. Full regression suite: 338 tests passing project-wide.
+6. **Browser verification** — a real Chromium walkthrough of both paths: candidate-with-email
+   (offer accept → `DELIVERED` handoff → confirm receipt → `ACCEPTED` → archive banner → offer
+   creation blocked → all four timeline items rendered) and candidate-without-email (offer
+   accept → `EXCEPTION` handoff with the delivery-failure reason shown → retry re-attempts the
+   frozen payload and correctly stays `EXCEPTION`).
+7. **Self code review** — found and fixed one genuine gap: `HandoffRecord` was missing an index
+   on `initiatedById` (the column `listHandoffs`' OWN/TEAM scope filters on), unlike
+   `Offer.createdById`'s equivalent index — added via its own migration, plus one additional
+   concurrency test (concurrent `acknowledgeHandoff` calls) for parity with the existing
+   concurrent-retry coverage.
+
 ## Remaining modules
 
 Per the PRD's §11 module breakdown and §14 roadmap, not yet started:
@@ -212,9 +325,6 @@ Per the PRD's §11 module breakdown and §14 roadmap, not yet started:
 | PRD § | Module | Roadmap phase |
 | --- | --- | --- |
 | 11.3 | Sourcing & Job Board Distribution | V1 — Core Parity |
-| 11.5 | Interview Management | V1 — Core Parity |
-| 11.6 | Offer Management | V1 — Core Parity |
-| 11.7 | Onboarding Handoff / HRIS Integration | V1 — Core Parity |
 | 11.10 | Communication Hub (email logging, template-driven messaging) | V1 — Core Parity |
 | 11.12 | Reporting & Analytics, incl. custom dashboard/report builder (§10.5) | V1 — Core Parity |
 | 10.2 | Workflow & Automation Builder (visual, no-code, per-job/pipeline) | *implicit, underlies later V1 modules' configurability* |
@@ -226,10 +336,10 @@ Per the PRD's §11 module breakdown and §14 roadmap, not yet started:
 
 ## Known limitations
 
-- **`positionsFilledCount` does not yet auto-update.** The column exists and defaults to `0` as
-  the PRD requires, but no code writes to it — not even Module 4's `createApplication`, since an
-  *application* existing doesn't mean a position is *filled*. That requires the future Offer
-  module (§11.6), which is what actually fills a position.
+- **`positionsFilledCount` now auto-updates, as of Module 6.** The column existed from Module 2
+  onward, defaulted to `0`; Module 6's `transitionOffer` increments it by one on every `ACCEPT`
+  transition (the offer, not the application, is what actually fills a position). No aging-
+  indicator UI still exists (see below).
 - **No aging-indicator UI.** `createdAt` is stored and available, but the job list/detail UI
   does not yet render a derived "age" affordance.
 - **The role-permission matrix UI does not yet reflect per-resource applicable actions.**
@@ -284,10 +394,12 @@ Per the PRD's §11 module breakdown and §14 roadmap, not yet started:
 - **No Reporting & Analytics module yet (§11.12).** There is no dashboard, report builder, or
   pipeline-conversion/funnel reporting surface anywhere in the app; the audit log and the
   Applications list/board are the only ways to inspect pipeline activity today.
-- **No Interview Management module yet (§11.5).** Applications can reach an `Interview` pipeline
-  stage (one of the four default stage names), but nothing schedules interviews, collects
-  structured interviewer feedback, or links a scheduled event to an `Application` — reaching that
-  stage is just a label until the Interview module exists.
+- **The `HrisProvider` abstraction has exactly one implementation.** `src/lib/hris/` mirrors
+  `StorageProvider`'s shape (interface + one real implementation + env-driven factory,
+  `HRIS_PROVIDER` defaulting to `"structured_export"`), but no real HRIS API connector exists
+  yet — `HandoffDeliveryMethod.API_PUSH` is a recognized value nothing ever writes. Same
+  intentional "infrastructure exists, only a later integration effort writes the other value"
+  pattern as `EmailLogStatus`/`positionsFilledCount` before Module 6.
 - **Deactivating a `PipelineStage` doesn't check for active applications at the service layer.**
   `PUT /api/jobs/[id]/pipeline-stages` will happily deactivate a stage that still has `ACTIVE`
   applications sitting in it — their `stageId` is left pointing at the now-inactive stage

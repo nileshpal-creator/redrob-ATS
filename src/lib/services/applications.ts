@@ -9,6 +9,7 @@ import { recordAudit } from "@/lib/audit/log";
 import { AUDIT_ACTIONS } from "@/lib/audit/actions";
 import { buildCustomFieldValueSchema } from "@/lib/custom-fields/dynamic-schema";
 import { renderTemplate } from "@/lib/templates/render";
+import { assertApplicationNotHandedOff } from "@/lib/services/handoffs";
 import type {
   ApplicationBulkEmailInput,
   ApplicationBulkTransitionInput,
@@ -302,6 +303,7 @@ export async function transitionApplication(
       `This application is already ${existing.outcome.toLowerCase()} and cannot be transitioned further.`,
     );
   }
+  await assertApplicationNotHandedOff(id);
 
   let data: Prisma.ApplicationUncheckedUpdateManyInput;
   let eventType: ApplicationEventType;

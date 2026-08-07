@@ -1,5 +1,56 @@
 # Changelog
 
+## Module 7 — Onboarding Handoff / HRIS Integration (PRD §11.7)
+
+### Added
+
+- `HandoffRecord` entity: created only as a side effect of an `Offer` reaching `ACCEPTED`
+  (`transitionOffer`'s ACCEPT branch) — no dedicated create endpoint. Holds a frozen snapshot of
+  the candidate profile, final offer terms, and the candidate's full document manifest,
+  captured once and never re-read live afterward (same "render/capture once" choice as
+  `ApplicationEmailLog.subject/body`).
+- `HandoffDeliveryAttempt`: an append-only row per delivery attempt (the automatic attempt on
+  creation, plus every retry), never overwritten — the same history-preserving shape as
+  `OfferApproval`/`JobStatusChange`.
+- `src/lib/hris/`: an `HrisProvider` delivery abstraction mirroring `StorageProvider`'s shape —
+  interface, one real implementation (`StructuredExportProvider`), and an env-driven factory
+  (`HRIS_PROVIDER`, defaulting to `"structured_export"`). `HandoffDeliveryMethod.API_PUSH` is a
+  recognized value reserved for a future real HRIS connector, never written today.
+- **Retry**: `POST /api/handoffs/[id]/retry` re-pushes the handoff's frozen payload — it does
+  not re-snapshot the candidate/offer — and is only accepted while the handoff is in
+  `EXCEPTION`.
+- **Acknowledgement**: `POST /api/handoffs/[id]/acknowledge` lets HR/Onboarding confirm a
+  `DELIVERED` package as `ACCEPTED` or report an `EXCEPTION` with a reason, reusing the existing
+  global `APPROVE` permission action rather than adding a new one.
+- **Read-only archive**: `assertApplicationNotHandedOff` (exported from the new
+  `src/lib/services/handoffs.ts`) is called from `transitionApplication`, `scheduleInterview`,
+  and `createOffer` — once a handoff reaches `ACCEPTED`, the linked `Application` can no longer
+  be rejected/withdrawn/re-staged and can't collect a new interview or offer. No new field on
+  `Application` itself; `HandoffRecord.status` is the sole source of truth.
+- **Timeline integration**: the candidate timeline gains `handoff_initiated`/
+  `handoff_delivered`/`handoff_accepted`/`handoff_exception` item types, derived from
+  `HandoffRecord`/`HandoffDeliveryAttempt` rows joined through `Application`, the same pattern
+  Offer/Interview use.
+- **Frontend**: an Onboarding Handoff card on the Application detail page (status badge,
+  delivery-attempt history, retry and confirm-receipt/report-exception actions, all
+  permission-gated) and an archive banner with hidden create-affordances once a handoff is
+  `ACCEPTED`.
+- Role permission seed: Recruiter/Recruiting Manager get retry authority over handoffs they
+  initiated (by accepting the triggering offer); HR/Onboarding gets read access plus the
+  acknowledgement (`APPROVE`) grant.
+- Automated test coverage: 34 new tests (service layer — creation via both the successful and
+  the deterministic missing-candidate-email failure path, access control, retry/acknowledge
+  state gating, optimistic-locking conflicts, two concurrency tests, cascade-delete, cross-module
+  read-only enforcement, candidate-timeline integration; validation-schema edge cases).
+
+### Fixed
+
+- `HandoffRecord` was missing an index on `initiatedById` (the column `listHandoffs`'s OWN/TEAM
+  scope filters on) — added, matching `Offer.createdById`'s equivalent index.
+- `tests/services/offers.service.test.ts`'s "walks DRAFT -> ... -> ACCEPTED" test and its
+  `afterAll` cleanup predated this module's `HandoffRecord` foreign key on `Offer` — both now
+  clean up the handoff row before deleting the offer it points at.
+
 ## Module 4 — Applications / Candidate Pipeline (PRD §11.4)
 
 ### Added

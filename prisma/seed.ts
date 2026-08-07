@@ -202,6 +202,26 @@ const OFFER_ROLE_PERMISSIONS = [
   { role: "HR / Onboarding", action: "READ", scope: "ALL" },
 ] as const;
 
+// Module 7 — Onboarding Handoff (§11.7). No CREATE grant for anyone —
+// HandoffRecord is only ever created as a side effect of Offer's ACCEPT
+// transition (see resource-actions.ts). Ownership resolves against
+// HandoffRecord.initiatedById (whoever accepted the offer), same
+// single-column anchor as Offer.createdById, so Recruiter/Recruiting
+// Manager's UPDATE grant (retrying a failed delivery) mirrors their Offer
+// grant exactly. "HR / Onboarding" is finally where the PRD's description
+// pays off: it gets APPROVE, since acknowledging a handoff (DELIVERED ->
+// ACCEPTED/EXCEPTION) is the gatekeeper decision this module reuses APPROVE
+// for — see the HandoffRecord model comment in schema.prisma.
+const HANDOFF_ROLE_PERMISSIONS = [
+  { role: "Recruiter", action: "READ", scope: "ALL" },
+  { role: "Recruiter", action: "UPDATE", scope: "OWN" },
+  { role: "Hiring Manager", action: "READ", scope: "ALL" },
+  { role: "Recruiting Manager", action: "READ", scope: "TEAM" },
+  { role: "Recruiting Manager", action: "UPDATE", scope: "TEAM" },
+  { role: "HR / Onboarding", action: "READ", scope: "ALL" },
+  { role: "HR / Onboarding", action: "APPROVE", scope: "ALL" },
+] as const;
+
 async function main() {
   const organization = await prisma.organization.upsert({
     where: { id: "default" },
@@ -303,6 +323,16 @@ async function main() {
     });
   }
   console.log(`Seeded ${OFFER_ROLE_PERMISSIONS.length} default Offer role permissions`);
+
+  for (const grant of HANDOFF_ROLE_PERMISSIONS) {
+    const role = await prisma.role.findUniqueOrThrow({ where: { name: grant.role } });
+    await prisma.rolePermission.upsert({
+      where: { roleId_resource_action: { roleId: role.id, resource: "HANDOFF", action: grant.action } },
+      update: { scope: grant.scope },
+      create: { roleId: role.id, resource: "HANDOFF", action: grant.action, scope: grant.scope },
+    });
+  }
+  console.log(`Seeded ${HANDOFF_ROLE_PERMISSIONS.length} default Handoff role permissions`);
 
   const adminEmail = process.env.SEED_ADMIN_EMAIL;
   const adminPassword = process.env.SEED_ADMIN_PASSWORD;

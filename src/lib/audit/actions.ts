@@ -49,6 +49,8 @@ export const AUDIT_ACTIONS = {
   OFFER_CREATED: "offer.created",
   OFFER_UPDATED: "offer.updated",
   OFFER_STATUS_CHANGED: "offer.status_changed",
+  HANDOFF_INITIATED: "handoff.initiated",
+  HANDOFF_STATUS_CHANGED: "handoff.status_changed",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];

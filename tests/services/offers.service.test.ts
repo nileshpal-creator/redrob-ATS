@@ -236,6 +236,11 @@ describe("OfferService", () => {
   });
 
   afterAll(async () => {
+    // Module 7: an ACCEPTed offer (see "walks DRAFT -> ... -> ACCEPTED"
+    // below) gets a HandoffRecord, and HandoffRecord.offerId has no cascade
+    // — it must be cleared before the Offer row it points at.
+    await prisma.handoffDeliveryAttempt.deleteMany({});
+    await prisma.handoffRecord.deleteMany({});
     await prisma.offerApproval.deleteMany({});
     await prisma.offer.deleteMany({});
     await prisma.applicationEvent.deleteMany({});
@@ -477,6 +482,14 @@ describe("OfferService", () => {
       // optimistic-lock conflicts for anyone editing the Job concurrently.
       expect(jobAfter.version).toBe(jobBefore.version);
 
+      // §11.7: ACCEPT also triggers Module 7's onboarding handoff — see
+      // tests/services/handoffs.service.test.ts for full coverage of that
+      // behavior; this just confirms the trigger fires.
+      const handoff = await prisma.handoffRecord.findUnique({ where: { offerId: offer.id } });
+      expect(handoff).not.toBeNull();
+
+      await prisma.handoffDeliveryAttempt.deleteMany({ where: { handoffRecordId: handoff!.id } });
+      await prisma.handoffRecord.delete({ where: { id: handoff!.id } });
       await prisma.offer.delete({ where: { id: offer.id } });
     });
 

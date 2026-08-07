@@ -14,6 +14,10 @@ const DEFAULT_ACTIONS: PermissionAction[] = ["CREATE", "READ", "UPDATE", "DELETE
 const RESOURCE_ACTIONS: Partial<Record<string, PermissionAction[]>> = {
   [ENTITY.JOB]: ["CREATE", "READ", "UPDATE", "DELETE", "APPROVE"],
   [ENTITY.OFFER]: ["CREATE", "READ", "UPDATE", "DELETE", "APPROVE"],
+  // No CREATE: a HandoffRecord is only ever created as a side effect of
+  // Offer's ACCEPT transition, never through a dedicated endpoint. No
+  // DELETE: same "no hard delete" precedent as every other lifecycle entity.
+  [ENTITY.HANDOFF]: ["READ", "UPDATE", "APPROVE"],
 };
 
 export function getApplicableActions(resource: string): PermissionAction[] {

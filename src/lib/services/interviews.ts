@@ -17,6 +17,7 @@ import type {
   InterviewQuery,
   InterviewUpdateInput,
 } from "@/lib/validations/interview";
+import { assertApplicationNotHandedOff } from "@/lib/services/handoffs";
 
 const userSummarySelect = { id: true, name: true, email: true } as const;
 
@@ -187,6 +188,7 @@ export async function scheduleInterview(context: SessionContext, input: Intervie
       `This application is already ${application.outcome.toLowerCase()} and cannot have interviews scheduled.`,
     );
   }
+  await assertApplicationNotHandedOff(input.applicationId);
 
   const panelistIds = await assertActiveUsers(input.panelistUserIds, "Interviewer");
   const customFields = await validateInterviewCustomFields(input.customFields);

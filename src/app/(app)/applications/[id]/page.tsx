@@ -6,6 +6,7 @@ import { ENTITY } from "@/lib/entity-registry";
 import { getApplication } from "@/lib/services/applications";
 import { listInterviews } from "@/lib/services/interviews";
 import { listOffers } from "@/lib/services/offers";
+import { listHandoffs } from "@/lib/services/handoffs";
 import { getControlledListValues } from "@/lib/services/controlled-lists";
 import { NotFoundError } from "@/lib/errors";
 import { ApplicationDetailClient } from "@/components/applications/application-detail-client";
@@ -30,6 +31,7 @@ export default async function ApplicationDetailPage({ params }: { params: Promis
     canCreateOffer,
     interviewsResult,
     offersResult,
+    handoffsResult,
   ] = await Promise.all([
     can(context, ENTITY.APPLICATION, "UPDATE", { ownerId: application.ownerId }),
     getControlledListValues("REJECTION_REASON"),
@@ -45,6 +47,10 @@ export default async function ApplicationDetailPage({ params }: { params: Promis
       if (error instanceof ForbiddenError) return null;
       throw error;
     }),
+    listHandoffs(context, { applicationId: id, page: 1, pageSize: 50 }).catch((error) => {
+      if (error instanceof ForbiddenError) return null;
+      throw error;
+    }),
   ]);
 
   // Compute each manage-scope once rather than calling can() per row — every
@@ -52,7 +58,11 @@ export default async function ApplicationDetailPage({ params }: { params: Promis
   const interviewManageScope = interviewsResult ? await getEffectiveScope(context, ENTITY.INTERVIEW, "UPDATE") : null;
   const offerManageScope = offersResult ? await getEffectiveScope(context, ENTITY.OFFER, "UPDATE") : null;
   const offerApproveScope = offersResult ? await getEffectiveScope(context, ENTITY.OFFER, "APPROVE") : null;
-  const needsTeamIds = [interviewManageScope, offerManageScope, offerApproveScope].includes("TEAM");
+  const handoffRetryScope = handoffsResult ? await getEffectiveScope(context, ENTITY.HANDOFF, "UPDATE") : null;
+  const handoffAcknowledgeScope = handoffsResult ? await getEffectiveScope(context, ENTITY.HANDOFF, "APPROVE") : null;
+  const needsTeamIds = [interviewManageScope, offerManageScope, offerApproveScope, handoffRetryScope, handoffAcknowledgeScope].includes(
+    "TEAM",
+  );
   const teamIds = needsTeamIds ? await getTeamMemberIds(context.userId) : null;
   const currentUserId = context.userId;
 
@@ -79,6 +89,20 @@ export default async function ApplicationDetailPage({ params }: { params: Promis
       }))
     : [];
 
+  const handoffs = handoffsResult
+    ? handoffsResult.handoffs.map((handoff) => ({
+        ...handoff,
+        canRetry: scopeIncludes(handoffRetryScope, handoff.initiatedById),
+        canAcknowledge: scopeIncludes(handoffAcknowledgeScope, handoff.initiatedById),
+      }))
+    : [];
+
+  // Sole source of truth for the read-only/archive banner — mirrors
+  // assertApplicationNotHandedOff's server-side check exactly (see
+  // src/lib/services/handoffs.ts) so the UI never shows action buttons the
+  // API would reject anyway.
+  const isArchivedByHandoff = handoffs.some((handoff) => handoff.status === "ACCEPTED");
+
   return (
     <ApplicationDetailClient
       application={JSON.parse(JSON.stringify(application))}
@@ -90,6 +114,8 @@ export default async function ApplicationDetailPage({ params }: { params: Promis
       offers={JSON.parse(JSON.stringify(offers))}
       canCreateOffer={canCreateOffer}
       offerOutcomeReasons={offerOutcomeReasons.values}
+      handoffs={JSON.parse(JSON.stringify(handoffs))}
+      isArchivedByHandoff={isArchivedByHandoff}
       currentUserId={context.userId}
     />
   );

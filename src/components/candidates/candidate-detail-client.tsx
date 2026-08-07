@@ -121,6 +121,24 @@ type TimelineItem =
       jobTitle: string;
       reason: string | null;
       createdAt: string;
+    }
+  | {
+      type: "handoff_initiated";
+      id: string;
+      jobId: string;
+      jobTitle: string;
+      deliveryMethod: "API_PUSH" | "STRUCTURED_EXPORT";
+      initiatedBy: Person;
+      createdAt: string;
+    }
+  | {
+      type: "handoff_delivered" | "handoff_accepted" | "handoff_exception";
+      id: string;
+      jobId: string;
+      jobTitle: string;
+      actor: Person;
+      reason: string | null;
+      createdAt: string;
     };
 
 export function CandidateDetailClient({

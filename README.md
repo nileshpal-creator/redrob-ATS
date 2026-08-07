@@ -166,6 +166,33 @@ file behind the same interface, not a change to any service code.
 - **Audit logging**: every create, update, stage change, rejection, withdrawal, bulk action,
   and pipeline-stage edit is logged to the shared audit log.
 
+### Module 7 — Onboarding Handoff / HRIS Integration (PRD §11.7)
+
+- **Automatic creation**: a `HandoffRecord` is created only as a side effect of an `Offer`
+  reaching `Accepted` — there is no dedicated create endpoint.
+- **Frozen package snapshot**: the candidate profile, final offer terms, and the candidate's
+  full document manifest are captured once, at creation, into `HandoffRecord.payload` — never
+  re-read live afterward, so what HR received stays stable even if the candidate record changes.
+- **HRIS delivery abstraction**: `src/lib/hris/` mirrors the candidate-document
+  `StorageProvider` shape — an interface, one real implementation
+  (`StructuredExportProvider`), and an env-driven factory (`HRIS_PROVIDER`). No real HRIS API
+  connector exists yet; `API_PUSH` is a recognized delivery method nothing writes today.
+- **Delivery, retry, and exceptions**: delivery is attempted immediately on creation and logged
+  as an append-only `HandoffDeliveryAttempt` row. A failed attempt lands the handoff in
+  `Exception` with the failure reason; retrying re-pushes the *original frozen payload*, not a
+  fresh read of the candidate.
+- **Acknowledgement**: HR/Onboarding confirms a delivered package as `Accepted` or reports an
+  `Exception` with a reason — reusing the existing `APPROVE` permission action rather than
+  adding a new one.
+- **Read-only archive**: once acknowledged `Accepted`, the linked Application can no longer be
+  rejected/withdrawn/re-staged and can't collect a new interview or offer — enforced by one
+  shared helper called from Application, Interview, and Offer's own services, not a new field
+  on `Application`.
+- **Timeline integration**: the candidate timeline gains `handoff_initiated`/
+  `handoff_delivered`/`handoff_accepted`/`handoff_exception` item types.
+- **Audit logging**: handoff creation and every status change (delivery outcome, retry,
+  acknowledgement) is logged to the shared audit log.
+
 ## Local development
 
 ```bash
@@ -191,6 +218,7 @@ from your `.env`.
 | `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` | Bootstraps the one System Administrator account when `prisma/seed.ts` runs | `admin@example.com` / `ChangeMe123!` |
 | `STORAGE_PROVIDER` | Selects the candidate-document `StorageProvider` implementation. Only `"local"` is implemented today. | `local` (code-level default; not set in `.env.example`) |
 | `LOCAL_STORAGE_ROOT` | Filesystem root `LocalStorageProvider` writes candidate documents under. Created automatically on first upload; gitignored — never committed. | `./storage/candidate-documents` (code-level default; not set in `.env.example`) |
+| `HRIS_PROVIDER` | Selects the onboarding-handoff `HrisProvider` implementation. Only `"structured_export"` is implemented today. | `structured_export` (code-level default; not set in `.env.example`) |
 
 **Default admin credentials are for local development only.** `prisma/seed.ts` warns and skips
 creating the admin account if these are unset — never leave the defaults in a shared or

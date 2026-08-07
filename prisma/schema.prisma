@@ -66,6 +66,10 @@ model User {
   offersCreated    Offer[]         @relation("OfferCreatedBy")
   offerApprovalsAs OfferApproval[] @relation("OfferApprovalApprover")
 
+  handoffsInitiated    HandoffRecord[]          @relation("HandoffInitiatedBy")
+  handoffsAcknowledged HandoffRecord[]          @relation("HandoffAcknowledgedBy")
+  handoffAttemptsActed HandoffDeliveryAttempt[]
+
   @@index([isActive])
   @@index([managerId])
 }
@@ -674,10 +678,11 @@ model Application {
   createdBy     User                 @relation("ApplicationCreatedBy", fields: [createdById], references: [id])
   outcomeReason ControlledListValue? @relation("ApplicationOutcomeReason", fields: [outcomeReasonId], references: [id])
 
-  events     ApplicationEvent[]
-  emailLogs  ApplicationEmailLog[]
-  interviews Interview[]
-  offers     Offer[]
+  events         ApplicationEvent[]
+  emailLogs      ApplicationEmailLog[]
+  interviews     Interview[]
+  offers         Offer[]
+  handoffRecords HandoffRecord[]
 
   @@index([candidateId])
   @@index([jobId])
@@ -939,8 +944,9 @@ model Offer {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  application Application     @relation(fields: [applicationId], references: [id])
-  approvals   OfferApproval[]
+  application   Application     @relation(fields: [applicationId], references: [id])
+  approvals     OfferApproval[]
+  handoffRecord HandoffRecord?
 
   @@index([applicationId])
   @@index([createdById])
@@ -971,4 +977,125 @@ model OfferApproval {
   offer Offer @relation(fields: [offerId], references: [id], onDelete: Cascade)
 
   @@index([offerId])
+}
+
+enum HandoffStatus {
+  PENDING
+  DELIVERED
+  ACCEPTED
+  EXCEPTION
+}
+
+// Only STRUCTURED_EXPORT is ever written today — no real HRIS integration
+// exists yet (§12), so src/lib/hris/ has exactly one provider, the same
+// "field exists, only a later module writes the other value" pattern as
+// EmailLogStatus / Job.positionsFilledCount. API_PUSH is here so a future
+// real HRIS connector is a new provider implementation and a value this
+// column already accepts, not a schema change.
+enum HandoffDeliveryMethod {
+  API_PUSH
+  STRUCTURED_EXPORT
+}
+
+// Triggered by Offer's ACCEPT transition (src/lib/services/offers.ts), one
+// handoff per accepted Offer — @unique on offerId rather than a modeled
+// "at most one active handoff per application" rule like Offer's own,
+// because Offer's status machine already guarantees at most one Offer per
+// Application ever reaches ACCEPTED (every other terminal/non-terminal
+// status is excluded from triggering a handoff at all).
+//
+// `payload` is a snapshot assembled once at creation (candidate profile +
+// final offer terms + the candidate's document list), not a live join —
+// same "render/capture once, store the result" choice as
+// ApplicationEmailLog.subject/body, so what HR received stays stable even
+// if the candidate record changes afterward. See buildHandoffPayload in
+// src/lib/services/handoffs.ts.
+//
+// Lifecycle is a handful of named actions (retryHandoff, acknowledgeHandoff),
+// not a table-driven state machine like Job/Offer — Handoff's shape (attempt
+// delivery, retry on failure, get acknowledged) is closer to Interview's
+// independent actions than to a long sequential workflow, so it doesn't
+// warrant that abstraction (Phase 1 decision: don't over-engineer this).
+//
+// Acknowledgement reuses the existing global APPROVE permission action
+// (HR/Onboarding is granted HANDOFF:APPROVE in prisma/seed.ts): confirming
+// a handoff was received correctly is the same kind of gatekeeper decision
+// Job/Offer's APPROVE already models, so this needed no new
+// PermissionAction value.
+//
+// Once ACCEPTED, the linked Application becomes read-only: assertApplicationNotHandedOff
+// (exported from src/lib/services/handoffs.ts) is called from
+// transitionApplication, scheduleInterview, and createOffer so a hired-and-
+// handed-off candidate's application can't be rejected/withdrawn/re-staged
+// and can't collect a new interview or offer — no new field on Application
+// itself, this table is the sole source of truth for "is this archived."
+model HandoffRecord {
+  id String @id @default(cuid())
+
+  offerId       String @unique
+  applicationId String
+
+  status         HandoffStatus         @default(PENDING)
+  deliveryMethod HandoffDeliveryMethod
+
+  // Assembled once at creation — see the model comment above.
+  payload Json
+
+  // Set by a successful push/export attempt or left null for STRUCTURED_EXPORT,
+  // which has no external system to hand back an id from.
+  externalReferenceId String?
+  // Free text, not a Controlled List — a delivery failure or an HR-flagged
+  // data issue is too open-ended for a fixed vocabulary, same reasoning as
+  // InterviewFeedback.comments / OfferApproval.comments.
+  exceptionReason     String?
+
+  customFields Json?
+
+  // Who accepted the Offer that triggered this handoff — the ownership
+  // anchor for OWN/TEAM scope, mirroring Offer.createdById.
+  initiatedById String
+  initiatedBy   User   @relation("HandoffInitiatedBy", fields: [initiatedById], references: [id])
+
+  acknowledgedById String?
+  acknowledgedBy   User?     @relation("HandoffAcknowledgedBy", fields: [acknowledgedById], references: [id])
+  acknowledgedAt   DateTime?
+
+  // Optimistic locking — same pattern as Offer.version / Interview.version.
+  version Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  offer       Offer                    @relation(fields: [offerId], references: [id])
+  application Application              @relation(fields: [applicationId], references: [id])
+  attempts    HandoffDeliveryAttempt[]
+
+  @@index([applicationId])
+  @@index([status])
+  // OWN/TEAM-scope listHandoffs filters on initiatedById — same "index the
+  // ownership column list queries scope against" precedent as
+  // Offer.@@index([createdById]).
+  @@index([initiatedById])
+}
+
+// One row per delivery attempt (the initial automatic attempt on ACCEPT,
+// plus every manual retry) — an append-only history, same shape as
+// OfferApproval: never overwritten, so a flaky first attempt's error
+// stays visible even after a later retry succeeds.
+model HandoffDeliveryAttempt {
+  id              String @id @default(cuid())
+  handoffRecordId String
+
+  deliveryMethod      HandoffDeliveryMethod
+  succeeded           Boolean
+  externalReferenceId String?
+  errorMessage        String?
+
+  attemptedById String
+  attemptedBy   User     @relation(fields: [attemptedById], references: [id])
+  attemptedAt   DateTime @default(now())
+
+  handoffRecord HandoffRecord @relation(fields: [handoffRecordId], references: [id], onDelete: Cascade)
+
+  @@index([handoffRecordId])
 }

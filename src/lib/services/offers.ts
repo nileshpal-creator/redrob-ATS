@@ -10,6 +10,7 @@ import { AUDIT_ACTIONS } from "@/lib/audit/actions";
 import { buildCustomFieldValueSchema } from "@/lib/custom-fields/dynamic-schema";
 import { findTransition } from "@/lib/offers/status-machine";
 import type { OfferCreateInput, OfferQuery, OfferTransitionInput, OfferUpdateInput } from "@/lib/validations/offer";
+import { assertApplicationNotHandedOff, createHandoffForOffer } from "@/lib/services/handoffs";
 
 const NON_TERMINAL_STATUSES: OfferStatus[] = ["DRAFT", "PENDING_APPROVAL", "APPROVED", "EXTENDED"];
 
@@ -135,6 +136,7 @@ export async function createOffer(context: SessionContext, input: OfferCreateInp
       `This application is already ${application.outcome.toLowerCase()} and cannot have offers created.`,
     );
   }
+  await assertApplicationNotHandedOff(input.applicationId);
 
   const activeOffer = await prisma.offer.findFirst({
     where: { applicationId: input.applicationId, status: { in: NON_TERMINAL_STATUSES } },
@@ -243,7 +245,9 @@ export async function transitionOffer(context: SessionContext, id: string, input
     await assertControlledListValue(transition.reasonListKey!, input.reasonId, "reason");
   }
 
-  const updated = await prisma.$transaction(async (tx) => {
+  const { offer: updated, handoff } = await prisma.$transaction(async (tx) => {
+    let handoffResult: { id: string; status: string } | null = null;
+
     const result = await tx.offer.updateMany({
       where: { id, version: input.version },
       data: {
@@ -276,9 +280,14 @@ export async function transitionOffer(context: SessionContext, id: string, input
       // Job's own edit form never touches, not a user-facing edit Job's
       // optimistic lock needs to guard.
       await tx.job.update({ where: { id: existing.application.jobId }, data: { positionsFilledCount: { increment: 1 } } });
+
+      // §11.7: an accepted Offer is what actually triggers the onboarding
+      // handoff — see the HandoffRecord model comment in schema.prisma.
+      handoffResult = await createHandoffForOffer(tx, context, id, existing.applicationId);
     }
 
-    return tx.offer.findUniqueOrThrow({ where: { id }, include: offerDetailInclude });
+    const offer = await tx.offer.findUniqueOrThrow({ where: { id }, include: offerDetailInclude });
+    return { offer, handoff: handoffResult };
   });
 
   await recordAudit({
@@ -288,6 +297,16 @@ export async function transitionOffer(context: SessionContext, id: string, input
     entityId: id,
     changes: { before: { status: existing.status }, after: { status: transition.to, action: input.action } },
   });
+
+  if (handoff) {
+    await recordAudit({
+      actorId: context.userId,
+      action: AUDIT_ACTIONS.HANDOFF_INITIATED,
+      entityType: ENTITY.HANDOFF,
+      entityId: handoff.id,
+      changes: { after: { status: handoff.status, offerId: id } },
+    });
+  }
 
   return updated;
 }

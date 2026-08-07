@@ -74,6 +74,24 @@ type TimelineItem =
       jobTitle: string;
       reason: string | null;
       createdAt: string;
+    }
+  | {
+      type: "handoff_initiated";
+      id: string;
+      jobId: string;
+      jobTitle: string;
+      deliveryMethod: "API_PUSH" | "STRUCTURED_EXPORT";
+      initiatedBy: Person;
+      createdAt: string;
+    }
+  | {
+      type: "handoff_delivered" | "handoff_accepted" | "handoff_exception";
+      id: string;
+      jobId: string;
+      jobTitle: string;
+      actor: Person;
+      reason: string | null;
+      createdAt: string;
     };
 
 const RECOMMENDATION_LABEL: Record<string, string> = {
@@ -252,14 +270,68 @@ function OfferTimelineEntry({ item }: { item: OfferTimelineItem }) {
   }
 }
 
+type HandoffTimelineItem = Extract<
+  TimelineItem,
+  { type: "handoff_initiated" | "handoff_delivered" | "handoff_accepted" | "handoff_exception" }
+>;
+
+/** Type predicate (not a plain boolean check) so the render dispatcher below narrows correctly. */
+function isHandoffTimelineItem(item: TimelineItem): item is HandoffTimelineItem {
+  return (
+    item.type === "handoff_initiated" ||
+    item.type === "handoff_delivered" ||
+    item.type === "handoff_accepted" ||
+    item.type === "handoff_exception"
+  );
+}
+
+function HandoffTimelineEntry({ item }: { item: HandoffTimelineItem }) {
+  const jobLink = (
+    <Link href={`/jobs/${item.jobId}`} className="font-medium hover:underline">
+      {item.jobTitle}
+    </Link>
+  );
+
+  switch (item.type) {
+    case "handoff_initiated":
+      return (
+        <p className="text-sm">
+          Onboarding handoff initiated for {jobLink} by {item.initiatedBy.name} ({item.deliveryMethod.replace("_", " ").toLowerCase()})
+        </p>
+      );
+
+    case "handoff_delivered":
+      return (
+        <p className="text-sm">
+          Handoff package delivered for {jobLink}
+        </p>
+      );
+
+    case "handoff_accepted":
+      return (
+        <p className="text-sm">
+          Handoff acknowledged for {jobLink} by {item.actor.name}
+        </p>
+      );
+
+    case "handoff_exception":
+      return (
+        <p className="text-sm">
+          Handoff exception for {jobLink} — {item.actor.name}
+          {item.reason ? `: ${item.reason}` : ""}
+        </p>
+      );
+  }
+}
+
 /**
  * Candidate timeline (§11.2 FR9) — originally sourced only from notes;
  * Module 4 is the first module to add its own `type`s to the same feed
  * (application_created/application_stage_changed/application_rejected/
  * application_withdrawn), exactly as the API contract
- * (`{ items: [{ type, ... }] }`) was built to extend. Modules 5 and 6
- * (Interview, Offer) follow the same pattern; a future Communication Hub
- * module adds more `type`s the same way.
+ * (`{ items: [{ type, ... }] }`) was built to extend. Modules 5, 6, and 7
+ * (Interview, Offer, Handoff) follow the same pattern; a future
+ * Communication Hub module adds more `type`s the same way.
  */
 export function CandidateTimeline({
   candidateId,
@@ -334,6 +406,8 @@ export function CandidateTimeline({
               <ApplicationTimelineEntry item={item} />
             ) : isOfferTimelineItem(item) ? (
               <OfferTimelineEntry item={item} />
+            ) : isHandoffTimelineItem(item) ? (
+              <HandoffTimelineEntry item={item} />
             ) : (
               <InterviewTimelineEntry item={item} />
             )}

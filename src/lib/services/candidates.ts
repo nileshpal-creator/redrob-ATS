@@ -543,9 +543,11 @@ export async function deleteCandidateDocument(
  * way ApplicationEvent is); Module 6 adds "offer_created"/"offer_approved"/
  * "offer_approval_rejected"/"offer_extended"/"offer_accepted"/
  * "offer_declined"/"offer_revoked" (derived from Offer/OfferApproval rows,
- * same join pattern) — each addition without changing the existing
- * contract. Future modules (Communication Hub) add more `type`s the same
- * way.
+ * same join pattern). Module 7 adds "handoff_initiated"/"handoff_delivered"/
+ * "handoff_accepted"/"handoff_exception" (derived from HandoffRecord/
+ * HandoffDeliveryAttempt rows, same join-through-Application pattern) —
+ * each addition without changing the existing contract. Future modules
+ * (Communication Hub) add more `type`s the same way.
  */
 export async function getCandidateTimeline(context: SessionContext, candidateId: string) {
   const candidate = await prisma.candidate.findUnique({ where: { id: candidateId } });
@@ -554,7 +556,7 @@ export async function getCandidateTimeline(context: SessionContext, candidateId:
   }
   await assertCandidateAccess(context, candidate, "READ");
 
-  const [notes, applications, interviews, offers] = await Promise.all([
+  const [notes, applications, interviews, offers, handoffs] = await Promise.all([
     prisma.candidateNote.findMany({
       where: { candidateId },
       orderBy: { createdAt: "desc" },
@@ -593,6 +595,16 @@ export async function getCandidateTimeline(context: SessionContext, candidateId:
         application: { select: { jobId: true, job: { select: { title: true } } } },
         outcomeReason: true,
         approvals: { where: { status: { not: "PENDING" } }, include: { approver: { select: userSummarySelect } } },
+      },
+    }),
+    // Module 7 — joined through Application, the same way Offer is.
+    prisma.handoffRecord.findMany({
+      where: { application: { candidateId } },
+      include: {
+        application: { select: { jobId: true, job: { select: { title: true } } } },
+        initiatedBy: { select: userSummarySelect },
+        acknowledgedBy: { select: userSummarySelect },
+        attempts: { include: { attemptedBy: { select: userSummarySelect } } },
       },
     }),
   ]);
@@ -727,6 +739,47 @@ export async function getCandidateTimeline(context: SessionContext, candidateId:
       createdAt: offer.updatedAt,
     }));
 
+  // Module 7 — no separate HandoffStatusChange history table exists (same
+  // "don't over-engineer this" choice as Handoff's lifecycle itself, see
+  // schema.prisma). Delivery outcomes come from HandoffDeliveryAttempt
+  // (one item per attempt); the acknowledgement decision has no attempt row
+  // of its own, so it's derived straight from HandoffRecord.acknowledgedAt.
+  const handoffInitiatedItems = handoffs.map((handoff) => ({
+    type: "handoff_initiated" as const,
+    id: `${handoff.id}:initiated`,
+    jobId: handoff.application.jobId,
+    jobTitle: handoff.application.job.title,
+    deliveryMethod: handoff.deliveryMethod,
+    initiatedBy: handoff.initiatedBy,
+    createdAt: handoff.createdAt,
+  }));
+
+  const handoffDeliveryItems = handoffs.flatMap((handoff) =>
+    handoff.attempts.map((attempt) => ({
+      type: (attempt.succeeded ? "handoff_delivered" : "handoff_exception") as "handoff_delivered" | "handoff_exception",
+      id: `${attempt.id}:attempt`,
+      jobId: handoff.application.jobId,
+      jobTitle: handoff.application.job.title,
+      actor: attempt.attemptedBy,
+      reason: attempt.errorMessage,
+      createdAt: attempt.attemptedAt,
+    })),
+  );
+
+  const handoffAcknowledgedItems = handoffs
+    .filter((handoff) => handoff.acknowledgedBy && handoff.acknowledgedAt)
+    .map((handoff) => ({
+      type: (handoff.status === "ACCEPTED" ? "handoff_accepted" : "handoff_exception") as
+        | "handoff_accepted"
+        | "handoff_exception",
+      id: `${handoff.id}:acknowledged`,
+      jobId: handoff.application.jobId,
+      jobTitle: handoff.application.job.title,
+      actor: handoff.acknowledgedBy!,
+      reason: handoff.exceptionReason,
+      createdAt: handoff.acknowledgedAt as Date,
+    }));
+
   const items = [
     ...noteItems,
     ...applicationItems,
@@ -737,6 +790,9 @@ export async function getCandidateTimeline(context: SessionContext, candidateId:
     ...offerCreatedItems,
     ...offerApprovalItems,
     ...offerStatusItems,
+    ...handoffInitiatedItems,
+    ...handoffDeliveryItems,
+    ...handoffAcknowledgedItems,
   ].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 
   return { items };

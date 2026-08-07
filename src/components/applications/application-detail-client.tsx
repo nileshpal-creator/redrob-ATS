@@ -19,6 +19,7 @@ import {
 } from "@/components/applications/application-duplicate-check";
 import { ApplicationInterviews, type Interview } from "@/components/interviews/application-interviews";
 import { ApplicationOffers, type Offer } from "@/components/offers/application-offers";
+import { ApplicationHandoffs, type Handoff } from "@/components/handoffs/application-handoffs";
 
 type Person = { id: string; name: string; email: string };
 type ReasonOption = { id: string; label: string };
@@ -75,6 +76,8 @@ export function ApplicationDetailClient({
   offers,
   canCreateOffer,
   offerOutcomeReasons,
+  handoffs,
+  isArchivedByHandoff,
   currentUserId,
 }: {
   application: ApplicationDetail;
@@ -86,6 +89,8 @@ export function ApplicationDetailClient({
   offers: Offer[];
   canCreateOffer: boolean;
   offerOutcomeReasons: ReasonOption[];
+  handoffs: Handoff[];
+  isArchivedByHandoff: boolean;
   currentUserId: string;
 }) {
   const router = useRouter();
@@ -158,7 +163,18 @@ export function ApplicationDetailClient({
 
       <ApplicationDuplicateCheck priorApplications={priorApplications} />
 
-      {canEdit && application.outcome === "ACTIVE" ? (
+      {isArchivedByHandoff ? (
+        <Card>
+          <CardContent className="pt-6 text-sm">
+            <p>
+              Onboarding handoff complete — this application is archived and read-only. No further stage changes,
+              interviews, or offers can be created for it.
+            </p>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {canEdit && application.outcome === "ACTIVE" && !isArchivedByHandoff ? (
         <ApplicationTransitionActions
           applicationId={application.id}
           jobId={application.jobId}
@@ -188,7 +204,7 @@ export function ApplicationDetailClient({
           <ApplicationInterviews
             applicationId={application.id}
             interviews={interviews}
-            canSchedule={canScheduleInterview}
+            canSchedule={canScheduleInterview && !isArchivedByHandoff}
             currentUserId={currentUserId}
             cancellationReasons={cancellationReasons}
           />
@@ -203,9 +219,18 @@ export function ApplicationDetailClient({
           <ApplicationOffers
             applicationId={application.id}
             offers={offers}
-            canCreate={canCreateOffer}
+            canCreate={canCreateOffer && !isArchivedByHandoff}
             outcomeReasons={offerOutcomeReasons}
           />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Onboarding handoff</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <ApplicationHandoffs handoffs={handoffs} />
         </CardContent>
       </Card>
 
