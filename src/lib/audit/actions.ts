@@ -33,6 +33,14 @@ export const AUDIT_ACTIONS = {
   CANDIDATE_DOCUMENT_DELETED: "candidate.document_deleted",
   CANDIDATE_NOTE_ADDED: "candidate.note_added",
   CANDIDATE_EXPORTED: "candidate.exported",
+  APPLICATION_CREATED: "application.created",
+  APPLICATION_UPDATED: "application.updated",
+  APPLICATION_STAGE_CHANGED: "application.stage_changed",
+  APPLICATION_REJECTED: "application.rejected",
+  APPLICATION_WITHDRAWN: "application.withdrawn",
+  APPLICATION_BULK_TRANSITIONED: "application.bulk_transitioned",
+  APPLICATION_BULK_EMAIL_REQUESTED: "application.bulk_email_requested",
+  PIPELINE_STAGES_UPDATED: "pipeline_stages.updated",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];

@@ -9,6 +9,7 @@ import { recordAudit } from "@/lib/audit/log";
 import { AUDIT_ACTIONS } from "@/lib/audit/actions";
 import { buildCustomFieldValueSchema } from "@/lib/custom-fields/dynamic-schema";
 import { findTransition, getLegalActions, type JobTransition } from "@/lib/jobs/status-machine";
+import { seedDefaultPipelineStages } from "@/lib/services/pipeline-stages";
 import type { JobStatus } from "@/generated/prisma/enums";
 import type {
   JobCreateInput,
@@ -167,32 +168,41 @@ export async function createJob(context: SessionContext, input: JobCreateInput) 
 
   const customFields = await validateCustomFields(input.customFields);
 
-  const created = await prisma.job.create({
-    data: {
-      title: input.title,
-      departmentId: input.departmentId,
-      locationId: input.locationId,
-      employmentType: input.employmentType,
-      priority: input.priority,
-      positionsCount: input.positionsCount,
-      targetDate: input.targetDate,
-      description: input.description,
-      mustHaveCriteria: input.mustHaveCriteria,
-      goodToHaveCriteria: input.goodToHaveCriteria,
-      customFields: customFields as Prisma.InputJsonValue,
-      parentJobId: input.parentJobId,
-      primaryRecruiterId: input.primaryRecruiterUserId,
-      createdById: context.userId,
-      recruiters: {
-        createMany: {
-          data: input.recruiterUserIds.map((userId) => ({
-            userId,
-            isPrimary: userId === input.primaryRecruiterUserId,
-          })),
+  // Application.stageId is required and Module 4 gives every job a starter
+  // pipeline at creation time, editable/reorderable afterward via
+  // PUT /api/jobs/[id]/pipeline-stages — see seedDefaultPipelineStages.
+  const created = await prisma.$transaction(async (tx) => {
+    const job = await tx.job.create({
+      data: {
+        title: input.title,
+        departmentId: input.departmentId,
+        locationId: input.locationId,
+        employmentType: input.employmentType,
+        priority: input.priority,
+        positionsCount: input.positionsCount,
+        targetDate: input.targetDate,
+        description: input.description,
+        mustHaveCriteria: input.mustHaveCriteria,
+        goodToHaveCriteria: input.goodToHaveCriteria,
+        customFields: customFields as Prisma.InputJsonValue,
+        parentJobId: input.parentJobId,
+        primaryRecruiterId: input.primaryRecruiterUserId,
+        createdById: context.userId,
+        recruiters: {
+          createMany: {
+            data: input.recruiterUserIds.map((userId) => ({
+              userId,
+              isPrimary: userId === input.primaryRecruiterUserId,
+            })),
+          },
         },
       },
-    },
-    include: jobDetailInclude,
+      include: jobDetailInclude,
+    });
+
+    await seedDefaultPipelineStages(tx, job.id);
+
+    return job;
   });
 
   await recordAudit({

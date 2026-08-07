@@ -121,6 +121,25 @@ const CANDIDATE_ROLE_PERMISSIONS = [
   { role: "Recruiting Manager", action: "DELETE", scope: "TEAM" },
 ] as const;
 
+// Module 4 default grants — ownership resolves against Application.ownerId
+// (§9 names `owner` as its own Application field, distinct from the
+// candidate/job themselves — the Phase 2 decision mirrors Job's
+// primaryRecruiterId anchor rather than Candidate's ownerless design).
+// Recruiter owns the applications they work end to end; Hiring Manager
+// reviews shortlists broadly (§8) but has no application-mutation need, so
+// gets READ only; Recruiting Manager oversees their team. There is no
+// DELETE grant for anyone — Application has no delete endpoint, mirroring
+// Job's "no hard delete" precedent rather than Candidate's.
+const APPLICATION_ROLE_PERMISSIONS = [
+  { role: "Recruiter", action: "CREATE", scope: "ALL" },
+  { role: "Recruiter", action: "READ", scope: "ALL" },
+  { role: "Recruiter", action: "UPDATE", scope: "OWN" },
+  { role: "Hiring Manager", action: "READ", scope: "ALL" },
+  { role: "Recruiting Manager", action: "CREATE", scope: "ALL" },
+  { role: "Recruiting Manager", action: "READ", scope: "TEAM" },
+  { role: "Recruiting Manager", action: "UPDATE", scope: "TEAM" },
+] as const;
+
 async function main() {
   const organization = await prisma.organization.upsert({
     where: { id: "default" },
@@ -192,6 +211,16 @@ async function main() {
     });
   }
   console.log(`Seeded ${CANDIDATE_ROLE_PERMISSIONS.length} default Candidate role permissions`);
+
+  for (const grant of APPLICATION_ROLE_PERMISSIONS) {
+    const role = await prisma.role.findUniqueOrThrow({ where: { name: grant.role } });
+    await prisma.rolePermission.upsert({
+      where: { roleId_resource_action: { roleId: role.id, resource: "APPLICATION", action: grant.action } },
+      update: { scope: grant.scope },
+      create: { roleId: role.id, resource: "APPLICATION", action: grant.action, scope: grant.scope },
+    });
+  }
+  console.log(`Seeded ${APPLICATION_ROLE_PERMISSIONS.length} default Application role permissions`);
 
   const adminEmail = process.env.SEED_ADMIN_EMAIL;
   const adminPassword = process.env.SEED_ADMIN_PASSWORD;

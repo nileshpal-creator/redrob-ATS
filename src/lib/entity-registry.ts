@@ -20,6 +20,7 @@ export const ENTITY = {
   AUDIT_LOG: "AUDIT_LOG",
   JOB: "JOB",
   CANDIDATE: "CANDIDATE",
+  APPLICATION: "APPLICATION",
 } as const;
 
 export type EntityKey = (typeof ENTITY)[keyof typeof ENTITY];
@@ -35,13 +36,15 @@ export const ENTITY_LABELS: Record<string, string> = {
   [ENTITY.AUDIT_LOG]: "Audit Log",
   [ENTITY.JOB]: "Jobs / Requisitions",
   [ENTITY.CANDIDATE]: "Candidates",
+  [ENTITY.APPLICATION]: "Applications",
 };
 
 /** Entities core modules may attach admin-defined custom fields to (§10.1). */
 export const CUSTOM_FIELD_CAPABLE_ENTITIES: readonly string[] = [
   ENTITY.JOB,
   ENTITY.CANDIDATE,
-  // Populated as each further module ships: APPLICATION, OFFER, ...
+  ENTITY.APPLICATION,
+  // Populated as each further module ships: OFFER, ...
 ];
 
 export function isKnownEntity(value: string): boolean {

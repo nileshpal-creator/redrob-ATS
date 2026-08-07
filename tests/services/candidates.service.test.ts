@@ -368,7 +368,7 @@ describe("CandidateService", () => {
     expect(await prisma.candidate.findUnique({ where: { id: source.id } })).toBeNull();
 
     const timeline = await getCandidateTimeline(recruiter, target.id);
-    expect(timeline.items.some((item) => item.body === "Note on source")).toBe(true);
+    expect(timeline.items.some((item) => item.type === "note" && item.body === "Note on source")).toBe(true);
   });
 
   it("requires CANDIDATE:DELETE on the source to merge, even with CANDIDATE:UPDATE on the target", async () => {

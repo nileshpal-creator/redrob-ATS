@@ -312,6 +312,16 @@ export async function deleteCandidate(context: SessionContext, id: string) {
   }
   await assertCandidateAccess(context, existing, "DELETE");
 
+  // Module 4: a candidate with applications can't be silently hard-deleted —
+  // that would strand pipeline/interview/offer history. Application.candidateId
+  // defaults to onDelete: Restrict as a database-level backstop; this check
+  // exists so the caller gets a clean ValidationError instead of an unhandled
+  // constraint-violation error.
+  const applicationCount = await prisma.application.count({ where: { candidateId: id } });
+  if (applicationCount > 0) {
+    throw new ValidationError("This candidate has applications and cannot be deleted.");
+  }
+
   const storage = getStorageProvider();
   for (const document of existing.documents) {
     await storage.delete(document.storageKey);
@@ -524,9 +534,12 @@ export async function deleteCandidateDocument(
 }
 
 /**
- * Extensible read model (§11.2's candidate timeline) — only CandidateNote
- * feeds it today; future modules (Application, Interview, Offer,
- * Communication Hub) add more `type`s here without changing this contract.
+ * Extensible read model (§11.2's candidate timeline). CandidateNote feeds
+ * the original "note" item type; Module 4 is the first real second
+ * consumer, adding "application_created" (one per Application) and
+ * "application_stage_changed"/"application_rejected"/"application_withdrawn"
+ * (one per ApplicationEvent) without changing the existing contract. Future
+ * modules (Interview, Offer, Communication Hub) add more `type`s the same way.
  */
 export async function getCandidateTimeline(context: SessionContext, candidateId: string) {
   const candidate = await prisma.candidate.findUnique({ where: { id: candidateId } });
@@ -535,21 +548,80 @@ export async function getCandidateTimeline(context: SessionContext, candidateId:
   }
   await assertCandidateAccess(context, candidate, "READ");
 
-  const notes = await prisma.candidateNote.findMany({
-    where: { candidateId },
-    orderBy: { createdAt: "desc" },
-    include: { author: { select: userSummarySelect } },
-  });
+  const [notes, applications] = await Promise.all([
+    prisma.candidateNote.findMany({
+      where: { candidateId },
+      orderBy: { createdAt: "desc" },
+      include: { author: { select: userSummarySelect } },
+    }),
+    prisma.application.findMany({
+      where: { candidateId },
+      include: {
+        job: { select: { id: true, title: true } },
+        stage: true,
+        events: {
+          include: {
+            actor: { select: userSummarySelect },
+            fromStage: true,
+            toStage: true,
+            reason: true,
+          },
+        },
+      },
+    }),
+  ]);
 
-  return {
-    items: notes.map((note) => ({
-      type: "note" as const,
-      id: note.id,
-      body: note.body,
-      author: note.author,
-      createdAt: note.createdAt,
-    })),
-  };
+  const noteItems = notes.map((note) => ({
+    type: "note" as const,
+    id: note.id,
+    body: note.body,
+    author: note.author,
+    createdAt: note.createdAt,
+  }));
+
+  const applicationItems = applications.map((application) => ({
+    type: "application_created" as const,
+    id: application.id,
+    jobId: application.jobId,
+    jobTitle: application.job.title,
+    stage: application.stage.name,
+    createdAt: application.createdAt,
+  }));
+
+  const eventItems = applications.flatMap((application) =>
+    application.events.map((event) => {
+      const base = {
+        id: event.id,
+        applicationId: application.id,
+        jobId: application.jobId,
+        jobTitle: application.job.title,
+        actor: event.actor,
+        note: event.note,
+        createdAt: event.createdAt,
+      };
+
+      if (event.type === "STAGE_CHANGE") {
+        return {
+          ...base,
+          type: "application_stage_changed" as const,
+          fromStage: event.fromStage?.name ?? null,
+          toStage: event.toStage?.name ?? null,
+        };
+      }
+
+      return {
+        ...base,
+        type: event.type === "REJECTED" ? ("application_rejected" as const) : ("application_withdrawn" as const),
+        reason: event.reason?.label ?? null,
+      };
+    }),
+  );
+
+  const items = [...noteItems, ...applicationItems, ...eventItems].sort(
+    (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
+  );
+
+  return { items };
 }
 
 /** Notes are create-only — §9 describes this category as an immutable audit log. */

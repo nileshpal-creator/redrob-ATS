@@ -18,5 +18,11 @@ export default defineConfig({
     },
     testTimeout: 20000,
     hookTimeout: 30000,
+    // Several test files independently create-then-tear-down the same
+    // globally-unique ControlledList rows (DEPARTMENT, LOCATION,
+    // REJECTION_REASON — Job/Application both validate against these exact
+    // keys). That's only safe if files run one at a time; concurrent files
+    // racing to own/delete the same unique key corrupts each other's fixtures.
+    fileParallelism: false,
   },
 });

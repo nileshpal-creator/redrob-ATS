@@ -54,6 +54,11 @@ model User {
   candidateDocumentsUploaded CandidateDocument[] @relation("CandidateDocumentUploadedBy")
   candidateNotesAuthored     CandidateNote[]     @relation("CandidateNoteAuthor")
 
+  applicationsOwned          Application[]         @relation("ApplicationOwner")
+  applicationsCreated        Application[]         @relation("ApplicationCreatedBy")
+  applicationEventsActed     ApplicationEvent[]
+  applicationEmailsRequested ApplicationEmailLog[]
+
   @@index([isActive])
   @@index([managerId])
 }
@@ -212,6 +217,9 @@ model ControlledListValue {
 
   candidatesAsSource       Candidate[]         @relation("CandidateSource")
   candidateDocumentsAsType CandidateDocument[] @relation("CandidateDocumentType")
+
+  applicationsAsOutcomeReason Application[]      @relation("ApplicationOutcomeReason")
+  applicationEventsAsReason   ApplicationEvent[] @relation("ApplicationEventReason")
 
   @@unique([listId, value])
 }
@@ -405,6 +413,9 @@ model Job {
   recruiters    JobRecruiterAssignment[]
   statusChanges JobStatusChange[]
 
+  pipelineStages PipelineStage[]
+  applications   Application[]
+
   @@index([status])
   @@index([departmentId])
   @@index([locationId])
@@ -507,8 +518,9 @@ model Candidate {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  documents CandidateDocument[]
-  notes     CandidateNote[]
+  documents    CandidateDocument[]
+  notes        CandidateNote[]
+  applications Application[]
 
   @@index([email])
   @@index([sourceId])
@@ -552,4 +564,152 @@ model CandidateNote {
   author    User      @relation("CandidateNoteAuthor", fields: [authorId], references: [id])
 
   @@index([candidateId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Module 4 — Applications / Candidate Pipeline (§11.4)
+// ---------------------------------------------------------------------------
+
+enum ApplicationOutcome {
+  ACTIVE
+  REJECTED
+  WITHDRAWN
+}
+
+enum ApplicationEventType {
+  STAGE_CHANGE
+  REJECTED
+  WITHDRAWN
+}
+
+enum EmailLogStatus {
+  PENDING
+  SENT
+  FAILED
+  CANCELLED
+}
+
+// Configurable per job/pipeline (§10.1–10.2, §11.4) — deliberately not a
+// Prisma enum (different jobs run different stage sets) and not a
+// ControlledList (ControlledList is global and unordered; a job's pipeline
+// needs its own per-job ordering). Never hard-deleted once referenced by an
+// Application or ApplicationEvent (default onDelete: Restrict on those FKs)
+// — "removing" a stage from a pipeline deactivates it instead, the same
+// convention ControlledListValue already uses via isActive.
+model PipelineStage {
+  id        String   @id @default(cuid())
+  jobId     String
+  name      String
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  job          Job                @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  applications Application[]
+  eventsFrom   ApplicationEvent[] @relation("ApplicationEventFromStage")
+  eventsTo     ApplicationEvent[] @relation("ApplicationEventToStage")
+
+  @@unique([jobId, name])
+  @@index([jobId, sortOrder])
+}
+
+// "One candidate against one job, holding the pipeline stage" (§9).
+// Deliberately no unique constraint on (candidateId, jobId) — re-applying is
+// allowed, only warned about (§11.4) — see findDuplicateApplications in
+// src/lib/services/applications.ts. candidateId/jobId carry no onDelete
+// override (default Restrict): Candidate deletion is blocked by a
+// service-layer check in deleteCandidate before it would ever hit this FK;
+// Job has no delete endpoint at all.
+model Application {
+  id String @id @default(cuid())
+
+  candidateId String
+  jobId       String
+  stageId     String
+  ownerId     String
+
+  // Rejected/Withdrawn are terminal outcomes orthogonal to stage, not two of
+  // the admin-configurable stages themselves (Phase 2 decision) — stage
+  // stays frozen at whatever it was when the outcome was set, and outcome is
+  // never reset back to ACTIVE once written.
+  outcome         ApplicationOutcome @default(ACTIVE)
+  outcomeReasonId String?
+  outcomeAt       DateTime?
+
+  stageEnteredAt DateTime @default(now())
+  customFields   Json?
+
+  createdById String
+  // Optimistic locking — same pattern as Job.version / Candidate.version.
+  version     Int    @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  candidate     Candidate            @relation(fields: [candidateId], references: [id])
+  job           Job                  @relation(fields: [jobId], references: [id])
+  stage         PipelineStage        @relation(fields: [stageId], references: [id])
+  owner         User                 @relation("ApplicationOwner", fields: [ownerId], references: [id])
+  createdBy     User                 @relation("ApplicationCreatedBy", fields: [createdById], references: [id])
+  outcomeReason ControlledListValue? @relation("ApplicationOutcomeReason", fields: [outcomeReasonId], references: [id])
+
+  events    ApplicationEvent[]
+  emailLogs ApplicationEmailLog[]
+
+  @@index([candidateId])
+  @@index([jobId])
+  @@index([jobId, stageId])
+  @@index([candidateId, jobId])
+  @@index([ownerId])
+  @@index([outcome])
+}
+
+// Immutable history row for every stage move and outcome change — modeled
+// directly on JobStatusChange. STAGE_CHANGE events set both fromStageId and
+// toStageId; REJECTED/WITHDRAWN events set only fromStageId (a snapshot of
+// where the application was when it left the pipeline) plus a required
+// reasonId.
+model ApplicationEvent {
+  id            String               @id @default(cuid())
+  applicationId String
+  type          ApplicationEventType
+  fromStageId   String?
+  toStageId     String?
+  reasonId      String?
+  note          String?
+  actorId       String
+  createdAt     DateTime             @default(now())
+
+  application Application          @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  fromStage   PipelineStage?       @relation("ApplicationEventFromStage", fields: [fromStageId], references: [id])
+  toStage     PipelineStage?       @relation("ApplicationEventToStage", fields: [toStageId], references: [id])
+  reason      ControlledListValue? @relation("ApplicationEventReason", fields: [reasonId], references: [id])
+  actor       User                 @relation(fields: [actorId], references: [id])
+
+  @@index([applicationId, createdAt])
+}
+
+// Bulk-email "infrastructure only" (§11.4, Phase 2 decision): this module
+// renders and records what would be sent, but never calls a real mail
+// provider. Every row this module writes has status = PENDING; SENT/FAILED/
+// CANCELLED are reserved for the future Communication Hub module to set once
+// real delivery exists — same "field exists, only a later module writes
+// non-default values" pattern as Job.positionsFilledCount.
+model ApplicationEmailLog {
+  id            String         @id @default(cuid())
+  applicationId String
+  toEmail       String
+  subject       String
+  body          String
+  status        EmailLogStatus @default(PENDING)
+  requestedById String
+  requestedAt   DateTime       @default(now())
+  sentAt        DateTime?
+
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  requestedBy User        @relation(fields: [requestedById], references: [id])
+
+  @@index([applicationId])
+  @@index([status])
 }
