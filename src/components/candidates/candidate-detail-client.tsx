@@ -4,7 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
-import { AlertTriangle, Loader2, Pencil, Trash2 } from "lucide-react";
+import { AlertTriangle, KanbanSquare, Loader2, Pencil, Trash2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -60,7 +60,22 @@ type CandidateDetail = {
   }[];
 };
 
-type TimelineItem = { type: "note"; id: string; body: string; author: Person; createdAt: string };
+type TimelineItem =
+  | { type: "note"; id: string; body: string; author: Person; createdAt: string }
+  | { type: "application_created"; id: string; jobId: string; jobTitle: string; stage: string; createdAt: string }
+  | {
+      type: "application_stage_changed" | "application_rejected" | "application_withdrawn";
+      id: string;
+      applicationId: string;
+      jobId: string;
+      jobTitle: string;
+      actor: Person;
+      note: string | null;
+      fromStage?: string | null;
+      toStage?: string | null;
+      reason?: string | null;
+      createdAt: string;
+    };
 
 export function CandidateDetailClient({
   candidate,
@@ -68,12 +83,14 @@ export function CandidateDetailClient({
   timelineItems,
   canEdit,
   canDelete,
+  canCreateApplication,
 }: {
   candidate: CandidateDetail;
   documentTypes: ListValue[];
   timelineItems: TimelineItem[];
   canEdit: boolean;
   canDelete: boolean;
+  canCreateApplication: boolean;
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -111,6 +128,13 @@ export function CandidateDetailClient({
           </p>
         </div>
         <div className="flex gap-2">
+          {canCreateApplication ? (
+            <Button variant="outline" asChild>
+              <Link href={`/applications/new?candidateId=${candidate.id}`}>
+                <KanbanSquare /> New application
+              </Link>
+            </Button>
+          ) : null}
           {canEdit ? <CandidateMergeDialog targetCandidateId={candidate.id} version={candidate.version} defaultSourceCandidateId={possibleDuplicateOf ?? undefined} /> : null}
           {canEdit ? (
             <Button variant="outline" asChild>

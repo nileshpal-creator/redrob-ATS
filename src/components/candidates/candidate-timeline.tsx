@@ -1,29 +1,85 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Loader2, Send } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 
 type Person = { id: string; name: string; email: string };
 
-type TimelineItem = {
-  type: "note";
-  id: string;
-  body: string;
-  author: Person;
-  createdAt: string;
-};
+type TimelineItem =
+  | { type: "note"; id: string; body: string; author: Person; createdAt: string }
+  | { type: "application_created"; id: string; jobId: string; jobTitle: string; stage: string; createdAt: string }
+  | {
+      type: "application_stage_changed" | "application_rejected" | "application_withdrawn";
+      id: string;
+      applicationId: string;
+      jobId: string;
+      jobTitle: string;
+      actor: Person;
+      note: string | null;
+      fromStage?: string | null;
+      toStage?: string | null;
+      reason?: string | null;
+      createdAt: string;
+    };
+
+function ApplicationTimelineEntry({ item }: { item: Exclude<TimelineItem, { type: "note" }> }) {
+  const jobLink = (
+    <Link href={`/jobs/${item.jobId}`} className="font-medium hover:underline">
+      {item.jobTitle}
+    </Link>
+  );
+
+  if (item.type === "application_created") {
+    return (
+      <p className="text-sm">
+        Applied to {jobLink} <Badge variant="secondary">{item.stage}</Badge>
+      </p>
+    );
+  }
+
+  return (
+    <div>
+      <p className="text-sm">
+        <Link href={`/applications/${item.applicationId}`} className="hover:underline">
+          {item.type === "application_stage_changed"
+            ? "Stage changed"
+            : item.type === "application_rejected"
+              ? "Rejected"
+              : "Withdrawn"}
+        </Link>{" "}
+        for {jobLink}
+        {item.type === "application_stage_changed" ? (
+          <>
+            {" "}
+            ({item.fromStage ?? "—"} → {item.toStage ?? "—"})
+          </>
+        ) : item.reason ? (
+          ` — ${item.reason}`
+        ) : (
+          ""
+        )}
+      </p>
+      <p className="text-xs text-muted-foreground">{item.actor.name}</p>
+      {item.note ? <p className="mt-1 text-sm text-muted-foreground">{item.note}</p> : null}
+    </div>
+  );
+}
 
 /**
- * Candidate timeline (§11.2 FR9) — currently sourced only from notes; future
- * modules (Application, Interview, Offer, Communication Hub) add their own
- * `type`s to the same feed without this component changing, since the API
- * contract (`{ items: [{ type, ... }] }`) is already built to extend.
+ * Candidate timeline (§11.2 FR9) — originally sourced only from notes;
+ * Module 4 is the first module to add its own `type`s to the same feed
+ * (application_created/application_stage_changed/application_rejected/
+ * application_withdrawn), exactly as the API contract
+ * (`{ items: [{ type, ... }] }`) was built to extend. Future modules
+ * (Interview, Offer, Communication Hub) follow the same pattern.
  */
 export function CandidateTimeline({
   candidateId,
@@ -87,10 +143,16 @@ export function CandidateTimeline({
         {items.map((item, index) => (
           <div key={item.id}>
             {index > 0 ? <Separator className="mb-3" /> : null}
-            <p className="text-sm whitespace-pre-wrap">{item.body}</p>
-            <p className="text-xs text-muted-foreground">
-              {item.author.name} &middot; {new Date(item.createdAt).toLocaleString()}
-            </p>
+            {item.type === "note" ? (
+              <>
+                <p className="text-sm whitespace-pre-wrap">{item.body}</p>
+                <p className="text-xs text-muted-foreground">
+                  {item.author.name} &middot; {new Date(item.createdAt).toLocaleString()}
+                </p>
+              </>
+            ) : (
+              <ApplicationTimelineEntry item={item} />
+            )}
           </div>
         ))}
         {items.length === 0 ? <p className="text-sm text-muted-foreground">No activity yet.</p> : null}

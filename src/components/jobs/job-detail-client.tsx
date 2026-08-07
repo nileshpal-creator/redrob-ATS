@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Pencil } from "lucide-react";
+import { KanbanSquare, Pencil } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -87,13 +87,20 @@ export function JobDetailClient({
             &middot; Priority: {job.priority} &middot; {agingLabel(job.createdAt)}
           </p>
         </div>
-        {canEdit ? (
+        <div className="flex gap-2">
           <Button variant="outline" asChild>
-            <Link href={`/jobs/${job.id}/edit`}>
-              <Pencil /> Edit
+            <Link href={`/jobs/${job.id}/pipeline`}>
+              <KanbanSquare /> Pipeline
             </Link>
           </Button>
-        ) : null}
+          {canEdit ? (
+            <Button variant="outline" asChild>
+              <Link href={`/jobs/${job.id}/edit`}>
+                <Pencil /> Edit
+              </Link>
+            </Button>
+          ) : null}
+        </div>
       </div>
 
       {availableTransitions.length > 0 ? (

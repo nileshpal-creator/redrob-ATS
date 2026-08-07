@@ -19,11 +19,12 @@ export default async function CandidateDetailPage({ params }: { params: Promise<
     throw error;
   });
 
-  const [timeline, documentTypes, canEdit, canDelete] = await Promise.all([
+  const [timeline, documentTypes, canEdit, canDelete, canCreateApplication] = await Promise.all([
     getCandidateTimeline(context, id),
     getControlledListValues("DOCUMENT_TYPE"),
     can(context, ENTITY.CANDIDATE, "UPDATE", { ownerId: candidate.createdById }),
     can(context, ENTITY.CANDIDATE, "DELETE", { ownerId: candidate.createdById }),
+    can(context, ENTITY.APPLICATION, "CREATE"),
   ]);
 
   return (
@@ -33,6 +34,7 @@ export default async function CandidateDetailPage({ params }: { params: Promise<
       timelineItems={JSON.parse(JSON.stringify(timeline.items))}
       canEdit={canEdit}
       canDelete={canDelete}
+      canCreateApplication={canCreateApplication}
     />
   );
 }

@@ -12,9 +12,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     redirect("/login");
   }
 
-  const [showJobsNav, showCandidatesNav] = await Promise.all([
+  const [showJobsNav, showCandidatesNav, showApplicationsNav] = await Promise.all([
     can(context, ENTITY.JOB, "READ"),
     can(context, ENTITY.CANDIDATE, "READ"),
+    can(context, ENTITY.APPLICATION, "READ"),
   ]);
 
   return (
@@ -23,6 +24,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         showAdminNav={context.isSuperAdmin}
         showJobsNav={showJobsNav}
         showCandidatesNav={showCandidatesNav}
+        showApplicationsNav={showApplicationsNav}
       />
       <div className="flex flex-1 flex-col overflow-hidden">
         <AppTopbar name={context.name} email={context.email} />
