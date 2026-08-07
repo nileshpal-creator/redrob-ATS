@@ -18,6 +18,7 @@ import {
   type PriorApplication,
 } from "@/components/applications/application-duplicate-check";
 import { ApplicationInterviews, type Interview } from "@/components/interviews/application-interviews";
+import { ApplicationOffers, type Offer } from "@/components/offers/application-offers";
 
 type Person = { id: string; name: string; email: string };
 type ReasonOption = { id: string; label: string };
@@ -71,6 +72,9 @@ export function ApplicationDetailClient({
   interviews,
   canScheduleInterview,
   cancellationReasons,
+  offers,
+  canCreateOffer,
+  offerOutcomeReasons,
   currentUserId,
 }: {
   application: ApplicationDetail;
@@ -79,6 +83,9 @@ export function ApplicationDetailClient({
   interviews: Interview[];
   canScheduleInterview: boolean;
   cancellationReasons: ReasonOption[];
+  offers: Offer[];
+  canCreateOffer: boolean;
+  offerOutcomeReasons: ReasonOption[];
   currentUserId: string;
 }) {
   const router = useRouter();
@@ -184,6 +191,20 @@ export function ApplicationDetailClient({
             canSchedule={canScheduleInterview}
             currentUserId={currentUserId}
             cancellationReasons={cancellationReasons}
+          />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Offers</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <ApplicationOffers
+            applicationId={application.id}
+            offers={offers}
+            canCreate={canCreateOffer}
+            outcomeReasons={offerOutcomeReasons}
           />
         </CardContent>
       </Card>

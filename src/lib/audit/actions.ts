@@ -46,6 +46,9 @@ export const AUDIT_ACTIONS = {
   INTERVIEW_COMPLETED: "interview.completed",
   INTERVIEW_CANCELLED: "interview.cancelled",
   INTERVIEW_FEEDBACK_SUBMITTED: "interview.feedback_submitted",
+  OFFER_CREATED: "offer.created",
+  OFFER_UPDATED: "offer.updated",
+  OFFER_STATUS_CHANGED: "offer.status_changed",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];

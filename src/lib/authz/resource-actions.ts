@@ -13,6 +13,7 @@ const DEFAULT_ACTIONS: PermissionAction[] = ["CREATE", "READ", "UPDATE", "DELETE
  */
 const RESOURCE_ACTIONS: Partial<Record<string, PermissionAction[]>> = {
   [ENTITY.JOB]: ["CREATE", "READ", "UPDATE", "DELETE", "APPROVE"],
+  [ENTITY.OFFER]: ["CREATE", "READ", "UPDATE", "DELETE", "APPROVE"],
 };
 
 export function getApplicableActions(resource: string): PermissionAction[] {

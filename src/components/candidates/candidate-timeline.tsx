@@ -56,6 +56,24 @@ type TimelineItem =
       interviewer: Person;
       recommendation: "STRONG_YES" | "YES" | "NO" | "STRONG_NO";
       createdAt: string;
+    }
+  | { type: "offer_created"; id: string; jobId: string; jobTitle: string; compensation: string; createdAt: string }
+  | {
+      type: "offer_approved" | "offer_approval_rejected";
+      id: string;
+      jobId: string;
+      jobTitle: string;
+      approver: Person | null;
+      comments: string | null;
+      createdAt: string;
+    }
+  | {
+      type: "offer_extended" | "offer_accepted" | "offer_declined" | "offer_revoked";
+      id: string;
+      jobId: string;
+      jobTitle: string;
+      reason: string | null;
+      createdAt: string;
     };
 
 const RECOMMENDATION_LABEL: Record<string, string> = {
@@ -165,13 +183,83 @@ function ApplicationTimelineEntry({ item }: { item: ApplicationTimelineItem }) {
   );
 }
 
+type OfferTimelineItem = Extract<
+  TimelineItem,
+  {
+    type:
+      | "offer_created"
+      | "offer_approved"
+      | "offer_approval_rejected"
+      | "offer_extended"
+      | "offer_accepted"
+      | "offer_declined"
+      | "offer_revoked";
+  }
+>;
+
+/** Type predicate (not a plain boolean check) so the render dispatcher below narrows correctly. */
+function isOfferTimelineItem(item: TimelineItem): item is OfferTimelineItem {
+  return (
+    item.type === "offer_created" ||
+    item.type === "offer_approved" ||
+    item.type === "offer_approval_rejected" ||
+    item.type === "offer_extended" ||
+    item.type === "offer_accepted" ||
+    item.type === "offer_declined" ||
+    item.type === "offer_revoked"
+  );
+}
+
+function OfferTimelineEntry({ item }: { item: OfferTimelineItem }) {
+  const jobLink = (
+    <Link href={`/jobs/${item.jobId}`} className="font-medium hover:underline">
+      {item.jobTitle}
+    </Link>
+  );
+
+  switch (item.type) {
+    case "offer_created":
+      return (
+        <p className="text-sm">
+          Offer created for {jobLink} — {item.compensation}
+        </p>
+      );
+
+    case "offer_approved":
+    case "offer_approval_rejected":
+      return (
+        <p className="text-sm">
+          Offer {item.type === "offer_approved" ? "approved" : "sent back for revision"} for {jobLink}
+          {item.approver ? ` by ${item.approver.name}` : ""}
+          {item.comments ? ` — ${item.comments}` : ""}
+        </p>
+      );
+
+    case "offer_extended":
+      return <p className="text-sm">Offer extended to candidate for {jobLink}</p>;
+
+    case "offer_accepted":
+      return <p className="text-sm">Offer accepted for {jobLink}</p>;
+
+    case "offer_declined":
+    case "offer_revoked":
+      return (
+        <p className="text-sm">
+          Offer {item.type === "offer_declined" ? "declined" : "revoked"} for {jobLink}
+          {item.reason ? ` — ${item.reason}` : ""}
+        </p>
+      );
+  }
+}
+
 /**
  * Candidate timeline (§11.2 FR9) — originally sourced only from notes;
  * Module 4 is the first module to add its own `type`s to the same feed
  * (application_created/application_stage_changed/application_rejected/
  * application_withdrawn), exactly as the API contract
- * (`{ items: [{ type, ... }] }`) was built to extend. Future modules
- * (Interview, Offer, Communication Hub) follow the same pattern.
+ * (`{ items: [{ type, ... }] }`) was built to extend. Modules 5 and 6
+ * (Interview, Offer) follow the same pattern; a future Communication Hub
+ * module adds more `type`s the same way.
  */
 export function CandidateTimeline({
   candidateId,
@@ -244,6 +332,8 @@ export function CandidateTimeline({
               </>
             ) : item.type === "application_created" ? (
               <ApplicationTimelineEntry item={item} />
+            ) : isOfferTimelineItem(item) ? (
+              <OfferTimelineEntry item={item} />
             ) : (
               <InterviewTimelineEntry item={item} />
             )}

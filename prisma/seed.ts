@@ -74,6 +74,20 @@ const CONTROLLED_LISTS = [
     label: "Interview Cancellation Reasons",
     values: ["Candidate withdrew", "Scheduling conflict", "Candidate no-show", "Position on hold"],
   },
+  // Module 6 — Offer Management (§11.6). Shared between DECLINE and REVOKE,
+  // the same "one outcome + one reason list" choice Application makes for
+  // REJECTED/WITHDRAWN — see Offer.outcomeReasonId in schema.prisma.
+  {
+    key: "OFFER_OUTCOME_REASON",
+    label: "Offer Outcome Reasons",
+    values: [
+      "Candidate accepted another offer",
+      "Compensation mismatch",
+      "Candidate unresponsive",
+      "Position no longer available",
+      "Budget freeze",
+    ],
+  },
 ] as const;
 
 // Module 2 default grants — without these, no role but System Administrator
@@ -167,6 +181,27 @@ const INTERVIEW_ROLE_PERMISSIONS = [
   { role: "Interviewer", action: "UPDATE", scope: "OWN" },
 ] as const;
 
+// Module 6 — Offer Management (§11.6). Ownership resolves solely against
+// Offer.createdById (the recruiter who drafted it), same choice as Job's
+// primaryRecruiterId: Hiring Manager approves without being tied to having
+// drafted the offer (ALL-scope APPROVE, mirroring their JOB APPROVE grant).
+// "HR / Onboarding" (seeded in Module 1, unused until now) gets read-only
+// visibility, matching its PRD description exactly — it receives the
+// finalized record, it doesn't act in the offer lifecycle. No DELETE grant
+// for anyone — same "no hard delete, retire via status" precedent as
+// Job/Application/Interview.
+const OFFER_ROLE_PERMISSIONS = [
+  { role: "Recruiter", action: "CREATE", scope: "ALL" },
+  { role: "Recruiter", action: "READ", scope: "ALL" },
+  { role: "Recruiter", action: "UPDATE", scope: "OWN" },
+  { role: "Hiring Manager", action: "READ", scope: "ALL" },
+  { role: "Hiring Manager", action: "APPROVE", scope: "ALL" },
+  { role: "Recruiting Manager", action: "CREATE", scope: "ALL" },
+  { role: "Recruiting Manager", action: "READ", scope: "TEAM" },
+  { role: "Recruiting Manager", action: "UPDATE", scope: "TEAM" },
+  { role: "HR / Onboarding", action: "READ", scope: "ALL" },
+] as const;
+
 async function main() {
   const organization = await prisma.organization.upsert({
     where: { id: "default" },
@@ -258,6 +293,16 @@ async function main() {
     });
   }
   console.log(`Seeded ${INTERVIEW_ROLE_PERMISSIONS.length} default Interview role permissions`);
+
+  for (const grant of OFFER_ROLE_PERMISSIONS) {
+    const role = await prisma.role.findUniqueOrThrow({ where: { name: grant.role } });
+    await prisma.rolePermission.upsert({
+      where: { roleId_resource_action: { roleId: role.id, resource: "OFFER", action: grant.action } },
+      update: { scope: grant.scope },
+      create: { roleId: role.id, resource: "OFFER", action: grant.action, scope: grant.scope },
+    });
+  }
+  console.log(`Seeded ${OFFER_ROLE_PERMISSIONS.length} default Offer role permissions`);
 
   const adminEmail = process.env.SEED_ADMIN_EMAIL;
   const adminPassword = process.env.SEED_ADMIN_PASSWORD;

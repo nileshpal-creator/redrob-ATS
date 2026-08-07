@@ -537,12 +537,15 @@ export async function deleteCandidateDocument(
  * Extensible read model (§11.2's candidate timeline). CandidateNote feeds
  * the original "note" item type; Module 4 added "application_created"/
  * "application_stage_changed"/"application_rejected"/"application_withdrawn";
- * Module 5 adds "interview_scheduled"/"interview_completed"/
+ * Module 5 added "interview_scheduled"/"interview_completed"/
  * "interview_cancelled"/"interview_feedback_submitted" (derived from
  * Interview/InterviewFeedback rows, joined through Application the same
- * way ApplicationEvent is) — each addition without changing the existing
- * contract. Future modules (Offer, Communication Hub) add more `type`s the
- * same way.
+ * way ApplicationEvent is); Module 6 adds "offer_created"/"offer_approved"/
+ * "offer_approval_rejected"/"offer_extended"/"offer_accepted"/
+ * "offer_declined"/"offer_revoked" (derived from Offer/OfferApproval rows,
+ * same join pattern) — each addition without changing the existing
+ * contract. Future modules (Communication Hub) add more `type`s the same
+ * way.
  */
 export async function getCandidateTimeline(context: SessionContext, candidateId: string) {
   const candidate = await prisma.candidate.findUnique({ where: { id: candidateId } });
@@ -551,7 +554,7 @@ export async function getCandidateTimeline(context: SessionContext, candidateId:
   }
   await assertCandidateAccess(context, candidate, "READ");
 
-  const [notes, applications, interviews] = await Promise.all([
+  const [notes, applications, interviews, offers] = await Promise.all([
     prisma.candidateNote.findMany({
       where: { candidateId },
       orderBy: { createdAt: "desc" },
@@ -581,6 +584,15 @@ export async function getCandidateTimeline(context: SessionContext, candidateId:
         application: { select: { jobId: true, job: { select: { title: true } } } },
         cancellationReason: true,
         feedback: { include: { interviewer: { select: userSummarySelect } } },
+      },
+    }),
+    // Module 6 — joined through Application, the same way Interview is.
+    prisma.offer.findMany({
+      where: { application: { candidateId } },
+      include: {
+        application: { select: { jobId: true, job: { select: { title: true } } } },
+        outcomeReason: true,
+        approvals: { where: { status: { not: "PENDING" } }, include: { approver: { select: userSummarySelect } } },
       },
     }),
   ]);
@@ -675,6 +687,46 @@ export async function getCandidateTimeline(context: SessionContext, candidateId:
     })),
   );
 
+  // Module 6 — same "no separate event-history table, updatedAt is the
+  // timestamp proxy" choice as Interview above, except the one transition
+  // rich enough to need its own record — the approval decision — has one:
+  // OfferApproval. Its rows are already filtered to non-PENDING above.
+  const offerCreatedItems = offers.map((offer) => ({
+    type: "offer_created" as const,
+    id: `${offer.id}:created`,
+    jobId: offer.application.jobId,
+    jobTitle: offer.application.job.title,
+    compensation: offer.compensation.toString(),
+    createdAt: offer.createdAt,
+  }));
+
+  const offerApprovalItems = offers.flatMap((offer) =>
+    offer.approvals.map((approval) => ({
+      type: (approval.status === "APPROVED" ? "offer_approved" : "offer_approval_rejected") as
+        | "offer_approved"
+        | "offer_approval_rejected",
+      id: approval.id,
+      jobId: offer.application.jobId,
+      jobTitle: offer.application.job.title,
+      approver: approval.approver,
+      comments: approval.comments,
+      // decidedAt is set whenever status leaves PENDING (see transitionOffer),
+      // so this cast is safe given the `status: { not: "PENDING" }` filter above.
+      createdAt: approval.decidedAt as Date,
+    })),
+  );
+
+  const offerStatusItems = offers
+    .filter((offer) => offer.status === "EXTENDED" || offer.status === "ACCEPTED" || offer.status === "DECLINED" || offer.status === "REVOKED")
+    .map((offer) => ({
+      type: `offer_${offer.status.toLowerCase()}` as "offer_extended" | "offer_accepted" | "offer_declined" | "offer_revoked",
+      id: `${offer.id}:${offer.status.toLowerCase()}`,
+      jobId: offer.application.jobId,
+      jobTitle: offer.application.job.title,
+      reason: offer.outcomeReason?.label ?? null,
+      createdAt: offer.updatedAt,
+    }));
+
   const items = [
     ...noteItems,
     ...applicationItems,
@@ -682,6 +734,9 @@ export async function getCandidateTimeline(context: SessionContext, candidateId:
     ...interviewScheduledItems,
     ...interviewStatusItems,
     ...interviewFeedbackItems,
+    ...offerCreatedItems,
+    ...offerApprovalItems,
+    ...offerStatusItems,
   ].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 
   return { items };

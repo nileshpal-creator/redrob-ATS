@@ -103,6 +103,24 @@ type TimelineItem =
       interviewer: Person;
       recommendation: "STRONG_YES" | "YES" | "NO" | "STRONG_NO";
       createdAt: string;
+    }
+  | { type: "offer_created"; id: string; jobId: string; jobTitle: string; compensation: string; createdAt: string }
+  | {
+      type: "offer_approved" | "offer_approval_rejected";
+      id: string;
+      jobId: string;
+      jobTitle: string;
+      approver: Person | null;
+      comments: string | null;
+      createdAt: string;
+    }
+  | {
+      type: "offer_extended" | "offer_accepted" | "offer_declined" | "offer_revoked";
+      id: string;
+      jobId: string;
+      jobTitle: string;
+      reason: string | null;
+      createdAt: string;
     };
 
 export function CandidateDetailClient({
