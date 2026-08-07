@@ -22,6 +22,17 @@ All routes live under `src/app/api/**/route.ts` and are wrapped in `withApiHandl
 | malformed JSON body (`SyntaxError`) | `400` | `{ "error": "Malformed request body." }` |
 | anything else | `500` | `{ "error": "Internal server error" }` (logged server-side) |
 
+Module-4-specific error conditions all map to one of the generic error types above, not a new
+type — listed here because they're easy to miss when reasoning about what an Application
+endpoint can return:
+
+| Condition | Error | Status | Notes |
+| --- | --- | --- | --- |
+| Transitioning an application whose `outcome` is already `REJECTED`/`WITHDRAWN` (terminal outcome) | `ValidationError` | `400` | `{ "error": "This application is already rejected and cannot be transitioned further." }` (or `withdrawn`) — no transition of any kind is accepted once an outcome leaves `ACTIVE`. |
+| `STAGE_MOVE`/create targeting a `PipelineStage` that is inactive, belongs to a different job, or doesn't exist | `ValidationError` | `400` | `{ "error": "Invalid pipeline stage." }` |
+| The caller's `version` no longer matches the stored row (stale version) | `ConflictError` | `409` | `{ "error": "This application was changed by someone else. Reload and try again." }` — identical message/shape to Job's and Candidate's own version-conflict error. |
+| Duplicate-warning behavior on create/duplicate-check | *(not an error)* | `200` | Re-applying a candidate to a job with existing prior applications is **never** rejected — `POST /api/applications` always succeeds and returns `priorApplications` on the response; `GET /api/applications/duplicates` is a separate, side-effect-free pre-flight check for the same data. This is a deliberate difference from Candidate's hard phone-duplicate block. |
+
 A successful call returns the service function's return value as JSON with a `200` status
 (mutations that return nothing, e.g. `DELETE`, get `{ "ok": true }`).
 
@@ -393,6 +404,211 @@ Export the caller's visible candidates as a file.
 
 Every export is audit-logged (`candidate.exported`) with the requested format and the row
 count actually returned — never a full row dump of exported data.
+
+## Applications
+
+### `GET /api/applications`
+
+List applications, filtered and scoped to what the caller is permitted to see.
+
+- **Query params** (`applicationQuerySchema`): `jobId?`, `candidateId?`, `stageId?`, `outcome?`
+  (`ACTIVE | REJECTED | WITHDRAWN`), `ownerId?`, `q?` (case-insensitive candidate-name search),
+  `page?` (default `1`), `pageSize?` (default `25`, max `100`).
+- **Response**: `{ applications: Application[], total: number, page: number, pageSize: number
+  }`. Each `Application` includes `candidate`, `job`, `stage`, `owner`.
+- **Permissions**: `APPLICATION:READ`. The effective scope (`ALL`/`TEAM`/`OWN`) is resolved via
+  `getEffectiveScope` and applied as a `WHERE ownerId ...` filter — `OWN` restricts to
+  applications the caller owns, `TEAM` to the caller and their direct reports. A caller-supplied
+  `ownerId` filter narrows further but can never widen past the caller's own scope.
+- **Status codes**: `200` success · `400` invalid query params · `403` no `APPLICATION:READ`
+  grant at any scope.
+
+### `POST /api/applications`
+
+Create an application, linking a candidate to a job.
+
+- **Request body** (`applicationCreateSchema`):
+  ```json
+  {
+    "candidateId": "string, required",
+    "jobId": "string, required",
+    "stageId": "string, optional — defaults to the job's lowest-sortOrder active PipelineStage",
+    "ownerId": "string, optional — defaults to Job.primaryRecruiterId",
+    "customFields": "object, optional — validated against active APPLICATION custom field definitions"
+  }
+  ```
+- **Response**: the created `Application` (full detail include — see `GET
+  /api/applications/[id]`), plus `priorApplications: { id, outcome, createdAt }[]` — every other
+  existing application for the same `(candidateId, jobId)` pair, for the create form's
+  non-blocking duplicate warning. Re-applying is **never** blocked, only surfaced.
+- **Permissions**: `APPLICATION:CREATE`.
+- **Status codes**: `200` created · `400` schema validation failure, candidate/job not found, an
+  explicit `stageId` that's inactive or belongs to a different job, the job has no active
+  pipeline stages configured at all (and no `stageId` was given), an inactive `ownerId`, or an
+  invalid/inactive custom field · `403` no `APPLICATION:CREATE` grant.
+
+### `GET /api/applications/[id]`
+
+Fetch one application's full detail.
+
+- **Response**: the `Application` with `candidate`, `job`, `stage`, `owner`, `createdBy`,
+  `outcomeReason`, and `events` (newest first, each with `actor`, `fromStage`, `toStage`,
+  `reason`).
+- **Permissions**: `APPLICATION:READ` at `ALL` scope, or at `OWN`/`TEAM` scope where the caller
+  (or their team) is the application's owner.
+- **Status codes**: `200` success · `403` caller has no qualifying grant for this application ·
+  `404` no application with that id.
+
+### `PATCH /api/applications/[id]`
+
+Partially update an application. Requires optimistic-locking `version`. Does **not** accept
+`stageId` or `outcome` — those go through `POST /api/applications/[id]/transition` instead, never
+through a plain update.
+
+- **Request body** (`applicationUpdateSchema`): `version` (required, integer) plus any subset of
+  `ownerId` (reassign the owner), `customFields`.
+- **Response**: the updated `Application` (full detail include), with `version` incremented by 1.
+- **Permissions**: same ownership rule as `GET /api/applications/[id]`, but for
+  `APPLICATION:UPDATE`.
+- **Status codes**: `200` success · `400` schema validation failure, an inactive `ownerId`, or an
+  invalid custom field · `403` no qualifying grant · `404` application not found · `409` the
+  supplied `version` no longer matches the stored row.
+
+### `GET /api/applications/duplicates`
+
+Pre-flight duplicate check for the create form — never mutates anything, and never blocks.
+
+- **Query params** (`applicationDuplicateCheckSchema`): `candidateId` (required), `jobId`
+  (required).
+- **Response**: `{ priorApplications: { id, outcome, stageId, createdAt }[] }` — every existing
+  application for this exact `(candidateId, jobId)` pair, newest first. An empty array means no
+  prior application exists; a non-empty array is shown as a non-blocking warning, never an error.
+- **Permissions**: `APPLICATION:READ` at any scope (checked via `getEffectiveScope`, not against
+  any one record — a plain `OWN`-scope grant, the common Recruiter case, still passes).
+- **Status codes**: `200` success · `400` missing/invalid `candidateId`/`jobId` · `403` no
+  `APPLICATION:READ` grant at any scope.
+
+### `POST /api/applications/[id]/transition`
+
+Move an application's stage, or set a terminal outcome (reject/withdraw). The one entry point
+for all three single-application transitions — mirrors Job's `/status` action-endpoint pattern.
+Rejected and Withdrawn are terminal: once `outcome` leaves `ACTIVE`, no further call to this
+endpoint for the same application succeeds, regardless of `action`.
+
+- **Request body** (`applicationTransitionSchema`, a discriminated union on `action`):
+  ```json
+  { "action": "STAGE_MOVE", "version": "integer, required", "toStageId": "string, required", "note": "string, optional, max 2000 chars" }
+  ```
+  ```json
+  { "action": "REJECT", "version": "integer, required", "reasonId": "string, required — must be an active REJECTION_REASON value", "note": "string, optional" }
+  ```
+  ```json
+  { "action": "WITHDRAW", "version": "integer, required", "reasonId": "string, required — same list as REJECT", "note": "string, optional" }
+  ```
+- **Response**: the updated `Application` (full detail include), with a new `ApplicationEvent`
+  row reflected in `events`.
+- **Permissions**: `APPLICATION:UPDATE` at `ALL` scope, or at `OWN`/`TEAM` scope against the
+  application's owner.
+- **Status codes**: `200` success · `400` the application's outcome is already terminal (see the
+  error table above), `toStageId` refers to an inactive/nonexistent/wrong-job stage, or
+  `reasonId` isn't an active `REJECTION_REASON` value · `403` no qualifying grant · `404`
+  application not found · `409` version mismatch.
+
+### `POST /api/applications/bulk/transition`
+
+Apply the same stage-move/reject/withdraw action to many applications in one request.
+**Best-effort, not atomic** — one target's failure doesn't fail the rest.
+
+- **Request body** (`applicationBulkTransitionSchema`, a discriminated union on `action`):
+  ```json
+  {
+    "action": "STAGE_MOVE",
+    "applications": [{ "id": "string", "version": "integer" }, "1-500 entries"],
+    "toStageId": "string, required",
+    "note": "string, optional"
+  }
+  ```
+  (`REJECT`/`WITHDRAW` take the same `applications` array plus `reasonId` instead of
+  `toStageId`.)
+- **Response**: `{ "succeeded": Application[], "failed": [{ "id": string, "reason": string },
+  ...] }`. Each target is processed independently through the same logic as
+  `POST /api/applications/[id]/transition`; a stale version, terminal-outcome conflict, or
+  missing permission on one target lands it in `failed` with a human-readable `reason` instead of
+  aborting the batch.
+- **Permissions**: same as the single-application transition, checked per target — a caller
+  missing the grant for one target simply gets that one reported in `failed`.
+- **Status codes**: `200` success (inspect the response body — some targets may still be
+  `failed`) · `400` schema validation failure (e.g. empty `applications` array, more than 500
+  entries) · `403` only if the request as a whole can't be parsed as a valid action.
+
+### `POST /api/applications/bulk/email`
+
+Queue a templated email for many applications' candidates. **Infrastructure only — never sends
+a real email.** Writes one `ApplicationEmailLog` row per recipient with `status: PENDING`; real
+delivery is deferred to the future Communication Hub module.
+
+- **Request body** (`applicationBulkEmailSchema`):
+  ```json
+  {
+    "applicationIds": "string[], 1-500 entries, required",
+    "subject": "string, 1-200 chars, required — supports {{candidate.name}} / {{job.title}}",
+    "body": "string, 1-10000 chars, required — same placeholders"
+  }
+  ```
+- **Response**: `{ "succeeded": [{ "applicationId": string, "toEmail": string }, ...], "failed":
+  [{ "id": string, "reason": string }, ...] }`. A candidate with no email on file, an application
+  the caller can't `UPDATE`, or a nonexistent application id lands that target in `failed`
+  (`"Candidate has no email on file."`, a permission message, or `"Application not found."`
+  respectively) rather than aborting the batch.
+- **Permissions**: `APPLICATION:UPDATE`, checked per target the same way bulk transition is.
+- **Status codes**: `200` success (inspect the response body) · `400` schema validation failure
+  · `403` only if the request as a whole can't be parsed as a valid action.
+
+## Pipeline Stages
+
+Configuring a job's pipeline is authorized as `JOB:<action>` on the parent job (see
+[architecture.md#pipelinestage](architecture.md#pipelinestage)), not a separate resource —
+there is no `PIPELINE_STAGE:*` permission.
+
+### `GET /api/jobs/[id]/pipeline-stages`
+
+List a job's pipeline stages, active and inactive alike, in `sortOrder`.
+
+- **Response**: `PipelineStage[]` — `{ id, jobId, name, sortOrder, isActive, createdAt,
+  updatedAt }`.
+- **Permissions**: `JOB:READ` at `ALL` scope, or at `OWN`/`TEAM` scope against the job's primary
+  recruiter.
+- **Status codes**: `200` success · `403` no qualifying grant · `404` job not found.
+
+### `PUT /api/jobs/[id]/pipeline-stages`
+
+Replace a job's entire pipeline stage set. The client always submits the complete desired
+**active** list, in order — this is a full-set replace, the same convention `PUT
+/api/jobs/[id]/recruiters` established in Module 2.
+
+- **Request body** (`pipelineStagesReplaceSchema`):
+  ```json
+  {
+    "stages": [
+      { "id": "string, optional — omit for a new stage", "name": "string, 1-100 chars" }
+    ]
+  }
+  ```
+  At least one stage, required; names must be case-insensitively unique within the request.
+- **Response**: the job's full stage list (active **and** inactive), in `sortOrder` — not just
+  what was submitted. An entry whose `id` matches an existing stage is renamed/reordered/
+  reactivated in place (`sortOrder` is set to its position in the submitted array); an entry with
+  no `id` is created; an existing active stage omitted from the array is **deactivated**, never
+  deleted.
+- **Permissions**: `JOB:UPDATE` at `ALL` scope, or at `OWN`/`TEAM` scope against the job's primary
+  recruiter.
+- **Status codes**: `200` success · `400` schema validation failure (empty list, duplicate names)
+  · `403` no qualifying grant · `404` job not found.
+
+Deactivating a stage does **not** check for active applications still sitting in it at the
+service layer — that guard is client-side only (the pipeline-stage editor UI blocks the removal
+and shows a count). An `Application.stageId` pointing at a now-inactive stage is left completely
+untouched either way; only new stage-move/create requests are validated against `isActive`.
 
 ## Roles & Permissions
 

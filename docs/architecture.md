@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes the system as actually implemented through Module 3, Phase 6. It is
+This document describes the system as actually implemented through Module 4, Phase 6. It is
 kept in sync with the code — if something here and the code disagree, the code is correct and
 this file is stale.
 
@@ -121,9 +121,12 @@ src/
   app/
     (app)/                    Authenticated shell
       admin/                  Admin settings: users, roles, custom-fields, audit-log
-      jobs/                   Job list, /jobs/new, /jobs/[id], /jobs/[id]/edit
+      jobs/                   Job list, /jobs/new, /jobs/[id], /jobs/[id]/edit,
+                               /jobs/[id]/pipeline (board + list, Module 4)
       candidates/             Candidate list, /candidates/new, /candidates/[id],
                                /candidates/[id]/edit, /candidates/import
+      applications/           Application list, /applications/new, /applications/[id]
+                               (Module 4)
     api/                      Route handlers — thin, one per src/lib/services export
     login/                    Sign-in page (outside the authenticated shell)
   components/
@@ -133,9 +136,13 @@ src/
     auth/                     Login form
     authz/                    PermissionGate — UI-level hiding, not enforcement
     custom-fields/            Generic custom-field form section, reused by any entity form
-    jobs/                     Job form, recruiter picker, tag input, status action controls
+    jobs/                     Job form, recruiter picker, tag input, status action controls,
+                               job-pipeline-client.tsx + pipeline-stage-editor.tsx (Module 4)
     candidates/               Candidate form, duplicate check, documents, timeline, notes,
                                merge dialog, import wizard, experience/education editors
+    applications/             Application form, candidate picker, duplicate check, owner
+                               editor, transition actions, bulk action toolbar, pipeline
+                               board (the one file importing @dnd-kit/core) (Module 4)
   config/
     nav.ts                    Nav item definitions, gated per-item by permission
   lib/
@@ -145,7 +152,9 @@ src/
     custom-fields/            dynamic Zod schema builder for admin-defined fields
     jobs/                     status-machine.ts — the Job status transition table
     storage/                  StorageProvider interface + LocalStorageProvider + factory
-    services/                 permission-checked business logic; one file per resource
+    templates/                render.ts — minimal {{key}} substitution for bulk email (Module 4)
+    services/                 permission-checked business logic; one file per resource —
+                               includes applications.ts and pipeline-stages.ts (Module 4)
     validations/              Zod schemas, shared by API routes and client forms
     api/                      withApiHandler — the one place mapping domain errors to HTTP codes
     entity-registry.ts        Resource/entity key registry for RBAC + custom fields + audit
@@ -156,6 +165,7 @@ prisma/
   schema.prisma               Data model
   seed.ts                     Default roles, controlled lists, permission grants, admin user
   migrations/                 One directory per migration, applied in order
+  backfill-pipeline-stages.ts One-time script seeding default stages onto pre-Module-4 jobs
 storage/                      Local candidate-document storage root (gitignored, dev-only)
 tests/
   services/, validations/     Vitest suites against the dedicated ats_test database
@@ -444,3 +454,282 @@ was the only change needed.
 The [folder structure tree](#folder-structure) under Module 1 already reflects Module 3's
 additions (`src/lib/storage/`, `src/components/candidates/`, `src/app/(app)/candidates/`,
 `src/app/api/candidates/**`, and the gitignored `/storage` directory).
+
+## Module 4 — Applications / Candidate Pipeline (PRD §11.4)
+
+Module 4 adds one core entity, `Application`, plus two supporting history/log tables
+(`ApplicationEvent`, `ApplicationEmailLog`) and one configuration table (`PipelineStage`), and —
+like Modules 2 and 3 — layers on the existing Module 1 primitives:
+
+- **RBAC**: reuses `(resource, action, scope)` with `resource = "APPLICATION"`. No new
+  `PermissionAction` was needed — Application is a plain-CRUD resource in
+  `src/lib/authz/resource-actions.ts` (falls through to the default `CREATE`/`READ`/`UPDATE`/
+  `DELETE` set; there is no `DELETE` endpoint, so that action is simply never granted).
+  `PipelineStage` configuration is authorized as `JOB:<action>` on the parent job, not as its
+  own resource — configuring a job's pipeline is conceptually part of configuring that job, the
+  same way recruiter assignment already is.
+- **Customization Engine**: `APPLICATION` is added to `CUSTOM_FIELD_CAPABLE_ENTITIES` — no new
+  engine code, same `buildCustomFieldValueSchema` path Job and Candidate already exercise.
+- **Controlled Lists**: `REJECTION_REASON` (seeded since Module 1, unconsumed until now) backs
+  both `Application.outcomeReasonId` and `ApplicationEvent.reasonId` — the same
+  `assertControlledListValue` validation pattern Job and Candidate already use for their own
+  Controlled List FKs.
+- **Audit log**: Application and pipeline-stage actions log through the same `recordAudit`
+  helper and `AuditLog` table, with seven new action strings: `application.created`,
+  `application.updated`, `application.stage_changed`, `application.rejected`,
+  `application.withdrawn`, `application.bulk_transitioned`,
+  `application.bulk_email_requested`, and `pipeline_stages.updated`.
+
+New pieces specific to Module 4:
+
+- `src/lib/services/pipeline-stages.ts` — per-job pipeline configuration: default-stage
+  seeding, reads, and the full-set replace operation (below).
+- `src/lib/services/applications.ts` — all core Application business logic: scope-filtered
+  listing, detail reads, duplicate pre-checks, create, update (owner/custom fields, optimistic
+  locking), the single transition entry point (stage move / reject / withdraw), bulk transition,
+  and bulk email.
+- `src/lib/templates/render.ts` — a minimal `{{key}}`-substitution helper for the bulk-email
+  feature's subject/body rendering; deliberately not the full Template Designer (§10.4).
+- `prisma/backfill-pipeline-stages.ts` — a one-time, idempotent script seeding the default
+  pipeline onto any job created before this module shipped (see
+  [Board/list architecture](#boardlist-architecture) below).
+
+### Service layer
+
+Application follows the same layering the [overall architecture](#overall-architecture) diagram
+describes for every module: thin route handlers under `src/app/api/applications/**` and
+`src/app/api/jobs/[id]/pipeline-stages` parse a Zod schema (`src/lib/validations/application.ts`)
+and call exactly one function in `applications.ts` or `pipeline-stages.ts`; every permission
+check and all business logic lives in those two service files, never in a route handler or a
+client component. `assertApplicationAccess`/`assertJobAccess` (a small private copy inside
+`pipeline-stages.ts`, not imported from `jobs.ts`, to avoid a circular import — `jobs.ts` calls
+`seedDefaultPipelineStages` from `pipeline-stages.ts`) follow the exact
+`can(ALL) → can(ownerId) → throw ForbiddenError` shape `assertJobAccess`/`assertCandidateAccess`
+already established.
+
+### `PipelineStage`
+
+A dedicated, ordered, per-job configuration model (Phase 2 decision) — deliberately **not** a
+Prisma enum (different jobs run different stage sets) and **not** a `ControlledList`
+(`ControlledList` is global and unordered; a job's pipeline needs its own per-job ordering).
+`createJob` seeds four starter stages (`Applied`, `Screening`, `Interview`, `Offer`,
+`DEFAULT_PIPELINE_STAGE_NAMES`) transactionally at job creation, since `Application.stageId` is
+required and a brand-new job has no stages yet.
+
+A stage is **never hard-deleted** once it exists — "removing" it from the pipeline just sets
+`isActive: false`; it may already be referenced by an `Application` or `ApplicationEvent`, both
+of which point at it with a default (`Restrict`) FK. `replacePipelineStages` is a full-set
+replace, the same convention `updateJobRecruiters` (Module 2) established: the client always PUTs
+the complete desired ordered list. An entry with an `id` matching an existing stage is
+renamed/reordered/reactivated in place; an entry with no `id` is created; an existing stage
+omitted from the submitted array is deactivated, never deleted.
+
+Uniqueness on `(jobId, name)` is enforced only among **active** stages, via a hand-written
+partial unique index (`pipeline_stage_active_name_unique` — see
+[database.md](database.md#partial-unique-indexes)), not a full Prisma `@@unique`. A full
+constraint would permanently reserve a deactivated stage's name and block ever reusing it for a
+new active stage — the opposite of "deactivate, don't delete, can bring back." Because the
+partial index only exempts inactive rows, `replacePipelineStages` applies its writes in three
+ordered phases inside one transaction to avoid two kinds of transient collision that a naive
+single pass over the request would hit:
+
+1. Every kept stage (an entry with an existing `id`) is first renamed to a temporary name derived
+   from its own id (`__pending__<id>`), which can never collide with anything.
+2. Every stage being removed (an existing, active stage with no matching entry in the request) is
+   deactivated — this exempts its old name from the partial index.
+3. Only then are the real target names/sort orders applied to kept stages, and new stages
+   created.
+
+This ordering is what makes two specific requests safe: swapping two active stages' names in one
+call (phase 1 clears both real names before phase 3 reassigns them), and introducing a new active
+stage that reuses a name just freed by deactivating another stage in the same call (phase 2 runs
+before phase 3). Both are covered by dedicated regression tests
+(`tests/services/pipeline-stages.service.test.ts`) added after this exact bug was found and fixed
+during Phase 5 testing — see [project-status.md](project-status.md#completed-modules) and
+[CHANGELOG.md](../CHANGELOG.md).
+
+### `Application`
+
+"One candidate against one job, holding the pipeline stage" (§9). Deliberately **no** unique
+constraint on `(candidateId, jobId)` — re-applying the same candidate to the same job is allowed,
+only warned about (§11.4) — see [Duplicate detection (Applications)](#duplicate-detection-applications) below.
+`candidateId`/`jobId` carry no `onDelete` override (default `Restrict`): Candidate deletion is
+blocked by a service-layer check in `deleteCandidate` before it would ever hit this FK (see
+[Candidate integration](#candidate-integration) below), and `Job` has no delete endpoint at all,
+so neither FK's `Restrict` behavior is ever actually exercised in normal use — it exists as a
+database-level backstop, not the primary enforcement path.
+
+**Ownership.** A dedicated `Application.ownerId` (Phase 2 decision) — §9 names `owner` as its own
+Application field, distinct from the candidate/job themselves, unlike Candidate, which has no
+owner-like field of its own. `ownerId` defaults to the job's primary recruiter at creation
+(mirroring how a job's primary recruiter anchors Job's own ownership) but is independently
+reassignable afterward via `PATCH /api/applications/[id]` — reassignment never touches
+`Job.primaryRecruiterId`, and reassigning a job's primary recruiter never touches any
+Application's `ownerId`. Every Application permission check —
+`can(ALL) → can({ ownerId: application.ownerId }) → ForbiddenError` — resolves OWN/TEAM scope
+against this one column, the same uniform "ownership anchor" pattern Job
+(`primaryRecruiterId`) and Candidate (`createdById`) each already use.
+
+**Application outcomes.** `outcome` (`ApplicationOutcome`: `ACTIVE`/`REJECTED`/`WITHDRAWN`) is
+orthogonal to `stage` — a separate column, not two more stages in the pipeline. Rejected and
+Withdrawn are both **terminal**: once `outcome` leaves `ACTIVE`, `transitionApplication` rejects
+every further transition (stage move or another outcome change) with a `400`, and `outcome` is
+never reset back to `ACTIVE`. `stage` stays frozen at whatever it was the moment the outcome was
+set — rejecting an application from `Interview` leaves its `stage` reading `Interview` forever,
+a deliberate snapshot of where it was when it left the pipeline. Both terminal outcomes require a
+reason from the `REJECTION_REASON` Controlled List.
+
+**Optimistic locking.** `Application.version` follows the exact `Job.version`/`Candidate.version`
+pattern: every update or transition is a single `prisma.application.updateMany({ where: { id,
+version: <caller's version> }, data: { ..., version: { increment: 1 } } })`; a version mismatch
+means `updateMany` matches zero rows and the service throws `ConflictError` → `409`.
+
+### `ApplicationEvent`
+
+An immutable history row for every stage move and outcome change, modeled directly on Module 2's
+`JobStatusChange`. `transitionApplication` writes the `Application` update and its
+`ApplicationEvent` row inside one `$transaction`, so the two can never diverge. A `STAGE_CHANGE`
+event sets both `fromStageId` and `toStageId`; a `REJECTED`/`WITHDRAWN` event sets only
+`fromStageId` (a snapshot of where the application was when it left the pipeline) plus a
+required `reasonId` — there is no `toStageId` for a terminal-outcome event, since the
+application didn't move anywhere, it left.
+
+### `ApplicationEmailLog`
+
+Bulk email is **infrastructure only** (§11.4, Phase 2 decision): `bulkEmailApplications` renders
+the subject/body template (`src/lib/templates/render.ts`, `{{candidate.name}}`/`{{job.title}}`
+placeholders) per recipient and writes one `ApplicationEmailLog` row with `status: PENDING` — it
+never calls a real mail provider. `SENT`/`FAILED`/`CANCELLED` are reserved for the future
+Communication Hub module to set once real delivery exists, the same "field exists, only a later
+module writes non-default values" pattern `Job.positionsFilledCount` already established in
+Module 2. The log is scoped narrowly to `Application` (one row per application per bulk-email
+call), not a polymorphic entity-agnostic log — Module 4 has exactly one feature that queues
+email (there is nothing else in this module for a polymorphic log to also serve).
+
+### Board/list architecture
+
+`job-pipeline-client.tsx` (a job's Pipeline page) and `applications-client.tsx` (the global
+Applications list) both fetch their application set once and render it through a `Tabs`/table
+split rather than two independent views:
+
+- The job Pipeline page's Board and List tabs share one `applications` array in component state
+  — switching tabs re-renders the same data, no second fetch.
+- The global Applications list is `applications-client.tsx` alone (list only; there is no global
+  board, since a board's columns are a *job's* pipeline stages, which don't exist independent of
+  a job).
+
+Both pages reuse the same `BulkActionToolbar` component for their bulk-action row, and the same
+`DataTable` component (extended in Module 4 with opt-in row-selection support — `getRowId` +
+`rowSelection` + `onRowSelectionChange` — while staying backward-compatible with every caller
+that doesn't pass those props).
+
+Every job's Board defaults to showing its `Applied`/`Screening`/`Interview`/`Offer` starter
+pipeline the moment the job exists, because `createJob` seeds those four stages transactionally
+in the same `$transaction` as the job row itself (`seedDefaultPipelineStages`, called from
+`src/lib/services/jobs.ts`). Jobs created before Module 4 shipped have no stages until
+`prisma/backfill-pipeline-stages.ts` is run once against that environment (idempotent — skips
+jobs that already have at least one stage).
+
+### Drag-and-drop isolation
+
+`@dnd-kit/core` is imported in exactly one file, `src/components/applications/pipeline-board.tsx`
+(a Phase 4 constraint: "keep drag-and-drop isolated behind reusable components"). `PipelineBoard`
+owns only the drag mechanics — `DndContext`, a `PointerSensor` for mouse/touch and a
+`KeyboardSensor` so a focused card can be picked up/moved/dropped with keyboard alone — and
+reports a completed drop via an `onDropCard(applicationId, toStageId)` callback. It renders
+whatever `applications`/`stages` it's given and holds no application data itself; the caller
+(`job-pipeline-client.tsx`) owns all optimistic-update-with-rollback state, so `PipelineBoard`
+stays a plain, swappable presentation layer a future redesign could replace without touching any
+state logic.
+
+### Optimistic updates and rollback behavior
+
+`handleDropCard` in `job-pipeline-client.tsx` updates the dragged card's stage in local state
+immediately (before the server confirms), then calls `POST /api/applications/[id]/transition`
+with `action: "STAGE_MOVE"`. On success, the card's `version`/`stage`/`stageEnteredAt` are
+reconciled from the server's response. On failure (most commonly a `409` from a stale `version`
+— another user moved the same card first), the card is rolled back to its stage *before* the
+drag started.
+
+The snapshot and rollback are both scoped to **only the dragged card**, via a functional
+`setApplications((prev) => prev.map(...))` update — not a snapshot of the entire applications
+array. This distinction matters under concurrent drags: if a second card is dragged while the
+first card's request is still in flight, and the first request later fails, a full-array
+rollback would silently undo the second card's already-confirmed move too. This was a real race
+condition found and fixed during Phase 5 testing (see
+[project-status.md](project-status.md#completed-modules) and
+[CHANGELOG.md](../CHANGELOG.md)) — reproduced and verified end-to-end with a Playwright test that
+forces a concurrent server-side change mid-drag and confirms only the affected card reverts.
+
+### Bulk operations
+
+`bulkTransitionApplications` and `bulkEmailApplications` are both **best-effort, not atomic** —
+the same `{ succeeded: [...], failed: [{ id, reason }] }` split
+`commitCandidateImport`'s `created`/`skipped` response established in Module 3. One target's
+stale version, terminal-outcome conflict, or missing permission doesn't fail the rest of the
+batch; each target still goes through the single-item service function (`transitionApplication`
+or the per-application email-log write) with its own `$transaction`, so every individual
+mutation and its side effect (an `ApplicationEvent` row, or an `ApplicationEmailLog` row) commit
+or roll back together. Frontend bulk actions are limited to exactly four, per the Phase 2
+decision: stage move, reject, withdraw, and bulk email — there is no bulk delete (Application has
+no delete endpoint) and no bulk custom-field edit.
+
+### Duplicate detection (Applications)
+
+Unlike Candidate's hard phone-uniqueness block, Module 4's duplicate handling is **entirely
+non-blocking**, per §11.4's stated behavior ("warn when re-adding a candidate previously in the
+pipeline for the same job"): `findDuplicateApplications` (`GET /api/applications/duplicates`)
+returns every prior `Application` for the same `(candidateId, jobId)` pair, and `createApplication`
+itself always succeeds regardless of what it finds — the same list is simply attached to the
+create response as `priorApplications` so the UI can show the same warning without a second
+request. Like `checkCandidateDuplicates`, this uses `getEffectiveScope`, not
+`requirePermission` — it isn't checked against any one record's ownership, so a caller with a
+plain `OWN`-scope `READ` grant (the common Recruiter case) still passes.
+
+### Candidate integration
+
+Two changes to `src/lib/services/candidates.ts`, both additive — no existing Candidate behavior
+changed:
+
+- **`deleteCandidate`** now counts the candidate's `Application` rows first and throws a
+  `ValidationError` ("This candidate has applications and cannot be deleted.") if any exist,
+  before ever reaching the `StorageProvider.delete()` / database-delete sequence Module 3
+  established. `Application.candidateId`'s database-level `Restrict` FK is a backstop for this
+  same rule; the service-layer check exists so the caller gets a clean, readable `400` instead of
+  an unhandled constraint-violation error.
+- **`getCandidateTimeline`** extends the `{ items: [{ type, ... }] }` contract Module 3 built with
+  four new item types — `application_created` (one per `Application`), and
+  `application_stage_changed` / `application_rejected` / `application_withdrawn` (one per
+  `ApplicationEvent`, discriminated by the event's own `type`) — merged with the existing `note`
+  items and re-sorted by `createdAt` descending. This is the contract's first real second
+  consumer, exactly the extensibility Module 3 designed it for; the `note` item shape is
+  unchanged.
+
+### RBAC on Application
+
+No changes to the RBAC engine itself — Application is a pure consumer of the Module 1 primitives
+described under [RBAC](#rbac) above, with `resource = "APPLICATION"`. The default seed grants
+Recruiter `CREATE`/`READ` at `ALL` scope and `UPDATE` at `OWN` scope; Hiring Manager gets `READ`
+at `ALL` scope only (reviews shortlists broadly per §8, but has no application-mutation need);
+Recruiting Manager gets `CREATE` at `ALL` scope and `READ`/`UPDATE` at `TEAM` scope. No role has a
+`DELETE` grant, since there is no delete endpoint — the same "no hard delete" precedent Job
+established, rather than Candidate's hard-delete model.
+
+### Validation
+
+`src/lib/validations/application.ts` follows the established Zod conventions: `stageId`/`ownerId`
+are optional on create (resolved to defaults by the service, per above);
+`applicationTransitionSchema` is a true `z.discriminatedUnion("action", [...])` — `STAGE_MOVE`
+takes `toStageId` and no `reasonId`, `REJECT`/`WITHDRAW` take `reasonId` and no `toStageId` — a
+stricter shape than Job's `jobStatusActionSchema` (a single object validated with
+`superRefine`), chosen because Application's three actions have genuinely disjoint required
+fields, not just different legal `from` states.  `pipelineStagesReplaceSchema` requires
+case-insensitively-unique names within one request and at least one stage, mirroring
+`jobRecruitersUpdateSchema`'s "at least one, no duplicates" shape for `PUT
+/api/jobs/[id]/recruiters`.
+
+The [folder structure tree](#folder-structure) under Module 1 already reflects Module 4's
+additions (`src/lib/services/applications.ts`, `pipeline-stages.ts`, `src/lib/templates/`,
+`src/components/applications/`, `src/app/(app)/applications/`, `src/app/(app)/jobs/[id]/pipeline/`,
+`src/app/api/applications/**`, `src/app/api/jobs/[id]/pipeline-stages/`, and
+`prisma/backfill-pipeline-stages.ts`).

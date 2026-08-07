@@ -69,6 +69,36 @@ All `M`-priority requirements from §11.2 are implemented:
   set of case-insensitive column names. ⚠️ partial, see
   [Known limitations](#known-limitations)
 
+### Module 4 — Applications / Candidate Pipeline (PRD §11.4)
+
+All `M`-priority requirements from §11.4 are implemented:
+
+- Link a candidate to a job as an `Application`, tracking which stage of the pipeline they're
+  in. ✅
+- Per-job configurable pipeline stages (add/rename/reorder/deactivate/reactivate), with every new
+  job starting from a default four-stage pipeline (Applied, Screening, Interview, Offer). ✅
+- Move an application between stages, in any order — an unrestricted any-stage-to-any-stage
+  transition, not a fixed forward-only sequence. ✅
+- Reject or withdraw an application, each a terminal outcome requiring a reason, independent of
+  and never resetting the stage it happened at. ✅
+- Kanban-style board view (drag-and-drop, one column per active stage) and a list view, sharing
+  one dataset per job. ✅
+- Bulk actions — stage move, reject, withdraw, and queue an email — across multiple selected
+  applications at once, with per-item best-effort success/failure reporting. ✅
+- Warn (never block) when re-adding a candidate previously in the pipeline for the same job. ✅
+- A dedicated, independently reassignable application owner, defaulting from the job's primary
+  recruiter. ✅
+- The candidate timeline (Module 3) now surfaces application activity alongside notes, via the
+  same extensible item-type contract. ✅
+- Custom fields on Applications via the existing Customization Engine, no new engine code. ✅
+- Bulk email — **infrastructure only**: renders a template and logs what would be sent
+  (`ApplicationEmailLog`, status always `PENDING`); real delivery is scoped to the PRD's
+  Communication Hub module (§11.10), a later module, per the Phase 2 decision. ⏸ deferred
+  (queued-only by design, not a gap — see [Known limitations](#known-limitations))
+- Interview scheduling, feedback capture, and offer generation are explicitly out of scope for
+  this module — they belong to the PRD's Interview Management (§11.5) and Offer Management
+  (§11.6) modules, not yet started. ⏸ deferred
+
 ## Completed phases (Module 2)
 
 1. **Requirements Analysis** — approved decisions: simple approval workflow (not the full
@@ -129,6 +159,52 @@ All `M`-priority requirements from §11.2 are implemented:
    lists have carried real starter values since Module 1 — the docs previously and incorrectly
    claimed otherwise).
 
+## Completed phases (Module 4)
+
+1. **Requirements Analysis** — approved decisions: a dedicated ordered `PipelineStage`
+   configuration model (not an enum, not a Controlled List), unrestricted any-stage-to-any-stage
+   transitions, Rejected and Withdrawn as separate terminal outcomes orthogonal to stage, a
+   dedicated reassignable `Application.ownerId` defaulting from the job's primary recruiter,
+   blocking Candidate deletion when Applications exist, bulk actions limited to stage move/
+   reject/withdraw/bulk email, bulk email as infrastructure-only (no real delivery), and a
+   rejection reason required only for Rejected/Withdrawn.
+2. **Technical Design** — `PipelineStage`/`Application`/`ApplicationEvent`/`ApplicationEmailLog`
+   schema, service-layer design (`applications.ts`, `pipeline-stages.ts`), API surface design,
+   RBAC model, validation strategy, and migration plan.
+3. **Backend Implementation** — schema and migration, `PipelineStageService` (list, full-set
+   replace, default-stage seeding), `ApplicationService` (list/detail/create/update/duplicate-
+   check/transition/bulk-transition/bulk-email), thin API routes, seed data (Application
+   permission grants for Recruiter, Hiring Manager, Recruiting Manager), cross-module wiring
+   (`createJob` seeds default stages, `deleteCandidate` blocks on existing applications,
+   `getCandidateTimeline` gains four new item types), and a one-time backfill script for
+   pre-existing jobs.
+4. **Frontend Implementation** — an Applications nav item and global filterable list with row
+   selection and a shared bulk-action toolbar; an application create form with candidate/job
+   pickers and a non-blocking duplicate warning; an application detail page with owner
+   reassignment, single-record transition actions, and stage/outcome history; a per-job Pipeline
+   page with Board (a `@dnd-kit/core` Kanban view, isolated to one component) and List tabs
+   sharing one dataset; an ordered pipeline-stage editor; and candidate-timeline/cross-link
+   integration — all permission-gated in the nav and on each control.
+5. **Testing** — automated (Vitest) coverage of the service layer (31 tests across
+   `ApplicationService` and `PipelineStageService`) and validation schemas (21 tests) —
+   bringing the project total from 139 to 191 automated tests — plus a full curl-driven API
+   surface pass (every endpoint's validation, RBAC, optimistic locking, audit logging, terminal-
+   outcome and inactive-stage rejection, and duplicate-warning behavior verified live against the
+   dev database), a direct database inspection (FKs, cascade/restrict behavior, the new partial
+   index, version/event/audit rows), a dedicated Module 1-3 regression pass (zero regressions),
+   and a 20-step Playwright end-to-end recruiter workflow — login, job creation with default-
+   stage verification, candidate creation, application creation with a live duplicate warning, a
+   real pointer-driven board drag, reject/withdraw via the detail page, bulk reject, bulk email,
+   candidate-timeline verification, audit-log verification, and a deliberate concurrent-edit
+   drag-and-drop rollback scenario. Two real bugs found and fixed (below, and in
+   [CHANGELOG.md](../CHANGELOG.md)).
+6. **Documentation** *(this pass)* — README, architecture, database, API, project status, and
+   changelog brought in line with the actual implementation; corrected a further pre-existing
+   inaccuracy in this documentation set (see [Known limitations](#known-limitations) — the
+   `REJECTION_REASON`, `JOB_HOLD_REASON`, `JOB_CLOSE_REASON`, and `JOB_CANCEL_REASON` Controlled
+   Lists have carried real starter values since Module 1, not "none seeded" as previously and
+   incorrectly stated).
+
 ## Remaining modules
 
 Per the PRD's §11 module breakdown and §14 roadmap, not yet started:
@@ -136,7 +212,6 @@ Per the PRD's §11 module breakdown and §14 roadmap, not yet started:
 | PRD § | Module | Roadmap phase |
 | --- | --- | --- |
 | 11.3 | Sourcing & Job Board Distribution | V1 — Core Parity |
-| 11.4 | Pipeline & Application Management | V1 — Core Parity |
 | 11.5 | Interview Management | V1 — Core Parity |
 | 11.6 | Offer Management | V1 — Core Parity |
 | 11.7 | Onboarding Handoff / HRIS Integration | V1 — Core Parity |
@@ -151,9 +226,10 @@ Per the PRD's §11 module breakdown and §14 roadmap, not yet started:
 
 ## Known limitations
 
-- **`positionsFilledCount` does not yet auto-update.** The column exists and defaults to `0`
-  as the PRD requires, but no code writes to it — that requires the future Application/Offer
-  modules that actually fill positions.
+- **`positionsFilledCount` does not yet auto-update.** The column exists and defaults to `0` as
+  the PRD requires, but no code writes to it — not even Module 4's `createApplication`, since an
+  *application* existing doesn't mean a position is *filled*. That requires the future Offer
+  module (§11.6), which is what actually fills a position.
 - **No aging-indicator UI.** `createdAt` is stored and available, but the job list/detail UI
   does not yet render a derived "age" affordance.
 - **The role-permission matrix UI does not yet reflect per-resource applicable actions.**
@@ -165,16 +241,6 @@ Per the PRD's §11 module breakdown and §14 roadmap, not yet started:
   engine from Module 1 works, but no Job field is currently field-permission-gated; this only
   becomes relevant once a Job field is sensitive enough to warrant it (e.g. a future
   compensation field on Candidate/Offer).
-- **One of the eight seeded Controlled Lists has no starter values.** `REJECTION_REASON` exists
-  as a list (so the future Pipeline/Application module, §11.4, can populate it) but carries no
-  values yet, since nothing through Module 3 consumes it. (`CANDIDATE_SOURCE` and
-  `DOCUMENT_TYPE` have carried real starter values since Module 1 and are now consumed by
-  Module 3's `Candidate.sourceId` and `CandidateDocument.documentTypeId` — a prior version of
-  this document incorrectly stated otherwise.)
-- **`JOB_HOLD_REASON`, `JOB_CLOSE_REASON`, `JOB_CANCEL_REASON` have no seeded starter values
-  either.** The lists exist and are required by the status-transition validation, but an admin
-  must add at least one value to each via the admin UI before a job can actually be put on
-  hold, closed, or cancelled in a fresh environment.
 - **A discrepancy between malformed and well-formed unauthorized requests.** An unauthenticated
   or under-permissioned `POST`/`PATCH`/`PUT` with an empty or malformed body returns `400`
   (Zod validation runs before the service's permission check) rather than `403`; a
@@ -204,6 +270,36 @@ Per the PRD's §11 module breakdown and §14 roadmap, not yet started:
   that consent was given at creation time; it does not distinguish between, e.g., consent to
   store data versus consent to be contacted, and there is no mechanism to update or revoke it
   independent of the rest of the record.
+- **Bulk email is queued-only infrastructure, not real delivery.** `POST
+  /api/applications/bulk/email` renders a template and writes an `ApplicationEmailLog` row per
+  recipient with `status: PENDING` — it never calls a mail provider, and nothing in this module
+  ever transitions a log row to `SENT`/`FAILED`. This is intentional (Phase 2 decision): real
+  email delivery is scoped to the PRD's Communication Hub module (§11.10), a later module.
+- **No Workflow & Automation Builder yet (§10.2).** Both Job's approval flow (Module 2) and
+  Application's pipeline stages (Module 4) are configurable *data* (a status-transition table,
+  a per-job ordered stage list) but not a visual, no-code, admin-authored workflow — that's the
+  PRD's separate Workflow & Automation Builder module, not yet started. Application stage
+  transitions are also **unrestricted** (any stage to any stage) rather than gated by a
+  configurable rule set, a deliberate Phase 2 scope decision for this module, not an oversight.
+- **No Reporting & Analytics module yet (§11.12).** There is no dashboard, report builder, or
+  pipeline-conversion/funnel reporting surface anywhere in the app; the audit log and the
+  Applications list/board are the only ways to inspect pipeline activity today.
+- **No Interview Management module yet (§11.5).** Applications can reach an `Interview` pipeline
+  stage (one of the four default stage names), but nothing schedules interviews, collects
+  structured interviewer feedback, or links a scheduled event to an `Application` — reaching that
+  stage is just a label until the Interview module exists.
+- **Deactivating a `PipelineStage` doesn't check for active applications at the service layer.**
+  `PUT /api/jobs/[id]/pipeline-stages` will happily deactivate a stage that still has `ACTIVE`
+  applications sitting in it — their `stageId` is left pointing at the now-inactive stage
+  undisturbed (by design; a stage is data, applications aren't force-migrated off it), but
+  nothing blocks the deactivation itself. The pipeline-stage editor UI blocks this client-side
+  (showing the caller how many active applications are still in the stage), but that's a
+  courtesy, not enforcement — an API caller can bypass it.
+- **The per-job Pipeline page loads at most 100 applications.** The `/jobs/[id]/pipeline` server
+  component calls `listApplications` with a fixed `pageSize: 100` for the board/list view; a job
+  with more than 100 applications will not show the rest on that page (the global `/applications`
+  list, which paginates properly, is unaffected). Not encountered in practice at this scale, but
+  worth fixing before a very high-volume job's pipeline is used as the primary view for it.
 
 ## Future roadmap (from the PRD, §14)
 

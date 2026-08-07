@@ -1,5 +1,107 @@
 # Changelog
 
+## Module 4 — Applications / Candidate Pipeline (PRD §11.4)
+
+### Added
+
+- `Application` entity: links one `Candidate` to one `Job`, holding the current pipeline stage,
+  a dedicated reassignable owner (defaulting from the job's primary recruiter), an outcome
+  (`ACTIVE`/`REJECTED`/`WITHDRAWN`, orthogonal to stage and terminal once non-`ACTIVE`), custom
+  fields, and an internal optimistic-locking `version` counter. Deliberately no unique
+  constraint on `(candidateId, jobId)` — re-applying is allowed, only warned about.
+- `PipelineStage`: a dedicated, ordered, per-job configuration model (not an enum, not a
+  Controlled List) — add, rename, reorder, deactivate, and reactivate stages per job. New jobs
+  get a default four-stage pipeline (`Applied`, `Screening`, `Interview`, `Offer`) automatically
+  at creation. Never hard-deleted; "removing" a stage deactivates it.
+- `ApplicationEvent`: an immutable history row for every stage move and outcome change, modeled
+  on `JobStatusChange`, written inside the same transaction as the `Application` it describes.
+- `ApplicationEmailLog`: infrastructure-only bulk email logging — every row this module writes
+  has `status: PENDING`; real delivery is deferred to the future Communication Hub module.
+- **Pipeline board and list**: a per-job Kanban board (one column per active stage,
+  `@dnd-kit/core`-powered drag-and-drop isolated to a single component) and a filterable list,
+  sharing one dataset per job via a tab switch.
+- **Drag-and-drop stage moves**: dragging a card to another column moves that application's
+  stage, with an optimistic UI update and rollback on failure.
+- **Bulk actions**: stage move, reject, withdraw, and queue-email across multiple selected
+  applications at once (from either the per-job list or the global Applications list), each
+  target processed independently with a `{ succeeded, failed }` best-effort response.
+- **Duplicate warnings**: `GET /api/applications/duplicates` and the `priorApplications` field on
+  the create response surface every prior application for the same candidate/job pair — a
+  non-blocking warning, never an enforcement point (§11.4's stated "warn," not "block").
+- **Timeline integration**: `getCandidateTimeline` (Module 3) gains four new item types —
+  `application_created`, `application_stage_changed`, `application_rejected`,
+  `application_withdrawn` — merged with existing note items, using the extensible `{ type, ... }`
+  contract Module 3 built for exactly this.
+- `ApplicationService` (`src/lib/services/applications.ts`) and `PipelineStageService`
+  (`src/lib/services/pipeline-stages.ts`): all Application/pipeline business logic and
+  permission checks, behind thin API routes — `GET/POST /api/applications`,
+  `GET/PATCH /api/applications/[id]`, `GET /api/applications/duplicates`,
+  `POST /api/applications/[id]/transition`, `POST /api/applications/bulk/transition`,
+  `POST /api/applications/bulk/email`, `GET/PUT /api/jobs/[id]/pipeline-stages`.
+- `src/lib/templates/render.ts`: a minimal `{{key}}`-substitution helper for bulk email's
+  subject/body rendering — deliberately not the full Template Designer (§10.4).
+- `APPLICATION` registered as a `CUSTOM_FIELD_CAPABLE_ENTITY`, reusing the existing
+  `buildCustomFieldValueSchema` engine unchanged.
+- Seven new audit action strings: `application.created`, `application.updated`,
+  `application.stage_changed`, `application.rejected`, `application.withdrawn`,
+  `application.bulk_transitioned`, `application.bulk_email_requested`, plus
+  `pipeline_stages.updated`.
+- Cross-module wiring: `createJob` (Module 2) now seeds the default four-stage pipeline
+  transactionally at job creation; `deleteCandidate` (Module 3) now blocks with a `400` if the
+  candidate has any applications; `prisma/backfill-pipeline-stages.ts` is a one-time, idempotent
+  script that seeds the default pipeline onto any job created before this module shipped.
+- Seed data: Application permission grants for Recruiter (`CREATE`/`READ` at `ALL`, `UPDATE` at
+  `OWN`), Hiring Manager (`READ` at `ALL`), and Recruiting Manager (`CREATE` at `ALL`,
+  `READ`/`UPDATE` at `TEAM`) — no role gets `DELETE`, since there is no delete endpoint.
+- `@dnd-kit/core` added as a dependency for the pipeline board's drag-and-drop.
+- Frontend: an Applications nav item (permission-gated); a global filterable `/applications`
+  list with row selection and a shared `BulkActionToolbar`; an `/applications/new` create form
+  (candidate/job pickers, a non-blocking duplicate warning, custom fields); an
+  `/applications/[id]` detail page (owner reassignment, single-record transition actions,
+  stage/outcome history, editable custom fields); a `/jobs/[id]/pipeline` page (Board/List tabs)
+  and an ordered `PipelineStageEditor`; `DataTable` extended with opt-in, backward-compatible
+  row-selection support; "New application" cross-links from the Candidate and Job detail pages.
+- Automated tests: `ApplicationService` and `PipelineStageService` (31 tests, covering
+  validation, RBAC, optimistic locking, duplicate warnings, outcome/terminal-state rules, the
+  pipeline-stage replace algorithm, and bulk best-effort semantics) and the Application Zod
+  validation schemas (21 tests), bringing the project's automated test count from 139 to 191.
+
+### Fixed
+
+Found during Phase 5 testing:
+
+- **`PipelineStage` name uniqueness could throw an unhandled `500`, and permanently blocked
+  reusing a deactivated stage's name.** The original `@@unique([jobId, name])` constraint was
+  unconditional, which caused two problems: (1) swapping two stages' names in one
+  `replacePipelineStages` call transiently violated the constraint mid-transaction, since the
+  sequential update loop had no collision-avoidance ordering; (2) once a stage bearing a given
+  name was deactivated, that name could never be reused by a new active stage — directly
+  contradicting the "deactivate, don't delete, can bring back" design. Fixed with a hand-written
+  **partial unique index** (`pipeline_stage_active_name_unique`, scoped to `WHERE "isActive" =
+  true`) replacing the full constraint, plus a **three-phase write order** in
+  `replacePipelineStages`: rename every kept stage to a collision-proof temporary name derived
+  from its own id, deactivate every removed stage, then apply the real target names — clearing
+  both kinds of transient collision before any real name is written. Verified with two new
+  regression tests and a live pointer-driven Playwright pass against the dev database.
+- **Drag-and-drop rollback could silently undo an unrelated card's already-confirmed move.**
+  `job-pipeline-client.tsx`'s `handleDropCard` snapshotted the *entire* applications array before
+  an optimistic stage-move update and restored that stale full-array snapshot on failure — if a
+  second card was dragged while the first card's request was still in flight, and the first
+  request later failed, the full-array rollback would wipe out the second card's confirmed move
+  along with it. Fixed to scope both the optimistic update and the rollback to only the affected
+  card, via functional `setState` updates that always apply against the latest state rather than
+  a stale snapshot. Verified end-to-end with a Playwright test that forces a concurrent
+  server-side stage change mid-drag and confirms only the dragged card reverts.
+
+### Documentation corrections
+
+- Corrected a further pre-existing inaccuracy carried in this documentation set since Module 2:
+  `REJECTION_REASON`, `JOB_HOLD_REASON`, `JOB_CLOSE_REASON`, and `JOB_CANCEL_REASON` have in fact
+  carried seeded starter values since Module 1's seed script — the docs previously and
+  incorrectly stated that none of the four had any seeded values.
+
+---
+
 ## Module 3 — Candidate Database (PRD §11.2)
 
 ### Added

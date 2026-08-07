@@ -11,7 +11,8 @@ for the data model, [`docs/api.md`](docs/api.md) for the full API reference, and
 
 Next.js 15 (App Router) · TypeScript · TailwindCSS v4 · shadcn/ui (hand-vendored components,
 see "Note on shadcn/ui" below) · Prisma 7 (`@prisma/adapter-pg`) · PostgreSQL · Auth.js v5
-(Credentials + JWT) · React Hook Form · Zod · ExcelJS (candidate import/export) · Vitest
+(Credentials + JWT) · React Hook Form · Zod · ExcelJS (candidate import/export) · `@dnd-kit/core`
+(pipeline board drag-and-drop) · Vitest · Playwright (end-to-end smoke passes)
 
 ## Current features
 
@@ -121,6 +122,50 @@ manual setup step is required. `STORAGE_PROVIDER` selects the implementation (on
 implemented; any other value throws at first use) so a future S3/blob-storage provider is a new
 file behind the same interface, not a change to any service code.
 
+### Module 4 — Applications / Candidate Pipeline (PRD §11.4)
+
+- **Applications**: `Application` links one `Candidate` to one `Job`, holding the pipeline
+  stage the candidate is currently in, an owner, an outcome, and its own custom fields.
+  Re-applying a candidate to the same job is allowed (no unique constraint on
+  `(candidateId, jobId)`) — only warned about, never blocked (see "Duplicate warnings" below).
+- **Pipeline stage configuration**: each job has its own ordered set of `PipelineStage` rows
+  (not a global enum, not a Controlled List — different jobs run different pipelines). New jobs
+  get four starter stages (`Applied`, `Screening`, `Interview`, `Offer`) automatically; an admin
+  or recruiter can add, rename, reorder, deactivate, and reactivate stages afterward from the
+  job's Pipeline page. A stage is **never hard-deleted** — "removing" it deactivates it, and a
+  deactivated stage's applications keep pointing at it undisturbed. A stage's name is unique only
+  among currently-active stages, so a deactivated stage's name can be reused by a new one.
+- **Board view**: a Kanban-style view of a job's pipeline, one column per active stage, cards
+  showing the candidate and current owner.
+- **Drag-and-drop**: dragging a card to another column moves that application's stage, with an
+  optimistic UI update that reverts the card (and only that card) if the request fails — e.g. a
+  stale-version conflict from a concurrent edit.
+- **List view**: the same per-job application set as a filterable, sortable table, sharing one
+  dataset with the board via a tab switch — no separate fetch.
+- **Bulk actions**: select multiple applications (from either the per-job list or the global
+  Applications list) and move stage, reject, withdraw, or queue an email for all of them in one
+  request. Each target is applied independently — one stale or invalid row doesn't fail the rest
+  of the batch; the response reports which succeeded and which failed, and why.
+- **Duplicate warnings**: creating an application for a candidate/job pair that already has one
+  or more prior applications shows a non-blocking warning listing them — the PRD's stated
+  behavior (§11.4) is "warn," not "block."
+- **Application ownership**: a dedicated `ownerId` field, defaulting to the job's primary
+  recruiter at creation but independently reassignable afterward from the application's detail
+  page — mirrors `Job.primaryRecruiterId` rather than introducing a new ownership shape.
+- **Application outcomes**: `Rejected` and `Withdrawn` are terminal outcomes, orthogonal to
+  stage (an application can be rejected from any stage, and its stage stays frozen at whatever
+  it was). Once an outcome leaves `Active`, no further stage move or outcome change is accepted.
+  Both require a reason from the `REJECTION_REASON` Controlled List.
+- **Timeline integration**: a candidate's timeline (Module 3) now includes application
+  activity — creation, stage changes, rejection, and withdrawal — alongside notes, using the
+  same extensible `{ type, ... }` item contract Module 3 built for exactly this.
+- **Bulk email (queued only)**: bulk email renders a subject/body template (with
+  `{{candidate.name}}`/`{{job.title}}` placeholders) and logs one `ApplicationEmailLog` row per
+  recipient with status `Pending` — this module never calls a real mail provider. Real delivery
+  is deferred to the future Communication Hub module.
+- **Audit logging**: every create, update, stage change, rejection, withdrawal, bulk action,
+  and pipeline-stage edit is logged to the shared audit log.
+
 ## Local development
 
 ```bash
@@ -182,19 +227,27 @@ npx prisma db seed
 - The `Organization` singleton (id `"default"`), timezone and working hours/days.
 - Six system roles: System Administrator (`isSuperAdmin`), Recruiter, Hiring Manager,
   Interviewer, Recruiting Manager, HR / Onboarding.
-- Eight Controlled Lists: `REJECTION_REASON`, `CANDIDATE_SOURCE`, `DOCUMENT_TYPE`, `LOCATION`,
-  `DEPARTMENT`, `JOB_HOLD_REASON`, `JOB_CLOSE_REASON`, `JOB_CANCEL_REASON` — with starter values
-  for `CANDIDATE_SOURCE`, `DOCUMENT_TYPE`, `LOCATION`, and `DEPARTMENT`.
-- Job permission grants for Recruiter, Hiring Manager, and Recruiting Manager, and Candidate
+- Eight Controlled Lists, all seeded with starter values: `REJECTION_REASON`,
+  `CANDIDATE_SOURCE`, `DOCUMENT_TYPE`, `LOCATION`, `DEPARTMENT`, `JOB_HOLD_REASON`,
+  `JOB_CLOSE_REASON`, `JOB_CANCEL_REASON`.
+- Job permission grants for Recruiter, Hiring Manager, and Recruiting Manager; Candidate
   permission grants for Recruiter only (`CREATE`/`READ` at `ALL`, `UPDATE`/`DELETE` at `OWN` —
-  Hiring Manager and HR / Onboarding get no default Candidate access) — see `prisma/seed.ts` for
-  the exact `(resource, action, scope)` grants, and
+  Hiring Manager and HR / Onboarding get no default Candidate access); Application permission
+  grants for Recruiter (`CREATE`/`READ` at `ALL`, `UPDATE` at `OWN`), Hiring Manager (`READ` at
+  `ALL`), and Recruiting Manager (`CREATE` at `ALL`, `READ`/`UPDATE` at `TEAM`) — see
+  `prisma/seed.ts` for the exact `(resource, action, scope)` grants, and
   [`docs/architecture.md`](docs/architecture.md#rbac) for how grants are structured and
   enforced.
-- A directory-read grant (`USER:READ` at `ALL` scope) for the same three roles, so a Recruiter
-  can see a colleague list to assign as job recruiters without full user-administration access.
+- A directory-read grant (`USER:READ` at `ALL` scope) for Recruiter, Hiring Manager, and
+  Recruiting Manager, so a Recruiter can see a colleague list to assign as job recruiters or
+  reassign an application's owner without full user-administration access.
 - One System Administrator user from `SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD` (skipped with a
   warning if either is unset).
+- `prisma/backfill-pipeline-stages.ts` is a separate, one-time script (not run by `db seed`) that
+  seeds the default four-stage pipeline onto any job created before Module 4 — new jobs get this
+  automatically at creation time. Run it once per environment after deploying the Module 4
+  migration: `npx tsx prisma/backfill-pipeline-stages.ts`. Idempotent — skips jobs that already
+  have at least one stage.
 
 ### Running tests
 
