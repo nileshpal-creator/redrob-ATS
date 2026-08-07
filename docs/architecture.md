@@ -754,3 +754,124 @@ additions (`src/lib/services/applications.ts`, `pipeline-stages.ts`, `src/lib/te
 `src/components/applications/`, `src/app/(app)/applications/`, `src/app/(app)/jobs/[id]/pipeline/`,
 `src/app/api/applications/**`, `src/app/api/jobs/[id]/pipeline-stages/`, and
 `prisma/backfill-pipeline-stages.ts`).
+
+### Reports & business-day arithmetic (Module 9, §11.12)
+
+`src/lib/services/reports.ts` holds all four pre-built reports as plain read-only aggregation
+functions — no materialized/cached tables, computed fresh on every call. Each reuses the
+underlying entity's own `:READ` permission and `getEffectiveScope`, the exact "reports reuse the
+entity's existing permission" choice `candidate-export.ts` already documents for
+`CANDIDATE:READ` — rather than a new blanket `REPORT` resource. This is also what gives §10.5's
+row-level-security requirement for free: an OWN/TEAM-scoped viewer's report is narrowed exactly
+like their own Job/Application/Offer lists are, with no separate mechanism to keep in sync.
+
+`src/lib/reporting/business-days.ts` is the first real consumer of `Organization.workingDays`/
+`Holiday` — columns Module 1 seeded as "foundation for future SLA/TAT clocks" (see
+`docs/project-status.md`) that no service touched until now. `getWorkingCalendar()` reads the
+single `Organization` row (falling back to a plain Mon-Fri calendar with no holidays if it
+hasn't been seeded); `businessDaysBetween(from, to, calendar)` is a pure function taking that
+calendar as a parameter rather than fetching it itself, so it's trivially unit-testable without a
+database (see `tests/lib/business-days.test.ts`).
+
+Offer/TAT compliance measures `Offer.createdAt` → the approved `OfferApproval.decidedAt` — the
+one leg of Offer's lifecycle with its own immutable, never-overwritten timestamp.
+`Offer.updatedAt` could not substitute for this: it reflects only the *latest* status flip, so an
+offer that has since moved past `EXTENDED` (accepted/declined/revoked) no longer carries an
+accurate "when was it extended" timestamp anywhere on the row. Extending the schema to add one is
+out of scope for this pass — compliance is reported on the submission-to-approval leg only, which
+stays accurate for every offer regardless of what happened to it afterward. The compliance
+threshold (`tatThresholdDays`) is a report *parameter* supplied by the viewer, not a stored org
+policy — the PRD names no fixed SLA number, so inventing one would be exactly the kind of
+unstated business rule this codebase's design notes elsewhere warn against assuming.
+
+Pipeline funnel & conversion's "reached stage N" is a cumulative count, not a point-in-time
+distribution: an application counts toward every stage it currently sits at, or has any
+`ApplicationEvent` recording a move into **or out of** (`STAGE_CHANGE`'s `toStageId` *and*
+`fromStageId`). `fromStageId` matters specifically because an application's *initial* stage
+(assigned at creation, before its first move) never appears as any event's `toStageId` — nothing
+"moved it into" a stage it started at. A funnel that only consulted `toStageId` would silently
+undercount that first stage for any application that has since progressed past it; this was
+caught and fixed while writing `tests/services/reports.service.test.ts`'s fixture.
+
+Recruiter productivity/workload resolves its recruiter set from the caller's `JOB:READ` scope
+(OWN → self only, TEAM → direct reports, ALL → every distinct `Job.primaryRecruiterId`), then
+computes all five metrics as flat `groupBy` queries across every recruiter at once —
+`prisma.job.groupBy({ by: ["primaryRecruiterId"], ... })` and similarly for
+applications/interviews/offers/handoffs — rather than one `count()` per recruiter per metric.
+The cost is 5 queries total regardless of how many recruiters are in scope; a naive
+`recruiters.map(async (recruiter) => ...)` loop (the first-draft shape, since fixed) would have
+scaled 5×N.
+
+### Saved reports & scheduled delivery (Module 9, §10.5)
+
+`SavedReport` is the minimal faithful slice of §10.5's "custom dashboard and report builder" —
+deliberately **not** a generic drag-and-drop widget engine over arbitrary entities and custom
+fields (that's a multi-week UI/query engine on its own). The cut mirrors Module 8's own decision
+to ship the *minimal* slice of the Template Designer rather than its full scope: `reportType`
+picks one of the four pre-built reports above, and `filters` (a JSON blob, validated per-type via
+Zod — `REPORT_QUERY_SCHEMAS`, the same "shape validated at the service boundary" convention as
+`Job.customFields`) narrows it. There is no widget layout, no arbitrary-entity query, no
+custom-field aggregation.
+
+Business-record tier, not admin-metadata tier: unlike `CommunicationTemplate` (open read for
+everyone, no `version`), `SavedReport` has `OWN`/`TEAM`/`ALL` scope on `createdById` and an
+optimistic-locking `version` — because a saved report can be configured to email arbitrary
+recipient addresses on a schedule, and *defining* one is a meaningfully more sensitive capability
+than reading a template's content. `name` is deliberately not unique (unlike
+`CommunicationTemplate.name`) since these are personal/team artifacts, not a shared org-wide
+vocabulary. No historical FK references a `SavedReport` row, so deleting one is a genuine hard
+delete, the same precedent as `CustomFieldDefinition` rather than `CommunicationTemplate`'s
+deactivate-only convention.
+
+Row-level security (§10.5's third bullet) is **not** stored on the `SavedReport` row itself.
+Running a saved report re-applies the *runner's own* permission scope on the underlying entity at
+run time — the same `getEffectiveScope()` call every ad-hoc report and every list endpoint
+already makes. Two users sharing the same `SavedReport` therefore see different rows, which is
+the actual requirement; storing a fixed row-set on the definition at save time would violate it.
+
+`src/lib/services/scheduled-reports.ts` (`runDueScheduledReports`) is the real business logic
+for schedule-based email delivery. It re-applies each report's *creator's* own RBAC scope by
+resolving a `SessionContext` from their user id alone —
+`src/lib/authz/session-context-for-user.ts`, deliberately its **own file**, not colocated with
+`getSessionContext`. `session-context.ts` imports NextAuth's `auth()`, an entirely unrelated
+dependency for what is otherwise a plain user-id lookup; pulling it in transitively broke
+importing `getSessionContextForUser` outside the Next.js runtime (NextAuth's ESM/CJS interop with
+`next/server` doesn't resolve under Vitest), which is exactly where the scheduler's own tests need
+it. The split — `session-context.ts` importing `getSessionContextForUser` from the new file, the
+new file importing only the `SessionContext` *type* (erased at compile time, no runtime import
+emitted) back — removes that coupling without duplicating the DB lookup.
+
+No cron or queue infrastructure exists anywhere in this app — there is no long-running worker
+process beside the Next.js server itself, the same environment limit
+`MailProvider`/`StorageProvider`/`HrisProvider` already document for their own "no real external
+system" providers. `runDueScheduledReports` is the real, fully-tested logic for *what* should
+happen on a schedule; *actually* invoking it periodically is external infra this pass does not
+provide — `POST /api/saved-reports/run-due` exists for an OS cron or a hosting platform's
+scheduled function to call. Due-detection (`lastRunAt` missing, or older than the schedule's
+`DAILY`/`WEEKLY` interval) is computed in JS after one broad `findMany`, not per-row SQL interval
+math, since `SavedReport` volumes don't warrant it.
+
+`MailMessage` (`src/lib/mail/provider.ts`) gained an optional `attachments` field — the first
+sender that needs one. `ConsoleMailProvider` logs each attachment's file name, content type, and
+byte length rather than the content itself, consistent with its existing "delivery means writing
+where an operator can see it happened, not a network call" design.
+
+### Export: XLSX/CSV/PDF (Module 9)
+
+`src/lib/services/report-export.ts` flattens each report's own return shape into a uniform
+`ExportRow[]` (one shape per report type — the export function's whole job), then renders that
+through one of three format-specific functions. XLSX/CSV reuse `candidate-export.ts`'s exact
+pattern (`ExcelJS.Workbook` for XLSX, a hand-rolled quote-escaping join for CSV). PDF is new:
+`pdf-lib`, the module's one new dependency, chosen because it's pure-JS with no native/system
+binary dependency (relevant in this environment, where `apt-get install poppler-utils` failed on
+a network-restricted attempt during an earlier module). The PDF renderer draws a plain
+pipe-delimited text table — `pdf-lib` is a low-level PDF-writing library with no table-layout
+engine of its own, and building one is out of scope for satisfying "export to PDF" for a report
+that's already viewable on-screen and exportable as XLSX/CSV.
+
+`renderReportBuffer` (no audit log) and `exportReport` (audit-logs then delegates to
+`renderReportBuffer`) are deliberately two separate exported functions: the scheduled-report
+runner calls `renderReportBuffer` directly (an internal, non-viewer-initiated render shouldn't
+produce a viewer-attributed audit entry), while the ad-hoc export API route calls `exportReport`
+(a viewer explicitly asked for a file, which — like `candidate-export.ts`'s own export — is
+always logged).

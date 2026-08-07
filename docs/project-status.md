@@ -16,7 +16,8 @@ Covers PRD §10 (Customization Engine) and §11.13 (Roles, Permissions & Admin S
 - Custom Fields (§10.1) on any registered entity, and Custom Objects (§10.1) with no dedicated
   table per object.
 - Controlled lists, an audit log searchable by user/entity/date range (§11.13), and
-  organization-level working days/hours (foundation for future SLA/TAT clocks).
+  organization-level working days/hours — unconsumed by any service until Module 9's
+  business-day TAT arithmetic (`src/lib/reporting/business-days.ts`).
 
 ### Module 2 — Requisition / Job Management (PRD §11.1)
 
@@ -193,6 +194,34 @@ chat) are correctly deferred:
 - The candidate timeline gains `email_sent`/`email_failed` item types — completing §11.2's own
   "every application, interview, offer, note and email in one view" requirement, which had
   shipped everything except the email part until now. ✅
+
+### Module 9 — Reporting & Analytics (PRD §11.12)
+
+Six of the seven requirements from §11.12 are implemented; the seventh (the full custom
+dashboard/report builder, §10.5) is deliberately scoped down, the same way Module 8 scoped down
+the Template Designer:
+
+- Pipeline funnel and conversion reporting by stage, job, recruiter and source. ✅
+- Time-to-fill and time-to-offer reporting, in business days. ✅
+- Recruiter productivity and workload reporting. ✅
+- Offer/TAT compliance reporting — measured `Offer.createdAt` → the approved
+  `OfferApproval.decidedAt`, the one leg of Offer's lifecycle with its own immutable timestamp;
+  the compliance threshold is a report parameter, not an invented stored org policy. ✅
+- Custom dashboard and report builder (§10.5) — **scoped down, not the full requirement.**
+  `SavedReport` lets a viewer name, save, and (for scheduled ones) share one of the four
+  pre-built reports above with its filters. There is no drag-and-drop widget layout, no
+  arbitrary-entity query, and no custom-field aggregation — building that full engine is a
+  separate, much larger effort. Row-level security (§10.5's own third bullet) *is* fully
+  implemented: running a saved report always re-applies the runner's own permission scope, never
+  a row-set fixed at save time. ⚠️ partial, see [Known limitations](#known-limitations)
+- Scheduled report delivery by email. ✅ (scoped) — the business logic
+  (`runDueScheduledReports`) is real and fully tested; no cron/queue infrastructure exists
+  anywhere in this app to actually invoke it periodically, the same environment limit every
+  provider abstraction in this codebase already documents. `POST /api/saved-reports/run-due`
+  exists for an external scheduler to call.
+- Export to Excel/CSV and PDF. ✅ — XLSX/CSV reuse `candidate-export.ts`'s exact pattern; PDF is
+  new (`pdf-lib`, this module's one new dependency) and renders a plain text table, not a
+  fully laid-out grid.
 
 ## Completed phases (Module 2)
 
@@ -386,6 +415,59 @@ chat) are correctly deferred:
    permanently `PENDING`/infrastructure-only — all direct fallout of this module's own changes,
    not pre-existing drift from other modules.
 
+## Completed phases (Module 9)
+
+1. **Investigation** — read §11.12's exact requirements and §10.5 (Custom Dashboards & Reports)
+   from the source PDF. Checked for existing reporting/export/dashboard code (found
+   `candidate-export.ts`'s CSV/XLSX pattern and its "reuse the entity's own `:READ`" precedent),
+   any charting library (none), any cron/queue infrastructure (none), and
+   `Organization.workingDays`/`Holiday` — present since Module 1, never consumed by any service.
+2. **Technical Design** — four report functions each reusing the underlying entity's own
+   permission/scope rather than a new `REPORT` resource; a `SavedReport` model scoped as the
+   minimal faithful slice of §10.5 (pick one of the four report types + filters, not a generic
+   builder); a business-day utility as the first real consumer of Module 1's working-day
+   columns; TAT measured against `OfferApproval.decidedAt` rather than `Offer.updatedAt`, since
+   the latter only reflects an offer's *latest* status flip and can't be trusted for offers that
+   have since moved past `EXTENDED`.
+3. **Backend Implementation** — schema (`SavedReport` + 4 enums) and migration, `entity-registry`/
+   seed RBAC grants, `src/lib/reporting/business-days.ts`, the four report functions
+   (`src/lib/services/reports.ts`), `SavedReport` CRUD (`saved-reports.ts`), export
+   (`report-export.ts`, adding `pdf-lib`), the scheduled-delivery runner
+   (`scheduled-reports.ts`), and thin API routes for all of the above.
+4. **Frontend Implementation** — `/reports`: a tab per pre-built report (filters, run, results
+   table, export buttons, "save as report") plus a Saved Reports tab (list, schedule editing,
+   delete). Nav entry gated on `JOB:READ` or `OFFER:READ`.
+5. **Testing** — `business-days.test.ts` (pure unit), `report.test.ts` (Zod schemas),
+   `reports.service.test.ts` (all four reports against a deterministic fixture, plus RBAC
+   scoping), `saved-reports.service.test.ts` (CRUD, optimistic locking, RBAC,
+   schedule/recipient cross-field validation, a concurrency test), `scheduled-reports.service.
+   test.ts` (due-detection for DAILY/WEEKLY, deactivated-creator handling), and
+   `report-export.service.test.ts` (real parseable XLSX/CSV/PDF output). Full regression suite:
+   422 tests passing project-wide.
+6. **Browser verification** — a real Chromium walkthrough via Playwright: logged in, ran the
+   Pipeline Funnel report against a real job and confirmed the results table; saved it as a
+   report, scheduled it (`DAILY`, a recipient email), confirmed the schedule persisted across a
+   page reload, then deleted it; ran Recruiter Productivity and Offer TAT Compliance with no
+   required filters. Separately verified via the browser's authenticated request context that
+   `GET /api/reports/export` returns real, non-empty XLSX/CSV/PDF files with correct
+   content-types, and that `POST /api/saved-reports/run-due` actually delivers a scheduled
+   report — confirmed by inspecting the dev server's `ConsoleMailProvider` log line, which showed
+   the real rendered CSV attachment (file name, content type, byte count matching the earlier
+   ad-hoc export).
+7. **Self code review** — found and fixed two genuine issues while writing
+   `reports.service.test.ts`'s fixture: (1) `getPipelineFunnelReport`'s "reached stage N" count
+   only consulted `ApplicationEvent.toStageId`, silently undercounting any application's
+   *initial* stage once it moved past it (nothing "moves an application into" the stage it was
+   created at, so that stage never appears as a `toStageId`) — fixed by also folding in
+   `fromStageId`. (2) `getRecruiterProductivityReport` ran 5 `count()` queries *per recruiter* in
+   a loop — an N+1 that scales with team size for TEAM/ALL-scope viewers — rewritten to 5 flat
+   `groupBy` queries independent of recruiter count. Also split `getSessionContextForUser` out
+   of `session-context.ts` into its own file: that file's `getSessionContext` imports
+   NextAuth's `auth()`, an entirely unrelated dependency for what the scheduler needs (a plain
+   user-id lookup), and pulling it in transitively broke importing the function under Vitest
+   (NextAuth's ESM/CJS interop with `next/server` doesn't resolve outside the Next.js runtime) —
+   discovered while writing `scheduled-reports.service.test.ts`.
+
 ## Remaining modules
 
 Per the PRD's §11 module breakdown and §14 roadmap, not yet started:
@@ -393,7 +475,6 @@ Per the PRD's §11 module breakdown and §14 roadmap, not yet started:
 | PRD § | Module | Roadmap phase |
 | --- | --- | --- |
 | 11.3 | Sourcing & Job Board Distribution | V1 — Core Parity |
-| 11.12 | Reporting & Analytics, incl. custom dashboard/report builder (§10.5) | V1 — Core Parity |
 | 10.2 | Workflow & Automation Builder (visual, no-code, per-job/pipeline) | *implicit, underlies later V1 modules' configurability* |
 | 10.4 | Template Designer (email templates, offer letters, e-signature-ready) | *implicit* |
 | 11.8 | Client / Staffing Portal *(optional module)* | P2 — Extended Capability |
@@ -464,9 +545,22 @@ Per the PRD's §11 module breakdown and §14 roadmap, not yet started:
   PRD's separate Workflow & Automation Builder module, not yet started. Application stage
   transitions are also **unrestricted** (any stage to any stage) rather than gated by a
   configurable rule set, a deliberate Phase 2 scope decision for this module, not an oversight.
-- **No Reporting & Analytics module yet (§11.12).** There is no dashboard, report builder, or
-  pipeline-conversion/funnel reporting surface anywhere in the app; the audit log and the
-  Applications list/board are the only ways to inspect pipeline activity today.
+- **No generic drag-and-drop dashboard/report builder (§10.5's first bullet).** Module 9 built
+  the four pre-built §11.12 reports plus a `SavedReport` that picks one of them with filters —
+  not an arbitrary-entity, arbitrary-custom-field query/widget-layout engine. That full builder
+  is a separate, substantially larger effort than any of the four M-priority report types
+  themselves.
+- **No cron/queue infrastructure exists anywhere in this app.** First discovered while
+  implementing Module 8 (Interview reminders, above); Module 9's own scheduled-report delivery
+  hits the identical gap — `runDueScheduledReports` is real, tested business logic, but nothing
+  in this codebase invokes it periodically. `POST /api/saved-reports/run-due` exists for an
+  external scheduler (OS cron, a hosting platform's scheduled function) to call.
+- **The offer/TAT compliance threshold is a report parameter, not a stored org policy.** The PRD
+  names no fixed SLA number for §11.12's compliance reporting, so `tatThresholdDays` is supplied
+  per report-run/export rather than configured once at the organization level.
+- **The report PDF export is a plain text table, not a laid-out grid.** `pdf-lib` is a low-level
+  PDF-writing library with no table-layout engine of its own; building one was out of scope for
+  satisfying "export to PDF" on a report already viewable on-screen and exportable as XLSX/CSV.
 - **The `HrisProvider` abstraction has exactly one implementation.** `src/lib/hris/` mirrors
   `StorageProvider`'s shape (interface + one real implementation + env-driven factory,
   `HRIS_PROVIDER` defaulting to `"structured_export"`), but no real HRIS API connector exists

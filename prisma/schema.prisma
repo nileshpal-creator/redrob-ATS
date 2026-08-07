@@ -72,6 +72,8 @@ model User {
 
   communicationTemplatesCreated CommunicationTemplate[] @relation("CommunicationTemplateCreatedBy")
 
+  savedReportsCreated SavedReport[] @relation("SavedReportCreatedBy")
+
   @@index([isActive])
   @@index([managerId])
 }
@@ -1157,4 +1159,98 @@ model HandoffDeliveryAttempt {
   handoffRecord HandoffRecord @relation(fields: [handoffRecordId], references: [id], onDelete: Cascade)
 
   @@index([handoffRecordId])
+}
+
+// ---------------------------------------------------------------------------
+// Module 9 — Reporting & Analytics (§11.12)
+// ---------------------------------------------------------------------------
+
+// The four pre-built report types (§11.12's M-requirements, minus the
+// "custom dashboard and report builder" line — see SavedReport's comment
+// below for why that stays a saved *selection* of one of these four rather
+// than a generic drag-and-drop widget engine over arbitrary entities and
+// custom fields).
+enum ReportType {
+  PIPELINE_FUNNEL
+  TIME_TO_FILL_AND_OFFER
+  RECRUITER_PRODUCTIVITY
+  OFFER_TAT_COMPLIANCE
+}
+
+enum ReportExportFormat {
+  XLSX
+  CSV
+  PDF
+}
+
+enum ReportScheduleFrequency {
+  NONE
+  DAILY
+  WEEKLY
+}
+
+enum ReportRunStatus {
+  SENT
+  FAILED
+}
+
+// A saved, shareable report definition (§10.5: "saved, shareable report
+// definitions with schedule-based email delivery"). Deliberately not a
+// generic drag-and-drop dashboard-builder record — `reportType` picks one of
+// the four pre-built §11.12 reports and `filters` narrows its inputs; there
+// is no widget layout, no arbitrary-entity query, no custom-field
+// aggregation here. That full builder is out of scope for this pass, the
+// same deliberate cut Module 8 made shrinking the Template Designer down to
+// single-channel, no-versioning template rendering.
+//
+// Business-record tier, not admin-metadata tier: unlike CommunicationTemplate
+// (open read for everyone), a saved report can be configured to email
+// arbitrary recipient addresses on a schedule, so *defining* one needs a
+// real seeded grant (the SAVED_REPORT resource) rather than open access —
+// `version` for optimistic locking and OWN/TEAM/ALL scope on createdById,
+// same shape as Job/Offer. `name` is intentionally not unique (unlike
+// CommunicationTemplate) since these are personal/team artifacts, not a
+// shared org-wide vocabulary — two recruiters each naming a report "Weekly
+// Funnel" is expected, not a conflict.
+//
+// Row-level security (§10.5's third bullet) is NOT baked into this record —
+// running a saved report re-applies the *runner's own* permission scope on
+// the underlying entity (Job/Application/Offer) at run time, via the same
+// getEffectiveScope() every list endpoint already uses (see
+// src/lib/services/reports.ts). Two users sharing the same SavedReport
+// therefore see different rows, which is the actual row-level-security
+// requirement — storing a fixed row-set on the definition itself would
+// violate it.
+model SavedReport {
+  id         String     @id @default(cuid())
+  name       String
+  reportType ReportType
+
+  // Shape depends on reportType — validated by Zod
+  // (src/lib/validations/report.ts), not DB-enforced, same "JSON shape
+  // validated at the service boundary" convention as Job.customFields.
+  filters Json @default("{}")
+
+  scheduleFrequency ReportScheduleFrequency @default(NONE)
+  // Only meaningful when scheduleFrequency != NONE.
+  recipientEmails   String[]                @default([])
+  exportFormat      ReportExportFormat      @default(XLSX)
+
+  lastRunAt     DateTime?
+  lastRunStatus ReportRunStatus?
+
+  createdById String
+  createdBy   User   @relation("SavedReportCreatedBy", fields: [createdById], references: [id])
+
+  // Optimistic locking — same pattern as Job.version / Offer.version.
+  version Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([createdById])
+  // Matches the "find due scheduled reports" query shape exactly — same
+  // "index the actual query pattern" precedent as
+  // CommunicationTemplate.@@index([channel, isActive]).
+  @@index([scheduleFrequency, lastRunAt])
 }

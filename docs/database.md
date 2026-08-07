@@ -54,6 +54,8 @@ ApplicationEvent ──N:1── ControlledListValue  (reasonId → "Application
                  ──N:1── User                  (actorId)
 
 ApplicationEmailLog ──N:1── User  (requestedById)
+
+SavedReport ──N:1── User  (createdById)
 ```
 
 ## Module 1 tables
@@ -66,7 +68,7 @@ ApplicationEmailLog ──N:1── User  (requestedById)
 | `RolePermission` | One `(resource, action, scope)` grant per row. Unique on `(roleId, resource, action)`. |
 | `FieldPermission` | One `(resource, field, access)` rule per row. Unique on `(roleId, resource, field)`. |
 | `Organization` | Singleton by convention (`id = "default"`, not DB-enforced). Timezone, working days/hours. |
-| `Holiday` | Organization holidays, used for future SLA/TAT clocks. |
+| `Holiday` | Organization holidays — read by `src/lib/reporting/business-days.ts` for offer/TAT compliance reporting (Module 9); unconsumed by any service before that. |
 | `ControlledList` | A named list (`key`), e.g. `"DEPARTMENT"`. `isSystem` marks seeded, non-deletable lists. |
 | `ControlledListValue` | One selectable value in a list. Unique on `(listId, value)`. |
 | `CustomFieldDefinition` | Metadata for one admin-defined field on one `entityType`. Unique on `(entityType, key)`. |
@@ -201,7 +203,7 @@ Note, Activity") as an immutable audit log.
 | `PipelineStage` | One ordered stage in one job's pipeline (e.g. "Screening"). See columns below. |
 | `Application` | One candidate's application to one job, holding its current stage and outcome. See columns below. |
 | `ApplicationEvent` | Immutable history row for every stage move and outcome change. |
-| `ApplicationEmailLog` | Immutable log row for every bulk-email recipient — infrastructure only, never actually sent. |
+| `ApplicationEmailLog` | Log row for every bulk-email recipient — resolved to `SENT`/`FAILED` at send time (Module 8). |
 
 ### `PipelineStage` columns
 
@@ -294,6 +296,45 @@ in this codebase sends email yet for a polymorphic log to also serve.
 Indexed on `(channel, isActive)` for the bulk-email picker's active-template list. No optimistic-
 locking `version` — admin metadata edited infrequently by a small number of admins, same tier as
 `CustomFieldDefinition`/`ControlledListValue`, not `Job`/`Offer`'s business-record tier.
+
+## New Module 9 tables
+
+| Table | Purpose |
+| --- | --- |
+| `SavedReport` | A saved, shareable report definition (§10.5) — one of the four pre-built §11.12 reports plus filters, with an optional email delivery schedule. See columns below. |
+
+### `SavedReport` columns
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | `String` (cuid) | |
+| `name` | `String` | **not unique** (unlike `CommunicationTemplate.name`) — personal/team artifacts, not a shared org-wide vocabulary |
+| `reportType` | `ReportType` | which of the four pre-built §11.12 reports this definition runs |
+| `filters` | `Json` | shape depends on `reportType`, validated against that type's own Zod query schema (`REPORT_QUERY_SCHEMAS`) at the service boundary, not DB-enforced — same convention as `Job.customFields` |
+| `scheduleFrequency` | `ReportScheduleFrequency` | `NONE` (default) / `DAILY` / `WEEKLY` |
+| `recipientEmails` | `String[]` | default `[]`; only meaningful when `scheduleFrequency != NONE` — enforced by a Zod `superRefine` on create and a service-layer check on update, not a DB constraint |
+| `exportFormat` | `ReportExportFormat` | `XLSX` (default) / `CSV` / `PDF` — the format attached to a *scheduled* email; ad-hoc viewing in the browser always shows a live table regardless of this field |
+| `lastRunAt` | `DateTime?` | set by `runDueScheduledReports` on every attempt, success or failure |
+| `lastRunStatus` | `ReportRunStatus?` | `SENT` / `FAILED`, set alongside `lastRunAt` |
+| `createdById` | `String` | FK → `User`, default `onDelete: Restrict` |
+| `version` | `Int` | optimistic locking — same pattern as `Job.version`/`Offer.version` |
+| `createdAt` / `updatedAt` | `DateTime` | |
+
+Indexed on `createdById` (the OWN/TEAM scope column list queries filter against, same precedent
+as `Offer.@@index([createdById])`) and on `(scheduleFrequency, lastRunAt)` — the exact shape of
+`runDueScheduledReports`'s "find due reports" query, same "index the actual query pattern"
+precedent as `CommunicationTemplate.@@index([channel, isActive])`.
+
+Business-record tier, not admin-metadata tier: has `version` and `OWN`/`TEAM`/`ALL` scope (unlike
+`CommunicationTemplate`), since a `SavedReport` can be configured to email arbitrary recipients
+on a schedule — a meaningfully more sensitive capability than reading a template. No historical
+FK references this table, so `DELETE /api/saved-reports/[id]` is a genuine hard delete, the same
+precedent as `CustomFieldDefinition` rather than `CommunicationTemplate`'s deactivate-only
+convention.
+
+`Organization.workingDays`/`Holiday` (seeded in Module 1, previously unconsumed by any service)
+are now read by `src/lib/reporting/business-days.ts` for offer/TAT compliance reporting — no
+schema change to either table, just their first real consumer.
 
 ### Cascade and restrict behavior (Module 4)
 
@@ -439,6 +480,10 @@ implementation detail with no user-facing "revision history" surface.
   **→ ControlledListValue** (named relation `ApplicationEventReason`, optional, `onDelete:
   SetNull`), **→ User** (`actorId`).
 - **ApplicationEmailLog → Application** (`onDelete: Cascade`), **→ User** (`requestedById`).
+- **SavedReport → User** (`createdById`, default `onDelete: Restrict`) — the sole ownership
+  anchor for `OWN`/`TEAM` scope. No relation to any report's underlying entities (Job/Application/
+  Offer) at all — a saved report's data comes from re-running its query at read time, not from a
+  stored row-set, which is exactly what keeps row-level security correct per-viewer.
 
 ## Enums
 
@@ -455,6 +500,10 @@ implementation detail with no user-facing "revision history" surface.
 | `ApplicationEventType` | `STAGE_CHANGE`, `REJECTED`, `WITHDRAWN` | `ApplicationEvent.type` |
 | `EmailLogStatus` | `PENDING`, `SENT`, `FAILED`, `CANCELLED` | `ApplicationEmailLog.status` |
 | `CommunicationChannel` | `EMAIL`, `SMS` | `CommunicationTemplate.channel` — only `EMAIL` is ever written (Module 8) |
+| `ReportType` | `PIPELINE_FUNNEL`, `TIME_TO_FILL_AND_OFFER`, `RECRUITER_PRODUCTIVITY`, `OFFER_TAT_COMPLIANCE` | `SavedReport.reportType` — the four pre-built §11.12 reports (Module 9) |
+| `ReportExportFormat` | `XLSX`, `CSV`, `PDF` | `SavedReport.exportFormat` (Module 9) |
+| `ReportScheduleFrequency` | `NONE`, `DAILY`, `WEEKLY` | `SavedReport.scheduleFrequency` (Module 9) |
+| `ReportRunStatus` | `SENT`, `FAILED` | `SavedReport.lastRunStatus` (Module 9) |
 
 `APPROVE` was added to `PermissionAction` in Module 2 (Phase 1 decision: approval must be its
 own permission, not overloaded onto `UPDATE`). `ApplicationOutcome`, `ApplicationEventType`, and

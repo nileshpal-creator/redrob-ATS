@@ -1,5 +1,66 @@
 # Changelog
 
+## Module 9 — Reporting & Analytics (PRD §11.12)
+
+### Added
+
+- Four pre-built reports (`src/lib/services/reports.ts`), each reusing the underlying entity's
+  own `:READ` permission and OWN/TEAM/ALL scope rather than a new blanket `REPORT` resource —
+  the same pattern `candidate-export.ts` already documents for `CANDIDATE:READ`:
+  - Pipeline funnel & conversion, per job — current-stage distribution plus a cumulative
+    "ever reached" count per stage (via `ApplicationEvent`), with recruiter/source/date filters.
+  - Time-to-fill & time-to-offer, in business days, per job/department.
+  - Recruiter productivity & workload — snapshot counts (open jobs, active applications) mixed
+    with date-ranged activity counts (interviews scheduled, offers extended, hires).
+  - Offer/TAT compliance — `Offer.createdAt` → the approved `OfferApproval.decidedAt`, the one
+    leg of Offer's lifecycle with an immutable, never-overwritten timestamp; the compliance
+    threshold is a report parameter, not an invented stored org policy.
+- `src/lib/reporting/business-days.ts`: business-day arithmetic reading
+  `Organization.workingDays`/`Holiday` — seeded in Module 1 as "foundation for future SLA/TAT
+  clocks" but never consumed by any service until now.
+- `SavedReport` entity (§10.5): name + `reportType` + `filters` (validated per-type via Zod, same
+  "JSON shape validated at the service boundary" convention as `Job.customFields`), optional
+  `DAILY`/`WEEKLY` schedule with recipient emails and an export format. Business-record tier
+  (`OWN`/`TEAM`/`ALL` scope on `createdById`, optimistic-locking `version`, hard-deletable) —
+  not admin-metadata tier like `CommunicationTemplate`, since scheduling arbitrary-recipient
+  emails is a meaningfully more sensitive capability than reading a template. Deliberately not a
+  generic drag-and-drop dashboard builder over arbitrary entities/custom fields — the same scope
+  cut Module 8 made for the Template Designer.
+- `src/lib/services/scheduled-reports.ts` (`runDueScheduledReports`): re-applies each
+  `SavedReport`'s *creator's* own RBAC scope at run time (`getSessionContextForUser`), the same
+  row-level-security guarantee ad-hoc report viewing gets. No cron/queue infrastructure exists in
+  this app — this is the real business logic; the periodic trigger itself is external infra this
+  pass doesn't provide.
+- `src/lib/services/report-export.ts`: XLSX/CSV (ExcelJS, same pattern as `candidate-export.ts`)
+  and PDF (`pdf-lib`, a new dependency — a plain text table, not a full layout engine) export for
+  every report type, plus `GET /api/reports/export`.
+- `MailMessage` gained an optional `attachments` field (`src/lib/mail/provider.ts`) — the first
+  sender that needs one; `ConsoleMailProvider` logs attachment names/sizes.
+- `ENTITY.SAVED_REPORT` + seeded default grants (`Recruiter`: CREATE/READ ALL, UPDATE/DELETE OWN;
+  `Recruiting Manager`: CREATE ALL, READ/UPDATE/DELETE TEAM; `Hiring Manager`: READ ALL only —
+  scheduling is a meaningfully different capability than approving).
+- `/reports`: tabs for all four pre-built reports plus a Saved Reports tab (list, schedule
+  edit, delete) — gated on `JOB:READ` or `OFFER:READ`, whichever a given tab needs.
+- Automated test coverage: `business-days.test.ts` (pure unit, weekday/holiday/recurring-holiday
+  edge cases), `report.test.ts` (Zod schemas), `reports.service.test.ts` (all four reports'
+  computations + RBAC scoping against a deterministic fixture), `saved-reports.service.test.ts`
+  (CRUD, optimistic locking, RBAC, schedule/recipient cross-field validation),
+  `scheduled-reports.service.test.ts` (due-detection for DAILY/WEEKLY, deactivated-creator
+  handling), `report-export.service.test.ts` (real parseable XLSX/CSV/PDF output, audit logging).
+
+### Fixed
+
+- `getPipelineFunnelReport`'s "reached stage N" cumulative count only ever consulted
+  `ApplicationEvent.toStageId` — an application's *initial* stage (assigned at creation, before
+  its first move) never appears as any event's `toStageId`, since nothing "moved it into" a
+  stage it started at. Any application that had since progressed past its starting stage
+  silently disappeared from that stage's reached count. Fixed by also folding in
+  `fromStageId`, caught while writing `reports.service.test.ts`'s fixture.
+- `getRecruiterProductivityReport` ran 5 `count()` queries *per recruiter* in a
+  `recruiters.map(async ...)` loop — an N+1 that scales with team size for TEAM/ALL-scope
+  viewers. Rewritten to 5 flat `groupBy` queries across every recruiter at once, independent of
+  how many recruiters are in scope.
+
 ## Module 8 — Communication Hub (PRD §11.10)
 
 ### Added

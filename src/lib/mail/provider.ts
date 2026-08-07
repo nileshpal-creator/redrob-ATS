@@ -6,10 +6,18 @@
  * not touching any service code. Same shape as StorageProvider
  * (src/lib/storage/provider.ts) and HrisProvider (src/lib/hris/provider.ts).
  */
+export type MailAttachment = {
+  fileName: string;
+  contentType: string;
+  content: Buffer;
+};
+
 export type MailMessage = {
   to: string;
   subject: string;
   body: string;
+  /** Optional — added for scheduled report delivery (§10.5/§11.12), which is the first sender that needs one. */
+  attachments?: MailAttachment[];
 };
 
 export type MailSendResult = {

@@ -53,6 +53,11 @@ export const AUDIT_ACTIONS = {
   HANDOFF_STATUS_CHANGED: "handoff.status_changed",
   COMMUNICATION_TEMPLATE_CREATED: "communication_template.created",
   COMMUNICATION_TEMPLATE_UPDATED: "communication_template.updated",
+  SAVED_REPORT_CREATED: "saved_report.created",
+  SAVED_REPORT_UPDATED: "saved_report.updated",
+  SAVED_REPORT_DELETED: "saved_report.deleted",
+  REPORT_EXPORTED: "report.exported",
+  SAVED_REPORT_SCHEDULE_RUN: "saved_report.schedule_run",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];

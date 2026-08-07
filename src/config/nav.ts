@@ -1,5 +1,6 @@
 import type { LucideIcon } from "lucide-react";
 import {
+  BarChart3,
   Briefcase,
   Contact,
   KanbanSquare,
@@ -29,6 +30,9 @@ export const candidatesNavItem: NavItem = { title: "Candidates", href: "/candida
 
 /** Shown only when the viewer has APPLICATION:READ — see (app)/layout.tsx. */
 export const applicationsNavItem: NavItem = { title: "Applications", href: "/applications", icon: KanbanSquare };
+
+/** Shown only when the viewer has JOB:READ or OFFER:READ — see (app)/layout.tsx. */
+export const reportsNavItem: NavItem = { title: "Reports", href: "/reports", icon: BarChart3 };
 
 /** Rendered only for super-admin roles — see AppSidebar. Every module adds its admin screens here. */
 export const adminNav: NavItem[] = [

@@ -11,8 +11,9 @@ for the data model, [`docs/api.md`](docs/api.md) for the full API reference, and
 
 Next.js 15 (App Router) · TypeScript · TailwindCSS v4 · shadcn/ui (hand-vendored components,
 see "Note on shadcn/ui" below) · Prisma 7 (`@prisma/adapter-pg`) · PostgreSQL · Auth.js v5
-(Credentials + JWT) · React Hook Form · Zod · ExcelJS (candidate import/export) · `@dnd-kit/core`
-(pipeline board drag-and-drop) · Vitest · Playwright (end-to-end smoke passes)
+(Credentials + JWT) · React Hook Form · Zod · ExcelJS (candidate/report export) · `pdf-lib`
+(report PDF export) · `@dnd-kit/core` (pipeline board drag-and-drop) · Vitest · Playwright
+(end-to-end smoke passes)
 
 ## Current features
 
@@ -215,6 +216,39 @@ file behind the same interface, not a change to any service code.
   requirement.
 - **Audit logging**: template creation/updates and every bulk-email request are logged to the
   shared audit log.
+
+### Module 9 — Reporting & Analytics (PRD §11.12)
+
+- **Four pre-built reports**: pipeline funnel & conversion (per job, with recruiter/source/date
+  filters), time-to-fill & time-to-offer (business days, per job/department), recruiter
+  productivity & workload, and offer/TAT compliance — all computed on demand at `/reports`, no
+  materialized/cached tables.
+- **Reports reuse each entity's own permission**: no new blanket `REPORT` resource — a report
+  is gated by `JOB:READ` or `OFFER:READ` (whichever entity it's about) and scoped by the
+  viewer's own OWN/TEAM/ALL grant, exactly like every list endpoint already works. This is what
+  gives §10.5's "row-level security" requirement for free.
+- **Business-day TAT math**: `src/lib/reporting/business-days.ts` is the first real consumer of
+  `Organization.workingDays`/`Holiday` (seeded in Module 1, unused until now) — offer TAT is
+  measured `Offer.createdAt` → the approved `OfferApproval.decidedAt`, in business days, not
+  calendar days.
+- **Saved, shareable reports (§10.5)**: `SavedReport` lets a viewer name and save one of the
+  four pre-built report types with its filters — deliberately *not* a generic drag-and-drop
+  dashboard builder over arbitrary entities/custom fields, the same scope cut Module 8 made for
+  the Template Designer. Running a saved report always re-applies the *runner's own* permission
+  scope, not a fixed row-set baked in at save time.
+- **Scheduled email delivery**: a `SavedReport` can be scheduled `DAILY`/`WEEKLY` with
+  recipient emails and an export format. No cron/queue infrastructure exists in this app — the
+  actual periodic trigger is external (an OS cron or a hosting platform's scheduled function
+  hitting `POST /api/saved-reports/run-due`); the business logic itself
+  (`runDueScheduledReports`) is real.
+- **Export to Excel/CSV/PDF**: `GET /api/reports/export` reuses the ExcelJS/CSV pattern from
+  candidate export, plus a minimal `pdf-lib`-based renderer (a plain text table, not a full
+  layout engine) — added as this module's one new dependency.
+- **Admin metadata vs. business record**: unlike `CommunicationTemplate` (open read for
+  everyone), `SavedReport` is business-record tier — `OWN`/`TEAM`/`ALL` scope on `createdById`,
+  optimistic-locking `version`, and a real seeded `SAVED_REPORT` permission grant — since
+  scheduling emails to arbitrary recipients is a meaningfully more sensitive capability than
+  reading a template.
 
 ## Local development
 

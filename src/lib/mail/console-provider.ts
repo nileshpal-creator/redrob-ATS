@@ -18,7 +18,10 @@ import type { MailMessage, MailProvider, MailSendResult } from "./provider";
  */
 export class ConsoleMailProvider implements MailProvider {
   async send(message: MailMessage): Promise<MailSendResult> {
-    console.log(`[ConsoleMailProvider] To: ${message.to}\nSubject: ${message.subject}\n\n${message.body}`);
+    const attachmentSummary = message.attachments?.length
+      ? `\nAttachments: ${message.attachments.map((attachment) => `${attachment.fileName} (${attachment.contentType}, ${attachment.content.length} bytes)`).join(", ")}`
+      : "";
+    console.log(`[ConsoleMailProvider] To: ${message.to}\nSubject: ${message.subject}\n\n${message.body}${attachmentSummary}`);
     return { success: true };
   }
 }

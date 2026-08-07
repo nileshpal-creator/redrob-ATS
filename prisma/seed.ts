@@ -222,6 +222,31 @@ const HANDOFF_ROLE_PERMISSIONS = [
   { role: "HR / Onboarding", action: "APPROVE", scope: "ALL" },
 ] as const;
 
+// Module 9 — Reporting & Analytics (§11.12). Ownership resolves against
+// SavedReport.createdById, same single-column anchor as every prior
+// module. "Shareable" (§10.5) is modeled as broad READ (ALL for Recruiter,
+// TEAM for Recruiting Manager) so a saved report definition is visible
+// beyond its creator — running it still re-scopes the underlying data via
+// the runner's own Job/Application/Offer permissions, not this grant. No
+// grant for Interviewer/HR — neither role is described in §8 as needing
+// cross-cutting analytics, mirroring Candidate's precedent of not seeding
+// roles the PRD doesn't name for that module. Hiring Manager gets READ
+// only, no CREATE/UPDATE/DELETE — matches its read-heavy role everywhere
+// else (Job/Application/Interview/Offer), since defining a *scheduled*
+// report that emails arbitrary recipients is a meaningfully different
+// capability than approving requisitions/offers.
+const SAVED_REPORT_ROLE_PERMISSIONS = [
+  { role: "Recruiter", action: "CREATE", scope: "ALL" },
+  { role: "Recruiter", action: "READ", scope: "ALL" },
+  { role: "Recruiter", action: "UPDATE", scope: "OWN" },
+  { role: "Recruiter", action: "DELETE", scope: "OWN" },
+  { role: "Hiring Manager", action: "READ", scope: "ALL" },
+  { role: "Recruiting Manager", action: "CREATE", scope: "ALL" },
+  { role: "Recruiting Manager", action: "READ", scope: "TEAM" },
+  { role: "Recruiting Manager", action: "UPDATE", scope: "TEAM" },
+  { role: "Recruiting Manager", action: "DELETE", scope: "TEAM" },
+] as const;
+
 async function main() {
   const organization = await prisma.organization.upsert({
     where: { id: "default" },
@@ -333,6 +358,16 @@ async function main() {
     });
   }
   console.log(`Seeded ${HANDOFF_ROLE_PERMISSIONS.length} default Handoff role permissions`);
+
+  for (const grant of SAVED_REPORT_ROLE_PERMISSIONS) {
+    const role = await prisma.role.findUniqueOrThrow({ where: { name: grant.role } });
+    await prisma.rolePermission.upsert({
+      where: { roleId_resource_action: { roleId: role.id, resource: "SAVED_REPORT", action: grant.action } },
+      update: { scope: grant.scope },
+      create: { roleId: role.id, resource: "SAVED_REPORT", action: grant.action, scope: grant.scope },
+    });
+  }
+  console.log(`Seeded ${SAVED_REPORT_ROLE_PERMISSIONS.length} default Saved Report role permissions`);
 
   const adminEmail = process.env.SEED_ADMIN_EMAIL;
   const adminPassword = process.env.SEED_ADMIN_PASSWORD;

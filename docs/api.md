@@ -642,6 +642,130 @@ service layer — that guard is client-side only (the pipeline-stage editor UI b
 and shows a count). An `Application.stageId` pointing at a now-inactive stage is left completely
 untouched either way; only new stage-move/create requests are validated against `isActive`.
 
+## Reports
+
+Four pre-built reports (§11.12, Module 9), each reusing the underlying entity's own `:READ`
+permission and scope — no separate `REPORT` resource. Row-level security (§10.5) falls out of
+this: an OWN/TEAM-scoped viewer's report is narrowed exactly like their own Job/Application/Offer
+lists are.
+
+### `GET /api/reports/pipeline-funnel`
+
+- **Query params** (`pipelineFunnelQuerySchema`): `jobId` (required), `recruiterId?`,
+  `sourceId?`, `dateFrom?`/`dateTo?` (ISO dates).
+- **Response**: `{ job: { id, title }, totalApplications: number, stages: [{ stageId, name,
+  currentCount, reachedCount, conversionFromPrevious: number | null }] }`.
+- **Permissions**: `JOB:READ`, scoped against the job's primary recruiter for OWN/TEAM grants.
+- **Status codes**: `200` success · `400` missing `jobId` · `403` no qualifying grant (also
+  returned, not `404`, if the job exists but is out of the caller's OWN/TEAM scope) · `404`
+  unknown `jobId`.
+
+### `GET /api/reports/time-to-fill-offer`
+
+- **Query params** (`timeToFillOfferQuerySchema`): `departmentId?`, `locationId?`,
+  `recruiterId?` (maps to `Job.primaryRecruiterId`, not `Application.ownerId`), `dateFrom?`/
+  `dateTo?`.
+- **Response**: `{ jobs: [{ jobId, title, departmentLabel, timeToFillDaysAvg: number | null,
+  hiresCount, timeToOfferDaysAvg: number | null, offersCount }], overall: {...same shape,
+  aggregated} }`. Days are business days (`src/lib/reporting/business-days.ts`), not calendar
+  days.
+- **Permissions**: `JOB:READ`.
+- **Status codes**: `200` success (an empty `jobs: []` if scope excludes every job — not an
+  error) · `403` no `JOB:READ` grant at all.
+
+### `GET /api/reports/recruiter-productivity`
+
+- **Query params** (`recruiterProductivityQuerySchema`): `recruiterId?` (omit for every
+  recruiter your scope covers), `dateFrom?`/`dateTo?` — the date range narrows *activity* counts
+  only (interviews scheduled, offers extended, hires); `openJobsCount`/`activeApplicationsCount`
+  are always current snapshots.
+- **Response**: `{ rows: [{ recruiter: { id, name, email }, openJobsCount,
+  activeApplicationsCount, interviewsScheduledCount, offersExtendedCount, hiresCount }] }`.
+- **Permissions**: `JOB:READ` (a recruiter's workload is fundamentally their owned jobs/
+  applications). An OWN-scope caller may only request their own `recruiterId`.
+- **Status codes**: `200` success · `403` no `JOB:READ` grant, or an OWN/TEAM-scope caller
+  requesting a `recruiterId` outside their scope.
+
+### `GET /api/reports/offer-tat-compliance`
+
+- **Query params** (`offerTatComplianceQuerySchema`): `recruiterId?`, `tatThresholdDays?`
+  (default `3` — a report parameter, not a stored org policy), `dateFrom?`/`dateTo?`.
+- **Response**: `{ tatThresholdDays, measuredCount, pendingApprovalCount, compliantCount,
+  complianceRate: number | null, avgTatDays: number | null, rows: [{ offerId, recruiter, tatDays,
+  compliant }] }`. TAT is measured `Offer.createdAt` → the approved `OfferApproval.decidedAt` —
+  offers with no approval decision yet are counted in `pendingApprovalCount`, not `rows`.
+- **Permissions**: `OFFER:READ`.
+- **Status codes**: `200` success · `403` no `OFFER:READ` grant.
+
+### `GET /api/reports/export`
+
+- **Query params** (`reportExportQuerySchema`): `reportType` (one of the four report types),
+  `format` (`XLSX`/`CSV`/`PDF`), `filters` (a JSON-encoded query param — that report type's own
+  query schema, e.g. `?reportType=PIPELINE_FUNNEL&format=CSV&filters=%7B%22jobId%22%3A%22...%22%7D`).
+- **Response**: the file, with `Content-Disposition: attachment`.
+- **Permissions**: same as the underlying report's own GET endpoint.
+- **Status codes**: `200` success · `400` invalid `filters` JSON or a schema validation failure
+  (e.g. missing `jobId` for `PIPELINE_FUNNEL`) · `403` no qualifying grant.
+
+## Saved Reports
+
+Saved, shareable report definitions with optional schedule-based email delivery (§10.5, Module
+9) — business-record tier, not admin-metadata tier: `OWN`/`TEAM`/`ALL` scope on `createdById`,
+optimistic-locking `version`. Deliberately **not** a generic drag-and-drop dashboard builder —
+`reportType` picks one of the four pre-built reports above and `filters` narrows it.
+
+### `GET /api/saved-reports`
+
+- **Query params** (`savedReportQuerySchema`): `reportType?`.
+- **Response**: `SavedReport[]`, scoped by `SAVED_REPORT:READ`.
+- **Permissions**: `SAVED_REPORT:READ`.
+
+### `POST /api/saved-reports`
+
+- **Request body** (`savedReportCreateSchema`): `{ "name": "string, 1-200 chars, required —
+  not unique, personal/team artifacts", "reportType": "PIPELINE_FUNNEL | TIME_TO_FILL_AND_OFFER |
+  RECRUITER_PRODUCTIVITY | OFFER_TAT_COMPLIANCE", "filters": "object — validated against that
+  reportType's own query schema", "scheduleFrequency": "NONE | DAILY | WEEKLY, default NONE",
+  "recipientEmails": "string[], default [] — required non-empty if scheduleFrequency != NONE",
+  "exportFormat": "XLSX | CSV | PDF, default XLSX" }`.
+- **Status codes**: `201`/`200` success · `400` schema validation failure, invalid `filters` for
+  the chosen `reportType`, or a schedule with no recipients · `403` no `SAVED_REPORT:CREATE`
+  grant.
+
+### `PATCH /api/saved-reports/[id]`
+
+- **Request body** (`savedReportUpdateSchema`): `version` (required) plus any of `name`,
+  `filters`, `scheduleFrequency`, `recipientEmails`, `exportFormat`. Cross-field validation
+  (schedule requires recipients) is checked against the *merged* result — updating only
+  `scheduleFrequency` to `DAILY` succeeds if the report already has recipient emails from
+  creation.
+- **Status codes**: `200` success · `400` validation failure or an invalid schedule/recipient
+  combination · `403` no qualifying `SAVED_REPORT:UPDATE` grant · `404` unknown id · `409` stale
+  `version`.
+
+### `DELETE /api/saved-reports/[id]`
+
+Hard delete — no historical FK references this row, unlike `CommunicationTemplate`.
+
+- **Status codes**: `200` success · `403` no qualifying `SAVED_REPORT:DELETE` grant · `404`
+  unknown id.
+
+### `POST /api/saved-reports/run-due`
+
+Runs every `SavedReport` whose schedule is due (`lastRunAt` missing, or older than its
+`DAILY`/`WEEKLY` interval), re-applying each report's *creator's* own RBAC scope, and delivers it
+via `MailProvider` with the rendered file as an attachment. No cron/queue infrastructure exists
+in this app — this endpoint is the real business logic; actually invoking it on a schedule is
+external infra (an OS cron or a hosting platform's scheduled function) this pass does not
+provide.
+
+- **Response**: `{ dueCount, sentCount, failedCount }`.
+- **Permissions**: `SAVED_REPORT:UPDATE` with no ownership context — in practice only an
+  ALL-scope grant (System Administrator by default) passes, since no seeded role has an
+  ALL-scope `SAVED_REPORT:UPDATE` grant. A system-wide operation, gated through the existing
+  permission model rather than a bespoke `isSuperAdmin` check.
+- **Status codes**: `200` success · `403` no qualifying grant.
+
 ## Roles & Permissions
 
 ### `GET /api/roles`

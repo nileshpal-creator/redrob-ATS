@@ -1,7 +1,7 @@
 import { cache } from "react";
 
 import { auth } from "@/auth";
-import { prisma } from "@/lib/prisma";
+import { getSessionContextForUser } from "./session-context-for-user";
 
 export type SessionRole = {
   id: string;
@@ -23,40 +23,15 @@ export type SessionContext = {
  * deliberately NOT read from the JWT: a permission or role change must take
  * effect on the user's very next request, not after their session cookie
  * expires. See src/lib/auth/auth.config.ts for what *is* safe to cache in
- * the token (just the user id).
+ * the token (just the user id). The actual DB lookup lives in
+ * session-context-for-user.ts, kept out of this file so importing it (e.g.
+ * from a test) doesn't drag in next-auth's `auth()` — see that file's
+ * comment.
  */
 export const getSessionContext = cache(async (): Promise<SessionContext | null> => {
   const session = await auth();
   if (!session?.user?.id) {
     return null;
   }
-
-  const user = await prisma.user.findUnique({
-    where: { id: session.user.id },
-    select: {
-      id: true,
-      name: true,
-      email: true,
-      isActive: true,
-      roles: {
-        select: {
-          role: { select: { id: true, name: true, isSuperAdmin: true } },
-        },
-      },
-    },
-  });
-
-  if (!user || !user.isActive) {
-    return null;
-  }
-
-  const roles = user.roles.map((userRole) => userRole.role);
-
-  return {
-    userId: user.id,
-    name: user.name,
-    email: user.email,
-    roles,
-    isSuperAdmin: roles.some((role) => role.isSuperAdmin),
-  };
+  return getSessionContextForUser(session.user.id);
 });
