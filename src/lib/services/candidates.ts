@@ -535,11 +535,14 @@ export async function deleteCandidateDocument(
 
 /**
  * Extensible read model (§11.2's candidate timeline). CandidateNote feeds
- * the original "note" item type; Module 4 is the first real second
- * consumer, adding "application_created" (one per Application) and
- * "application_stage_changed"/"application_rejected"/"application_withdrawn"
- * (one per ApplicationEvent) without changing the existing contract. Future
- * modules (Interview, Offer, Communication Hub) add more `type`s the same way.
+ * the original "note" item type; Module 4 added "application_created"/
+ * "application_stage_changed"/"application_rejected"/"application_withdrawn";
+ * Module 5 adds "interview_scheduled"/"interview_completed"/
+ * "interview_cancelled"/"interview_feedback_submitted" (derived from
+ * Interview/InterviewFeedback rows, joined through Application the same
+ * way ApplicationEvent is) — each addition without changing the existing
+ * contract. Future modules (Offer, Communication Hub) add more `type`s the
+ * same way.
  */
 export async function getCandidateTimeline(context: SessionContext, candidateId: string) {
   const candidate = await prisma.candidate.findUnique({ where: { id: candidateId } });
@@ -548,7 +551,7 @@ export async function getCandidateTimeline(context: SessionContext, candidateId:
   }
   await assertCandidateAccess(context, candidate, "READ");
 
-  const [notes, applications] = await Promise.all([
+  const [notes, applications, interviews] = await Promise.all([
     prisma.candidateNote.findMany({
       where: { candidateId },
       orderBy: { createdAt: "desc" },
@@ -567,6 +570,17 @@ export async function getCandidateTimeline(context: SessionContext, candidateId:
             reason: true,
           },
         },
+      },
+    }),
+    // Module 5 — joined through Application, the same way ApplicationEvent
+    // is, since Interview belongs to an application's pipeline, not the
+    // candidate directly.
+    prisma.interview.findMany({
+      where: { application: { candidateId } },
+      include: {
+        application: { select: { jobId: true, job: { select: { title: true } } } },
+        cancellationReason: true,
+        feedback: { include: { interviewer: { select: userSummarySelect } } },
       },
     }),
   ]);
@@ -617,9 +631,58 @@ export async function getCandidateTimeline(context: SessionContext, candidateId:
     }),
   );
 
-  const items = [...noteItems, ...applicationItems, ...eventItems].sort(
-    (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
+  // Module 5 — no separate InterviewEvent history table exists (a
+  // deliberate simplification: Interview has far fewer state transitions
+  // than Application, and nothing else needs a queryable history of them
+  // yet), so these items are derived directly from Interview/
+  // InterviewFeedback rows rather than from an event log. `updatedAt` is
+  // the best available proxy for "when this status change happened" —
+  // matching completedAt/cancelledAt would need that extra table.
+  const interviewScheduledItems = interviews.map((interview) => ({
+    type: "interview_scheduled" as const,
+    id: `${interview.id}:scheduled`,
+    jobId: interview.application.jobId,
+    jobTitle: interview.application.job.title,
+    roundName: interview.roundName,
+    scheduledAt: interview.scheduledAt,
+    createdAt: interview.createdAt,
+  }));
+
+  const interviewStatusItems = interviews
+    .filter((interview) => interview.status !== "SCHEDULED")
+    .map((interview) => ({
+      type: (interview.status === "COMPLETED" ? "interview_completed" : "interview_cancelled") as
+        | "interview_completed"
+        | "interview_cancelled",
+      id: `${interview.id}:${interview.status.toLowerCase()}`,
+      jobId: interview.application.jobId,
+      jobTitle: interview.application.job.title,
+      roundName: interview.roundName,
+      reason: interview.cancellationReason?.label ?? null,
+      createdAt: interview.updatedAt,
+    }));
+
+  const interviewFeedbackItems = interviews.flatMap((interview) =>
+    interview.feedback.map((feedback) => ({
+      type: "interview_feedback_submitted" as const,
+      id: feedback.id,
+      jobId: interview.application.jobId,
+      jobTitle: interview.application.job.title,
+      roundName: interview.roundName,
+      interviewer: feedback.interviewer,
+      recommendation: feedback.recommendation,
+      createdAt: feedback.submittedAt,
+    })),
   );
+
+  const items = [
+    ...noteItems,
+    ...applicationItems,
+    ...eventItems,
+    ...interviewScheduledItems,
+    ...interviewStatusItems,
+    ...interviewFeedbackItems,
+  ].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 
   return { items };
 }

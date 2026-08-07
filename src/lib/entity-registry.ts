@@ -21,6 +21,7 @@ export const ENTITY = {
   JOB: "JOB",
   CANDIDATE: "CANDIDATE",
   APPLICATION: "APPLICATION",
+  INTERVIEW: "INTERVIEW",
 } as const;
 
 export type EntityKey = (typeof ENTITY)[keyof typeof ENTITY];
@@ -37,6 +38,7 @@ export const ENTITY_LABELS: Record<string, string> = {
   [ENTITY.JOB]: "Jobs / Requisitions",
   [ENTITY.CANDIDATE]: "Candidates",
   [ENTITY.APPLICATION]: "Applications",
+  [ENTITY.INTERVIEW]: "Interviews",
 };
 
 /** Entities core modules may attach admin-defined custom fields to (§10.1). */
@@ -44,6 +46,7 @@ export const CUSTOM_FIELD_CAPABLE_ENTITIES: readonly string[] = [
   ENTITY.JOB,
   ENTITY.CANDIDATE,
   ENTITY.APPLICATION,
+  ENTITY.INTERVIEW,
   // Populated as each further module ships: OFFER, ...
 ];
 

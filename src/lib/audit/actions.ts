@@ -41,6 +41,11 @@ export const AUDIT_ACTIONS = {
   APPLICATION_BULK_TRANSITIONED: "application.bulk_transitioned",
   APPLICATION_BULK_EMAIL_REQUESTED: "application.bulk_email_requested",
   PIPELINE_STAGES_UPDATED: "pipeline_stages.updated",
+  INTERVIEW_SCHEDULED: "interview.scheduled",
+  INTERVIEW_UPDATED: "interview.updated",
+  INTERVIEW_COMPLETED: "interview.completed",
+  INTERVIEW_CANCELLED: "interview.cancelled",
+  INTERVIEW_FEEDBACK_SUBMITTED: "interview.feedback_submitted",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];

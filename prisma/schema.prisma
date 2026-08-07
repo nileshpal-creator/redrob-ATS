@@ -59,6 +59,10 @@ model User {
   applicationEventsActed     ApplicationEvent[]
   applicationEmailsRequested ApplicationEmailLog[]
 
+  interviewsScheduled       Interview[]         @relation("InterviewScheduledBy")
+  interviewPanelAssignments InterviewPanelist[]
+  interviewFeedbackAuthored InterviewFeedback[] @relation("InterviewFeedbackInterviewer")
+
   @@index([isActive])
   @@index([managerId])
 }
@@ -220,6 +224,8 @@ model ControlledListValue {
 
   applicationsAsOutcomeReason Application[]      @relation("ApplicationOutcomeReason")
   applicationEventsAsReason   ApplicationEvent[] @relation("ApplicationEventReason")
+
+  interviewsAsCancellationReason Interview[] @relation("InterviewCancellationReason")
 
   @@unique([listId, value])
 }
@@ -663,8 +669,9 @@ model Application {
   createdBy     User                 @relation("ApplicationCreatedBy", fields: [createdById], references: [id])
   outcomeReason ControlledListValue? @relation("ApplicationOutcomeReason", fields: [outcomeReasonId], references: [id])
 
-  events    ApplicationEvent[]
-  emailLogs ApplicationEmailLog[]
+  events     ApplicationEvent[]
+  emailLogs  ApplicationEmailLog[]
+  interviews Interview[]
 
   @@index([candidateId])
   @@index([jobId])
@@ -721,4 +728,130 @@ model ApplicationEmailLog {
 
   @@index([applicationId])
   @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// Module 5 — Interview Management (§11.5)
+// ---------------------------------------------------------------------------
+
+enum InterviewMode {
+  ONSITE
+  VIRTUAL
+  PHONE
+}
+
+enum InterviewStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+}
+
+enum InterviewRecommendation {
+  STRONG_YES
+  YES
+  NO
+  STRONG_NO
+}
+
+// One scheduled session against one Application — not against Candidate or
+// Job directly, since "which pipeline this interview belongs to" is exactly
+// what Application already tracks (§9). Interview intentionally has no
+// "outcome" of its own: the actual accept/reject/advance decision continues
+// to be made through Application's existing transition endpoint (Module 4)
+// using the collected feedback as decision support — this module only
+// schedules sessions and records structured feedback, never the pipeline
+// decision itself.
+model Interview {
+  id String @id @default(cuid())
+
+  applicationId String
+
+  // Free text, not a Controlled List or a PipelineStage-style config model —
+  // "Technical Round 1", "HR Round", etc. vary too freely per job/team to be
+  // worth a fixed vocabulary or a second admin-configurable list model this
+  // early (cf. mustHaveCriteria's same free-text-list treatment on Job).
+  roundName String
+
+  mode     InterviewMode
+  // Address for ONSITE, a meeting link for VIRTUAL, a phone number for
+  // PHONE — one flexible free-text field rather than three mode-specific
+  // columns, since exactly one is ever meaningful per interview.
+  location String?
+
+  scheduledAt     DateTime
+  durationMinutes Int      @default(60)
+
+  status               InterviewStatus      @default(SCHEDULED)
+  cancellationReasonId String?
+  cancellationReason   ControlledListValue? @relation("InterviewCancellationReason", fields: [cancellationReasonId], references: [id])
+
+  notes String?
+
+  customFields Json?
+
+  // Ownership anchor for OWN/TEAM scope on the scheduling side (who booked
+  // this interview) — mirrors Job.primaryRecruiterId / Application.ownerId.
+  // A second, independent access path exists for the assigned interviewers
+  // themselves (panelists) — see assertInterviewAccess in
+  // src/lib/services/interviews.ts.
+  scheduledById String
+  scheduledBy   User   @relation("InterviewScheduledBy", fields: [scheduledById], references: [id])
+
+  // Optimistic locking — same pattern as Job.version / Application.version.
+  version Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  application Application         @relation(fields: [applicationId], references: [id])
+  panelists   InterviewPanelist[]
+  feedback    InterviewFeedback[]
+
+  @@index([applicationId])
+  @@index([scheduledById])
+  @@index([status])
+  @@index([scheduledAt])
+}
+
+// Which users are assigned to conduct an interview — modeled directly on
+// JobRecruiterAssignment, minus isPrimary (the PRD names no "lead
+// interviewer" concept, unlike Job's primary recruiter).
+model InterviewPanelist {
+  interviewId String
+  userId      String
+  assignedAt  DateTime @default(now())
+
+  interview Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([interviewId, userId])
+  @@index([userId])
+}
+
+// One interviewer's structured feedback for one interview (§8: "Interviewer
+// ... submits structured feedback"). Unique per (interview, interviewer) —
+// an interviewer files one scorecard per interview, editable up until
+// someone reads it as final; there is no separate "submitted" lock, matching
+// how Application/Job/Candidate records stay mutable via version rather than
+// becoming read-only after creation.
+model InterviewFeedback {
+  id            String @id @default(cuid())
+  interviewId   String
+  interviewerId String
+
+  recommendation InterviewRecommendation
+  // 1-5, validated at the service layer (not DB-constrained) — same
+  // "shape validated by Zod, not DDL" convention as Candidate.totalExperienceYears.
+  rating         Int?
+  comments       String?
+
+  version     Int      @default(0)
+  submittedAt DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  interview   Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+  interviewer User      @relation("InterviewFeedbackInterviewer", fields: [interviewerId], references: [id])
+
+  @@unique([interviewId, interviewerId])
+  @@index([interviewId])
 }

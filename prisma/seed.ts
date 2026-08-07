@@ -68,6 +68,12 @@ const CONTROLLED_LISTS = [
     label: "Job Cancel Reasons",
     values: ["Duplicate requisition", "Budget not approved", "Role no longer required"],
   },
+  // Module 5 — Interview Management (§11.5)
+  {
+    key: "INTERVIEW_CANCELLATION_REASON",
+    label: "Interview Cancellation Reasons",
+    values: ["Candidate withdrew", "Scheduling conflict", "Candidate no-show", "Position on hold"],
+  },
 ] as const;
 
 // Module 2 default grants — without these, no role but System Administrator
@@ -138,6 +144,27 @@ const APPLICATION_ROLE_PERMISSIONS = [
   { role: "Recruiting Manager", action: "CREATE", scope: "ALL" },
   { role: "Recruiting Manager", action: "READ", scope: "TEAM" },
   { role: "Recruiting Manager", action: "UPDATE", scope: "TEAM" },
+] as const;
+
+// Module 5 default grants — ownership resolves against Interview.scheduledById
+// for the scheduling side (Recruiter/Recruiting Manager), mirroring every
+// prior module's single-column ownership anchor. Interviewer is a second,
+// independent access path: an OWN-scope grant here is resolved by
+// assertInterviewAccess (src/lib/services/interviews.ts) against panelist
+// membership instead of scheduledById — an interviewer didn't schedule the
+// interview, but still needs to read it and file feedback on it. No DELETE
+// grant for anyone — Interview has no delete endpoint, same "no hard delete"
+// precedent as Job/Application (cancel via status, not removal).
+const INTERVIEW_ROLE_PERMISSIONS = [
+  { role: "Recruiter", action: "CREATE", scope: "ALL" },
+  { role: "Recruiter", action: "READ", scope: "ALL" },
+  { role: "Recruiter", action: "UPDATE", scope: "OWN" },
+  { role: "Hiring Manager", action: "READ", scope: "ALL" },
+  { role: "Recruiting Manager", action: "CREATE", scope: "ALL" },
+  { role: "Recruiting Manager", action: "READ", scope: "TEAM" },
+  { role: "Recruiting Manager", action: "UPDATE", scope: "TEAM" },
+  { role: "Interviewer", action: "READ", scope: "OWN" },
+  { role: "Interviewer", action: "UPDATE", scope: "OWN" },
 ] as const;
 
 async function main() {
@@ -221,6 +248,16 @@ async function main() {
     });
   }
   console.log(`Seeded ${APPLICATION_ROLE_PERMISSIONS.length} default Application role permissions`);
+
+  for (const grant of INTERVIEW_ROLE_PERMISSIONS) {
+    const role = await prisma.role.findUniqueOrThrow({ where: { name: grant.role } });
+    await prisma.rolePermission.upsert({
+      where: { roleId_resource_action: { roleId: role.id, resource: "INTERVIEW", action: grant.action } },
+      update: { scope: grant.scope },
+      create: { roleId: role.id, resource: "INTERVIEW", action: grant.action, scope: grant.scope },
+    });
+  }
+  console.log(`Seeded ${INTERVIEW_ROLE_PERMISSIONS.length} default Interview role permissions`);
 
   const adminEmail = process.env.SEED_ADMIN_EMAIL;
   const adminPassword = process.env.SEED_ADMIN_PASSWORD;
