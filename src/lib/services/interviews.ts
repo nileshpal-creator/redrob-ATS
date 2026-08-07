@@ -152,7 +152,7 @@ export async function listInterviews(context: SessionContext, query: InterviewQu
   const [interviews, total] = await Promise.all([
     prisma.interview.findMany({
       where,
-      include: interviewListInclude,
+      include: interviewDetailInclude,
       orderBy: { scheduledAt: "asc" },
       skip: (query.page - 1) * query.pageSize,
       take: query.pageSize,

@@ -28,9 +28,101 @@ type TimelineItem =
       toStage?: string | null;
       reason?: string | null;
       createdAt: string;
+    }
+  | {
+      type: "interview_scheduled";
+      id: string;
+      jobId: string;
+      jobTitle: string;
+      roundName: string;
+      scheduledAt: string;
+      createdAt: string;
+    }
+  | {
+      type: "interview_completed" | "interview_cancelled";
+      id: string;
+      jobId: string;
+      jobTitle: string;
+      roundName: string;
+      reason: string | null;
+      createdAt: string;
+    }
+  | {
+      type: "interview_feedback_submitted";
+      id: string;
+      jobId: string;
+      jobTitle: string;
+      roundName: string;
+      interviewer: Person;
+      recommendation: "STRONG_YES" | "YES" | "NO" | "STRONG_NO";
+      createdAt: string;
     };
 
-function ApplicationTimelineEntry({ item }: { item: Exclude<TimelineItem, { type: "note" }> }) {
+const RECOMMENDATION_LABEL: Record<string, string> = {
+  STRONG_YES: "Strong yes",
+  YES: "Yes",
+  NO: "No",
+  STRONG_NO: "Strong no",
+};
+
+type InterviewTimelineItem = Extract<
+  TimelineItem,
+  {
+    type:
+      | "interview_scheduled"
+      | "interview_completed"
+      | "interview_cancelled"
+      | "interview_feedback_submitted"
+      | "application_stage_changed"
+      | "application_rejected"
+      | "application_withdrawn";
+  }
+>;
+
+function InterviewTimelineEntry({ item }: { item: InterviewTimelineItem }) {
+  const jobLink = (
+    <Link href={`/jobs/${item.jobId}`} className="font-medium hover:underline">
+      {item.jobTitle}
+    </Link>
+  );
+
+  switch (item.type) {
+    case "interview_scheduled":
+      return (
+        <p className="text-sm">
+          Interview scheduled — {item.roundName} for {jobLink} on {new Date(item.scheduledAt).toLocaleString()}
+        </p>
+      );
+
+    case "interview_completed":
+    case "interview_cancelled":
+      return (
+        <p className="text-sm">
+          {item.type === "interview_completed" ? "Interview completed" : "Interview cancelled"} — {item.roundName}{" "}
+          for {jobLink}
+          {item.reason ? ` — ${item.reason}` : ""}
+        </p>
+      );
+
+    case "interview_feedback_submitted":
+      return (
+        <p className="text-sm">
+          Feedback submitted for {item.roundName} ({jobLink}) by {item.interviewer.name}:{" "}
+          <Badge variant="secondary">{RECOMMENDATION_LABEL[item.recommendation]}</Badge>
+        </p>
+      );
+
+    default:
+      return <ApplicationTimelineEntry item={item} />;
+  }
+}
+
+type ApplicationTimelineItem = Extract<
+  TimelineItem,
+  { type: "application_created" | "application_stage_changed" | "application_rejected" | "application_withdrawn" }
+>;
+
+function ApplicationTimelineEntry({ item }: { item: ApplicationTimelineItem }) {
   const jobLink = (
     <Link href={`/jobs/${item.jobId}`} className="font-medium hover:underline">
       {item.jobTitle}
@@ -150,8 +242,10 @@ export function CandidateTimeline({
                   {item.author.name} &middot; {new Date(item.createdAt).toLocaleString()}
                 </p>
               </>
-            ) : (
+            ) : item.type === "application_created" ? (
               <ApplicationTimelineEntry item={item} />
+            ) : (
+              <InterviewTimelineEntry item={item} />
             )}
           </div>
         ))}
