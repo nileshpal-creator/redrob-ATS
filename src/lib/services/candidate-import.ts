@@ -143,6 +143,12 @@ export async function previewCandidateImport(
     : await parseXlsx(buffer);
 
   const results: CandidateImportPreviewRow[] = [];
+  // Tracks phones already marked "valid" earlier in this same file — a hard
+  // duplicate check against the database alone would miss two rows in one
+  // file sharing a phone, showing both as "valid" when committing would
+  // only ever create the first (see commitCandidateImport's per-row
+  // DuplicateCandidateError handling).
+  const seenPhones = new Map<string, number>();
 
   for (let i = 0; i < rawRows.length; i++) {
     const mapped = mapImportRow(rawRows[i]);
@@ -158,12 +164,24 @@ export async function previewCandidateImport(
       continue;
     }
 
+    const seenAtRow = seenPhones.get(parsed.data.phone);
+    if (seenAtRow !== undefined) {
+      results.push({
+        row: i + 1,
+        data: parsed.data,
+        status: "invalid",
+        errors: [`Duplicate phone with row ${seenAtRow} in this file.`],
+      });
+      continue;
+    }
+
     const hardMatch = await prisma.candidate.findUnique({ where: { phone: parsed.data.phone } });
     if (hardMatch) {
       results.push({ row: i + 1, data: parsed.data, status: "duplicate", existingCandidateId: hardMatch.id });
       continue;
     }
 
+    seenPhones.set(parsed.data.phone, i + 1);
     results.push({ row: i + 1, data: parsed.data, status: "valid" });
   }
 

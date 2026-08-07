@@ -6,7 +6,9 @@ import { addCandidateDocument } from "@/lib/services/candidates";
 type RouteParams = { id: string };
 
 export const POST = withApiHandler<unknown, RouteParams>(async (context, request, params) => {
-  const formData = await request.formData();
+  const formData = await request.formData().catch(() => {
+    throw new ValidationError("Expected a multipart/form-data request body.");
+  });
   const file = formData.get("file");
   if (!(file instanceof File)) {
     throw new ValidationError("A file is required.");

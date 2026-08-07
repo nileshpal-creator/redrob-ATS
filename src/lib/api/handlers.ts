@@ -61,6 +61,13 @@ export function toErrorResponse(error: unknown) {
   if (error instanceof ZodError) {
     return NextResponse.json({ error: "Invalid input", issues: error.issues }, { status: 400 });
   }
+  // `await request.json()` throws a native SyntaxError on malformed JSON —
+  // every route that parses a JSON body hits this, not just one module, so
+  // it's mapped here centrally rather than per-route. Business logic never
+  // legitimately throws SyntaxError, so this catch is safe to be broad.
+  if (error instanceof SyntaxError) {
+    return NextResponse.json({ error: "Malformed request body." }, { status: 400 });
+  }
 
   console.error(error);
   return NextResponse.json({ error: "Internal server error" }, { status: 500 });

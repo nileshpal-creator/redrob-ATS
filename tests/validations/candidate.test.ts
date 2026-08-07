@@ -2,8 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   candidateCreateSchema,
+  candidateDocumentUploadSchema,
+  candidateDuplicateCheckSchema,
+  candidateExportQuerySchema,
   candidateImportCommitSchema,
   candidateMergeSchema,
+  candidateNoteSchema,
   candidateQuerySchema,
   candidateUpdateSchema,
 } from "@/lib/validations/candidate";
@@ -25,8 +29,16 @@ describe("candidateCreateSchema", () => {
     expect(candidateCreateSchema.safeParse({ ...validCreate, name: "   " }).success).toBe(false);
   });
 
-  it("rejects a malformed phone number", () => {
-    expect(candidateCreateSchema.safeParse({ ...validCreate, phone: "abc" }).success).toBe(false);
+  it("rejects malformed phone numbers", () => {
+    for (const phone of ["abc", "123", "555-CALL-NOW", "<script>alert(1)</script>", ""]) {
+      expect(candidateCreateSchema.safeParse({ ...validCreate, phone }).success, `phone=${phone}`).toBe(false);
+    }
+  });
+
+  it("accepts common real-world phone formats", () => {
+    for (const phone of ["+1 555-123-4567", "(555) 123-4567", "5551234567", "+91 98765 43210"]) {
+      expect(candidateCreateSchema.safeParse({ ...validCreate, phone }).success, `phone=${phone}`).toBe(true);
+    }
   });
 
   it("requires consentGivenAt", () => {
@@ -84,6 +96,32 @@ describe("candidateCreateSchema", () => {
       expect(result.data).not.toHaveProperty("salaryVisible");
     }
   });
+
+  it("rejects a malformed consentGivenAt", () => {
+    expect(candidateCreateSchema.safeParse({ ...validCreate, consentGivenAt: "not-a-date" }).success).toBe(false);
+  });
+
+  it("validates educationHistory entries", () => {
+    const valid = candidateCreateSchema.safeParse({
+      ...validCreate,
+      educationHistory: [{ institution: "MIT", degree: "BSc" }],
+    });
+    expect(valid.success).toBe(true);
+
+    const invalid = candidateCreateSchema.safeParse({
+      ...validCreate,
+      educationHistory: [{ institution: "", degree: "BSc" }],
+    });
+    expect(invalid.success).toBe(false);
+  });
+
+  it("rejects more than 50 skills or a single skill over 100 characters", () => {
+    expect(
+      candidateCreateSchema.safeParse({ ...validCreate, skills: Array.from({ length: 51 }, (_, i) => `skill-${i}`) })
+        .success,
+    ).toBe(false);
+    expect(candidateCreateSchema.safeParse({ ...validCreate, skills: ["x".repeat(101)] }).success).toBe(false);
+  });
 });
 
 describe("candidateUpdateSchema", () => {
@@ -136,5 +174,51 @@ describe("candidateImportCommitSchema", () => {
   it("validates every row against candidateCreateSchema", () => {
     const result = candidateImportCommitSchema.safeParse({ rows: [validCreate, { ...validCreate, phone: "invalid" }] });
     expect(result.success).toBe(false);
+  });
+
+  it("rejects more than 500 rows", () => {
+    const rows = Array.from({ length: 501 }, (_, i) => ({ ...validCreate, phone: `+1 555-000-${1000 + i}` }));
+    expect(candidateImportCommitSchema.safeParse({ rows }).success).toBe(false);
+  });
+});
+
+describe("candidateDocumentUploadSchema", () => {
+  it("requires a documentTypeId", () => {
+    expect(candidateDocumentUploadSchema.safeParse({}).success).toBe(false);
+    expect(candidateDocumentUploadSchema.safeParse({ documentTypeId: "" }).success).toBe(false);
+    expect(candidateDocumentUploadSchema.safeParse({ documentTypeId: "abc" }).success).toBe(true);
+  });
+});
+
+describe("candidateDuplicateCheckSchema", () => {
+  it("requires a phone; email is optional but must be valid if present", () => {
+    expect(candidateDuplicateCheckSchema.safeParse({}).success).toBe(false);
+    expect(candidateDuplicateCheckSchema.safeParse({ phone: "+1 555-0100" }).success).toBe(true);
+    expect(candidateDuplicateCheckSchema.safeParse({ phone: "+1 555-0100", email: "not-an-email" }).success).toBe(
+      false,
+    );
+  });
+});
+
+describe("candidateNoteSchema", () => {
+  it("rejects an empty note body", () => {
+    expect(candidateNoteSchema.safeParse({ body: "" }).success).toBe(false);
+    expect(candidateNoteSchema.safeParse({ body: "   " }).success).toBe(false);
+  });
+
+  it("rejects a note body over 5000 characters", () => {
+    expect(candidateNoteSchema.safeParse({ body: "x".repeat(5001) }).success).toBe(false);
+    expect(candidateNoteSchema.safeParse({ body: "x".repeat(5000) }).success).toBe(true);
+  });
+});
+
+describe("candidateExportQuerySchema", () => {
+  it("defaults format to csv and accepts xlsx", () => {
+    expect(candidateExportQuerySchema.parse({}).format).toBe("csv");
+    expect(candidateExportQuerySchema.parse({ format: "xlsx" }).format).toBe("xlsx");
+  });
+
+  it("rejects an unsupported format", () => {
+    expect(candidateExportQuerySchema.safeParse({ format: "pdf" }).success).toBe(false);
   });
 });
