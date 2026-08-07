@@ -543,26 +543,58 @@ Apply the same stage-move/reject/withdraw action to many applications in one req
 
 ### `POST /api/applications/bulk/email`
 
-Queue a templated email for many applications' candidates. **Infrastructure only — never sends
-a real email.** Writes one `ApplicationEmailLog` row per recipient with `status: PENDING`; real
-delivery is deferred to the future Communication Hub module.
+Send a templated email to many applications' candidates (§11.10, Module 8 — originally
+infrastructure-only, now actually delivers via `MailProvider`; see
+[Communication Templates](#communication-templates) below).
 
 - **Request body** (`applicationBulkEmailSchema`):
   ```json
   {
     "applicationIds": "string[], 1-500 entries, required",
-    "subject": "string, 1-200 chars, required — supports {{candidate.name}} / {{job.title}}",
-    "body": "string, 1-10000 chars, required — same placeholders"
+    "templateId": "string, required — an active CommunicationTemplate id"
   }
   ```
-- **Response**: `{ "succeeded": [{ "applicationId": string, "toEmail": string }, ...], "failed":
-  [{ "id": string, "reason": string }, ...] }`. A candidate with no email on file, an application
-  the caller can't `UPDATE`, or a nonexistent application id lands that target in `failed`
-  (`"Candidate has no email on file."`, a permission message, or `"Application not found."`
-  respectively) rather than aborting the batch.
+  An unknown or inactive `templateId` fails the whole request with `400` — it's a shared
+  precondition for the entire call, not a per-application concern.
+- **Response**: `{ "succeeded": [{ "applicationId": string, "toEmail": string, "status": "SENT"
+  | "FAILED" }, ...], "failed": [{ "id": string, "reason": string }, ...] }`. A candidate with no
+  email on file, an application the caller can't `UPDATE`, or a nonexistent application id lands
+  that target in `failed` (`"Candidate has no email on file."`, a permission message, or
+  `"Application not found."` respectively) rather than aborting the batch — note this is
+  different from `succeeded` items with `status: "FAILED"`, which mean the email log row was
+  created but the `MailProvider` reported a delivery failure.
 - **Permissions**: `APPLICATION:UPDATE`, checked per target the same way bulk transition is.
-- **Status codes**: `200` success (inspect the response body) · `400` schema validation failure
-  · `403` only if the request as a whole can't be parsed as a valid action.
+- **Status codes**: `200` success (inspect the response body — some targets may still report a
+  delivery failure) · `400` schema validation failure or an invalid `templateId` · `403` only if
+  the request as a whole can't be parsed as a valid action.
+
+## Communication Templates
+
+Admin-managed templates for `POST /api/applications/bulk/email` (§11.10, Module 8). Reading the
+list is open to any authenticated user (the bulk-email picker needs it); create/update require
+`COMMUNICATION_TEMPLATE:CREATE`/`UPDATE`. No delete route — deactivate via `PATCH isActive:false`
+instead, same convention as pipeline stages.
+
+### `GET /api/communication-templates`
+
+- **Query params**: `channel` (`EMAIL`/`SMS`, optional), `isActive` (`"true"`/`"false"`, optional).
+- **Response**: `CommunicationTemplate[]`, ordered by name.
+
+### `POST /api/communication-templates`
+
+- **Request body** (`communicationTemplateCreateSchema`): `{ "name": "string, 1-120 chars,
+  required, unique", "channel": "EMAIL | SMS", "subject": "string, 1-200 chars, required —
+  supports {{candidate.name}} / {{job.title}}", "body": "string, 1-10000 chars, required — same
+  placeholders", "isActive": "boolean" }`.
+- **Status codes**: `201`/`200` success · `400` a duplicate name or schema validation failure ·
+  `403` missing `COMMUNICATION_TEMPLATE:CREATE`.
+
+### `PATCH /api/communication-templates/[id]`
+
+- **Request body** (`communicationTemplateUpdateSchema`): any of `channel`, `subject`, `body`,
+  `isActive` — `name` is immutable once created (deactivate and create a replacement to rename).
+- **Status codes**: `200` success · `404` unknown id · `403` missing
+  `COMMUNICATION_TEMPLATE:UPDATE`.
 
 ## Pipeline Stages
 

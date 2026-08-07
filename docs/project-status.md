@@ -91,13 +91,12 @@ All `M`-priority requirements from §11.4 are implemented:
 - The candidate timeline (Module 3) now surfaces application activity alongside notes, via the
   same extensible item-type contract. ✅
 - Custom fields on Applications via the existing Customization Engine, no new engine code. ✅
-- Bulk email — **infrastructure only**: renders a template and logs what would be sent
-  (`ApplicationEmailLog`, status always `PENDING`); real delivery is scoped to the PRD's
-  Communication Hub module (§11.10), a later module, per the Phase 2 decision. ⏸ deferred
-  (queued-only by design, not a gap — see [Known limitations](#known-limitations))
-- Interview scheduling, feedback capture, and offer generation are explicitly out of scope for
-  this module — they belong to the PRD's Interview Management (§11.5) and Offer Management
-  (§11.6) modules, not yet started. ⏸ deferred
+- Bulk email — originally **infrastructure only** (renders a template, logs what would be sent,
+  status always `PENDING`); Module 8 (Communication Hub, §11.10) completed real delivery. ✅
+  (completed by Module 8, see its own section below)
+- Interview scheduling, feedback capture, and offer generation were explicitly out of scope for
+  *this* module — they belong to the PRD's Interview Management (§11.5) and Offer Management
+  (§11.6) modules, both completed since (see their own sections below).
 
 ### Module 5 — Interview Management (PRD §11.5)
 
@@ -169,6 +168,31 @@ All `M`-priority requirements from §11.7 are implemented:
 - The candidate timeline gains `handoff_initiated`/`handoff_delivered`/`handoff_accepted`/
   `handoff_exception` item types. ✅
 - Custom fields on Handoffs via the existing Customization Engine. ✅
+
+### Module 8 — Communication Hub (PRD §11.10)
+
+The two `M`-priority requirements from §11.10 are implemented; the two P2/Future rows (SMS, AI
+chat) are correctly deferred:
+
+- Email is the primary channel, fully logged against candidate records — `bulkEmailApplications`
+  (Module 4) now actually sends (via a new `MailProvider` abstraction) instead of only queuing,
+  and every `ApplicationEmailLog` row lands as `SENT` or `FAILED` rather than a permanent
+  `PENDING`. ✅
+- Template-driven, variable-substituted messaging — a new admin-managed `CommunicationTemplate`
+  model (name, subject, body with `{{key}}` placeholders via the existing `renderTemplate()`
+  helper) replaces the free-typed subject/body the bulk-email dialog previously had. This is
+  deliberately the *minimal* slice of the full Template Designer (§10.4) that this
+  M-requirement needs — not multi-language variants, conditional blocks, version history, or an
+  approval workflow, which stay their own future module. ✅ (scoped)
+- `src/lib/mail/` mirrors `StorageProvider`/`HrisProvider`'s "interface + one real
+  implementation + env-driven factory" shape exactly — only a `ConsoleMailProvider` exists; a
+  real Gmail/Outlook API connector (§12) needs OAuth credentials out of scope for this pass. ✅
+  (scoped)
+- SMS channel — correctly not built (§11.10 tags it P2). ⏸ deferred
+- AI chat / conversational engagement — correctly not built (§11.10 tags it Future). ⏸ deferred
+- The candidate timeline gains `email_sent`/`email_failed` item types — completing §11.2's own
+  "every application, interview, offer, note and email in one view" requirement, which had
+  shipped everything except the email part until now. ✅
 
 ## Completed phases (Module 2)
 
@@ -318,6 +342,50 @@ All `M`-priority requirements from §11.7 are implemented:
    concurrency test (concurrent `acknowledgeHandoff` calls) for parity with the existing
    concurrent-retry coverage.
 
+## Completed phases (Module 8)
+
+1. **Investigation** — the PRD text itself isn't committed to this repo; read §11.10's exact
+   requirements from the source PDF, plus §10.4 (Template Designer) and §14's roadmap (which
+   places §10.4 in the same V1 phase as §11.10). Read Module 4's existing `ApplicationEmailLog`/
+   `bulkEmailApplications` stub, `src/lib/templates/render.ts`, the `StorageProvider`/
+   `HrisProvider` abstraction pattern, and confirmed the candidate timeline had never gained an
+   email item type despite §11.2 already committing to one.
+2. **Technical Design** — a `CommunicationTemplate` model scoped to exactly what §11.10's own
+   M-requirement needs (not the full §10.4 designer); a `MailProvider` abstraction mirroring
+   `StorageProvider`/`HrisProvider`; `bulkEmailApplications` rewritten to resolve a template
+   once upfront and actually send; admin-metadata RBAC tier (open read, `requirePermission`
+   mutations, no seeded grant, relying on the existing `isSuperAdmin` bypass) rather than the
+   owned-record tier Job/Offer/Handoff use.
+3. **Backend Implementation** — schema and migration, validations
+   (`communication-template.ts`, and the rewritten `applicationBulkEmailSchema`), `src/lib/mail/`,
+   `CommunicationTemplateService`, thin API routes, registry/audit-action updates, and the
+   `bulkEmailApplications` rewrite.
+4. **Frontend Implementation** — `/admin/communication-templates` (create/edit/deactivate,
+   `DataTable` + dialogs mirroring the Custom Fields admin page) with a new nav entry, and the
+   Applications list's bulk-email dialog rewritten from free-typed subject/body to a template
+   picker.
+5. **Candidate timeline integration** — `email_sent`/`email_failed` item types, closing the one
+   gap left in §11.2's own candidate-timeline requirement.
+6. **Testing** — validation-schema tests, `CommunicationTemplateService` tests (RBAC via the
+   `isSuperAdmin` bypass, open read, duplicate-name rejection including a concurrency test,
+   active/inactive filtering), and `bulkEmailApplications` tests (successful send, no-email skip,
+   unknown/inactive template rejection, candidate-timeline integration). Full regression suite:
+   362 tests passing project-wide.
+7. **Browser verification** — a real Chromium walkthrough: create a template via the admin UI →
+   pick it in the bulk-email dialog → send → confirmed `SENT` status, rendered
+   subject/body, and the `ConsoleMailProvider` log line via direct database and server-log
+   inspection → candidate timeline shows the `email_sent` item → deactivating the template in the
+   admin UI correctly removes it from the send picker.
+8. **Self code review** — found and fixed one genuine gap: `createCommunicationTemplate`'s
+   duplicate-name pre-check had the same TOCTOU race `createOffer`'s own comment warns about —
+   two concurrent creates could both pass the `findUnique` check and one would hit the database's
+   unique constraint as an unhandled 500. Added the same `P2002 -> ValidationError` catch
+   `createOffer` uses, plus a concurrency test for it. Also corrected several now-stale
+   documentation claims across `README.md`, `CHANGELOG.md`, `docs/api.md`,
+   `docs/architecture.md`, and `docs/database.md` that described `ApplicationEmailLog` as
+   permanently `PENDING`/infrastructure-only — all direct fallout of this module's own changes,
+   not pre-existing drift from other modules.
+
 ## Remaining modules
 
 Per the PRD's §11 module breakdown and §14 roadmap, not yet started:
@@ -325,7 +393,6 @@ Per the PRD's §11 module breakdown and §14 roadmap, not yet started:
 | PRD § | Module | Roadmap phase |
 | --- | --- | --- |
 | 11.3 | Sourcing & Job Board Distribution | V1 — Core Parity |
-| 11.10 | Communication Hub (email logging, template-driven messaging) | V1 — Core Parity |
 | 11.12 | Reporting & Analytics, incl. custom dashboard/report builder (§10.5) | V1 — Core Parity |
 | 10.2 | Workflow & Automation Builder (visual, no-code, per-job/pipeline) | *implicit, underlies later V1 modules' configurability* |
 | 10.4 | Template Designer (email templates, offer letters, e-signature-ready) | *implicit* |
@@ -380,11 +447,17 @@ Per the PRD's §11 module breakdown and §14 roadmap, not yet started:
   that consent was given at creation time; it does not distinguish between, e.g., consent to
   store data versus consent to be contacted, and there is no mechanism to update or revoke it
   independent of the rest of the record.
-- **Bulk email is queued-only infrastructure, not real delivery.** `POST
-  /api/applications/bulk/email` renders a template and writes an `ApplicationEmailLog` row per
-  recipient with `status: PENDING` — it never calls a mail provider, and nothing in this module
-  ever transitions a log row to `SENT`/`FAILED`. This is intentional (Phase 2 decision): real
-  email delivery is scoped to the PRD's Communication Hub module (§11.10), a later module.
+- **The `MailProvider` abstraction has exactly one implementation.** `src/lib/mail/` mirrors
+  `StorageProvider`/`HrisProvider`'s shape (interface + one real implementation + env-driven
+  factory, `MAIL_PROVIDER` defaulting to `"console"`), but no real Gmail/Outlook API connector
+  exists yet (§12) — that needs OAuth credentials outside this environment's scope. Same
+  intentional "infrastructure exists, only a later integration effort writes the other value"
+  pattern as `HandoffDeliveryMethod.API_PUSH`.
+- **Interview Management's "automatic email reminders" requirement (§11.5, M) is still
+  unimplemented.** Module 8 (Communication Hub) gives the codebase a real send path, but nothing
+  schedules or triggers a reminder automatically — that needs a scheduler/cron mechanism that
+  doesn't exist anywhere in this codebase yet, discovered while implementing Module 8 and left
+  unfixed since it belongs to Interview Management's own scope, not Communication Hub's.
 - **No Workflow & Automation Builder yet (§10.2).** Both Job's approval flow (Module 2) and
   Application's pipeline stages (Module 4) are configurable *data* (a status-transition table,
   a per-job ordered stage list) but not a visual, no-code, admin-authored workflow — that's the

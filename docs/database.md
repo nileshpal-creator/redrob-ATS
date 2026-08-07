@@ -267,17 +267,33 @@ as the `Application` row it describes, so the two can never diverge.
 | --- | --- | --- |
 | `id` | `String` (cuid) | |
 | `applicationId` | `String` | FK → `Application`, **`onDelete: Cascade`** |
-| `toEmail` | `String` | the candidate's email at the time the bulk email was queued |
-| `subject` / `body` | `String` | rendered from the caller's template (`{{candidate.name}}`/`{{job.title}}` placeholders substituted) |
-| `status` | `EmailLogStatus` | enum, default `PENDING`; **this module only ever writes `PENDING`** — `SENT`/`FAILED`/`CANCELLED` are reserved for the future Communication Hub module |
+| `templateId` | `String` | FK → `CommunicationTemplate`, default `onDelete: Restrict` (Module 8) |
+| `toEmail` | `String` | the candidate's email at the time the email was sent |
+| `subject` / `body` | `String` | rendered from `CommunicationTemplate` (`{{candidate.name}}`/`{{job.title}}` placeholders substituted) — a snapshot, not a live reference to the template |
+| `status` | `EmailLogStatus` | enum; Module 8 writes `SENT`/`FAILED` directly (resolved synchronously from the `MailProvider` result) — `CANCELLED` stays unwritten, no PRD requirement to cancel a queued send |
 | `requestedById` | `String` | FK → `User`, default `onDelete: Restrict` |
-| `requestedAt` | `DateTime` | default `now()` |
-| `sentAt` | `DateTime?` | unused as of Module 4 — no code sets it, since nothing is ever actually sent |
+| `requestedAt` | `DateTime` | default `now()` — when the send was attempted |
+| `sentAt` | `DateTime?` | set only when `status: SENT` |
 
-Indexed on `applicationId` and `status` (two `@@index` entries). Scoped narrowly to
-`Application` (one row per recipient per bulk-email call), not a polymorphic log — Module 4 has
-exactly one feature that queues email (there is nothing else in this module for a polymorphic
-log to also serve).
+Indexed on `applicationId`, `status`, and `templateId` (three `@@index` entries). Scoped
+narrowly to `Application` (one row per recipient per send), not a polymorphic log — nothing else
+in this codebase sends email yet for a polymorphic log to also serve.
+
+### `CommunicationTemplate` columns (Module 8)
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | `String` (cuid) | |
+| `name` | `String` | **unique**, immutable once created — the picker and historical logs reference a template by name |
+| `channel` | `CommunicationChannel` | enum (`EMAIL`/`SMS`), default `EMAIL` — only `EMAIL` is ever written; `SMS` is reserved (§11.10 P2) |
+| `subject` / `body` | `String` | `{{key}}` placeholders, rendered via `renderTemplate()` |
+| `isActive` | `Boolean` | default `true` — no hard delete, "removing" a template deactivates it, same convention as `PipelineStage` |
+| `createdById` | `String` | FK → `User`, default `onDelete: Restrict` |
+| `createdAt` / `updatedAt` | `DateTime` | |
+
+Indexed on `(channel, isActive)` for the bulk-email picker's active-template list. No optimistic-
+locking `version` — admin metadata edited infrequently by a small number of admins, same tier as
+`CustomFieldDefinition`/`ControlledListValue`, not `Job`/`Offer`'s business-record tier.
 
 ### Cascade and restrict behavior (Module 4)
 
@@ -438,13 +454,15 @@ implementation detail with no user-facing "revision history" surface.
 | `ApplicationOutcome` | `ACTIVE`, `REJECTED`, `WITHDRAWN` | `Application.outcome` |
 | `ApplicationEventType` | `STAGE_CHANGE`, `REJECTED`, `WITHDRAWN` | `ApplicationEvent.type` |
 | `EmailLogStatus` | `PENDING`, `SENT`, `FAILED`, `CANCELLED` | `ApplicationEmailLog.status` |
+| `CommunicationChannel` | `EMAIL`, `SMS` | `CommunicationTemplate.channel` — only `EMAIL` is ever written (Module 8) |
 
 `APPROVE` was added to `PermissionAction` in Module 2 (Phase 1 decision: approval must be its
 own permission, not overloaded onto `UPDATE`). `ApplicationOutcome`, `ApplicationEventType`, and
-`EmailLogStatus` were added in Module 4; no existing enum changed. `EmailLogStatus` is the first
-enum in this schema where a module writes fewer values than it defines: Module 4 code only ever
-writes `PENDING` — `SENT`, `FAILED`, and `CANCELLED` exist so the future Communication Hub module
-can set them once real delivery exists, without a schema change.
+`EmailLogStatus` were added in Module 4; no existing enum changed. `EmailLogStatus` was the first
+enum in this schema where a module wrote fewer values than it defined: Module 4 code only ever
+wrote `PENDING`, with `SENT`/`FAILED`/`CANCELLED` reserved for later. Module 8 (Communication Hub)
+started writing `SENT`/`FAILED`; `CANCELLED` remains unwritten — no PRD requirement to cancel a
+queued send.
 
 **Not enums, by design**: `RolePermission.resource` / `FieldPermission.resource` /
 `CustomFieldDefinition.entityType` / `AuditLog.entityType` / `AuditLog.action` are plain

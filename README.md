@@ -159,10 +159,10 @@ file behind the same interface, not a change to any service code.
 - **Timeline integration**: a candidate's timeline (Module 3) now includes application
   activity — creation, stage changes, rejection, and withdrawal — alongside notes, using the
   same extensible `{ type, ... }` item contract Module 3 built for exactly this.
-- **Bulk email (queued only)**: bulk email renders a subject/body template (with
-  `{{candidate.name}}`/`{{job.title}}` placeholders) and logs one `ApplicationEmailLog` row per
-  recipient with status `Pending` — this module never calls a real mail provider. Real delivery
-  is deferred to the future Communication Hub module.
+- **Bulk email**: originally queued-only infrastructure; Module 8 (Communication Hub) completed
+  the wire — bulk email now picks an admin-managed `CommunicationTemplate`, renders it (with
+  `{{candidate.name}}`/`{{job.title}}` placeholders), actually sends it, and logs one
+  `ApplicationEmailLog` row per recipient as `Sent` or `Failed`. See Module 8 below.
 - **Audit logging**: every create, update, stage change, rejection, withdrawal, bulk action,
   and pipeline-stage edit is logged to the shared audit log.
 
@@ -193,6 +193,29 @@ file behind the same interface, not a change to any service code.
 - **Audit logging**: handoff creation and every status change (delivery outcome, retry,
   acknowledgement) is logged to the shared audit log.
 
+### Module 8 — Communication Hub (PRD §11.10)
+
+- **Template-driven email**: an admin-managed `CommunicationTemplate` (name, subject, body with
+  `{{candidate.name}}`/`{{job.title}}` placeholders) replaces the free-typed subject/body
+  Module 4's bulk-email dialog originally had — recruiters pick a template rather than composing
+  one each time.
+- **Mail delivery abstraction**: `src/lib/mail/` mirrors the `StorageProvider`/`HrisProvider`
+  shape — an interface, one real implementation (`ConsoleMailProvider`), and an env-driven
+  factory (`MAIL_PROVIDER`). No real Gmail/Outlook API connector exists yet — that needs OAuth
+  credentials outside this environment's scope.
+- **Actual delivery**: bulk email now renders the picked template per recipient, sends it, and
+  writes the resulting `ApplicationEmailLog` row as `Sent` or `Failed` directly — no more
+  permanently-`Pending` rows.
+- **Admin template management**: `/admin/communication-templates` — create, edit
+  subject/body, and activate/deactivate (no hard delete, same convention as pipeline stages).
+  Reading the list is open to any authenticated user (recruiters need it to populate the
+  bulk-email picker); only an admin can create or edit.
+- **Timeline integration**: the candidate timeline gains `email_sent`/`email_failed` item types,
+  completing §11.2's "every application, interview, offer, note and email in one view"
+  requirement.
+- **Audit logging**: template creation/updates and every bulk-email request are logged to the
+  shared audit log.
+
 ## Local development
 
 ```bash
@@ -219,6 +242,7 @@ from your `.env`.
 | `STORAGE_PROVIDER` | Selects the candidate-document `StorageProvider` implementation. Only `"local"` is implemented today. | `local` (code-level default; not set in `.env.example`) |
 | `LOCAL_STORAGE_ROOT` | Filesystem root `LocalStorageProvider` writes candidate documents under. Created automatically on first upload; gitignored — never committed. | `./storage/candidate-documents` (code-level default; not set in `.env.example`) |
 | `HRIS_PROVIDER` | Selects the onboarding-handoff `HrisProvider` implementation. Only `"structured_export"` is implemented today. | `structured_export` (code-level default; not set in `.env.example`) |
+| `MAIL_PROVIDER` | Selects the bulk-email `MailProvider` implementation. Only `"console"` is implemented today. | `console` (code-level default; not set in `.env.example`) |
 
 **Default admin credentials are for local development only.** `prisma/seed.ts` warns and skips
 creating the admin account if these are unset — never leave the defaults in a shared or

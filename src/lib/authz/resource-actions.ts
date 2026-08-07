@@ -18,6 +18,10 @@ const RESOURCE_ACTIONS: Partial<Record<string, PermissionAction[]>> = {
   // Offer's ACCEPT transition, never through a dedicated endpoint. No
   // DELETE: same "no hard delete" precedent as every other lifecycle entity.
   [ENTITY.HANDOFF]: ["READ", "UPDATE", "APPROVE"],
+  // No DELETE: a template is never hard-deleted once it may have been used
+  // for a send (ApplicationEmailLog.templateId) — "removing" one deactivates
+  // it instead, same convention as PipelineStage.
+  [ENTITY.COMMUNICATION_TEMPLATE]: ["CREATE", "READ", "UPDATE"],
 };
 
 export function getApplicableActions(resource: string): PermissionAction[] {

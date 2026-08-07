@@ -70,6 +70,8 @@ model User {
   handoffsAcknowledged HandoffRecord[]          @relation("HandoffAcknowledgedBy")
   handoffAttemptsActed HandoffDeliveryAttempt[]
 
+  communicationTemplatesCreated CommunicationTemplate[] @relation("CommunicationTemplateCreatedBy")
+
   @@index([isActive])
   @@index([managerId])
 }
@@ -597,11 +599,62 @@ enum ApplicationEventType {
   WITHDRAWN
 }
 
+// PENDING/SENT/FAILED are all written by Module 8 (Communication Hub) —
+// bulkEmailApplications resolves SENT/FAILED synchronously from the
+// MailProvider result, so a row only stays PENDING for the instant between
+// creation and that same request completing. CANCELLED remains unwritten —
+// there is no PRD requirement to cancel a queued send — same "field exists,
+// nothing writes it yet" pattern as HandoffDeliveryMethod.API_PUSH.
 enum EmailLogStatus {
   PENDING
   SENT
   FAILED
   CANCELLED
+}
+
+// Only EMAIL is ever written today (§11.10: SMS is P2, AI chat is Future) —
+// same "enum leaves room, only one value is real" pattern as
+// HandoffDeliveryMethod.API_PUSH.
+enum CommunicationChannel {
+  EMAIL
+  SMS
+}
+
+// The minimal slice of the Template Designer (§10.4) that §11.10's own
+// M-requirement ("template-driven, variable-substituted messaging") needs —
+// deliberately not the full designer (multi-language variants, conditional
+// blocks, version history + approval workflow, offer-letter/document
+// generation), which stays its own future module per docs/project-status.md's
+// roadmap. Variable substitution reuses the existing renderTemplate() helper
+// (src/lib/templates/render.ts) and its `{{key}}` syntax — no new template
+// language.
+//
+// Admin metadata, not a business record: no optimistic-locking `version`
+// (matches CustomFieldDefinition/ControlledListValue, not Job/Offer), and no
+// hard delete — "removing" a template deactivates it instead (same
+// "deactivate, don't delete" convention as PipelineStage), since
+// ApplicationEmailLog.templateId keeps a Restrict-backed historical reference
+// to whichever template was used for a given send.
+model CommunicationTemplate {
+  id      String               @id @default(cuid())
+  name    String               @unique
+  channel CommunicationChannel @default(EMAIL)
+  // {{key}} placeholders — see renderTemplate() for the exact variables
+  // bulkEmailApplications makes available (candidate.name, job.title).
+  subject String
+  body    String
+
+  isActive Boolean @default(true)
+
+  createdById String
+  createdBy   User   @relation("CommunicationTemplateCreatedBy", fields: [createdById], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  emailLogs ApplicationEmailLog[]
+
+  @@index([channel, isActive])
 }
 
 // Configurable per job/pipeline (§10.1–10.2, §11.4) — deliberately not a
@@ -717,15 +770,19 @@ model ApplicationEvent {
   @@index([applicationId, createdAt])
 }
 
-// Bulk-email "infrastructure only" (§11.4, Phase 2 decision): this module
-// renders and records what would be sent, but never calls a real mail
-// provider. Every row this module writes has status = PENDING; SENT/FAILED/
-// CANCELLED are reserved for the future Communication Hub module to set once
-// real delivery exists — same "field exists, only a later module writes
-// non-default values" pattern as Job.positionsFilledCount.
+// Originally "infrastructure only" (§11.4, Phase 2 decision) — every row
+// wrote status = PENDING and nothing ever sent anything. Module 8
+// (Communication Hub, §11.10) completed the wire: bulkEmailApplications
+// resolves a CommunicationTemplate, renders it, calls MailProvider, and
+// writes the row already as SENT/FAILED. subject/body remain the *rendered*
+// text (a snapshot, same "capture once, store the result" choice as
+// HandoffRecord.payload), not a live reference to the template — templateId
+// records provenance (which template produced this send) without making the
+// log dependent on the template's current content.
 model ApplicationEmailLog {
   id            String         @id @default(cuid())
   applicationId String
+  templateId    String
   toEmail       String
   subject       String
   body          String
@@ -734,11 +791,13 @@ model ApplicationEmailLog {
   requestedAt   DateTime       @default(now())
   sentAt        DateTime?
 
-  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
-  requestedBy User        @relation(fields: [requestedById], references: [id])
+  application Application           @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  template    CommunicationTemplate @relation(fields: [templateId], references: [id])
+  requestedBy User                  @relation(fields: [requestedById], references: [id])
 
   @@index([applicationId])
   @@index([status])
+  @@index([templateId])
 }
 
 // ---------------------------------------------------------------------------

@@ -10,6 +10,8 @@ import { AUDIT_ACTIONS } from "@/lib/audit/actions";
 import { buildCustomFieldValueSchema } from "@/lib/custom-fields/dynamic-schema";
 import { renderTemplate } from "@/lib/templates/render";
 import { assertApplicationNotHandedOff } from "@/lib/services/handoffs";
+import { getActiveCommunicationTemplateOrThrow } from "@/lib/services/communication-templates";
+import { getMailProvider } from "@/lib/mail";
 import type {
   ApplicationBulkEmailInput,
   ApplicationBulkTransitionInput,
@@ -398,13 +400,19 @@ export async function bulkTransitionApplications(context: SessionContext, input:
 }
 
 /**
- * Infrastructure only (Phase 2 decision): renders the template and writes an
- * ApplicationEmailLog row with status PENDING — never calls a mail
- * provider. SENT/FAILED are reserved for the future Communication Hub
- * module to set once real delivery exists.
+ * §11.10 (Communication Hub): template-driven, actually delivered. The
+ * template is resolved once, upfront — it's a shared precondition for the
+ * whole call, not a per-application concern, so an invalid/inactive
+ * templateId fails the entire request rather than showing up as N identical
+ * per-item failures. Each recipient still gets its own try/catch: a bad
+ * candidate email on one application must not block the rest of the batch,
+ * same convention as bulkTransitionApplications.
  */
 export async function bulkEmailApplications(context: SessionContext, input: ApplicationBulkEmailInput) {
-  const succeeded: { applicationId: string; toEmail: string }[] = [];
+  const template = await getActiveCommunicationTemplateOrThrow(input.templateId);
+  const provider = getMailProvider();
+
+  const succeeded: { applicationId: string; toEmail: string; status: "SENT" | "FAILED" }[] = [];
   const failed: { id: string; reason: string }[] = [];
 
   for (const applicationId of input.applicationIds) {
@@ -429,18 +437,25 @@ export async function bulkEmailApplications(context: SessionContext, input: Appl
         "candidate.name": application.candidate.name,
         "job.title": application.job.title,
       };
+      const subject = renderTemplate(template.subject, renderContext);
+      const body = renderTemplate(template.body, renderContext);
+
+      const result = await provider.send({ to: application.candidate.email, subject, body });
 
       const log = await prisma.applicationEmailLog.create({
         data: {
           applicationId,
+          templateId: template.id,
           toEmail: application.candidate.email,
-          subject: renderTemplate(input.subject, renderContext),
-          body: renderTemplate(input.body, renderContext),
+          subject,
+          body,
+          status: result.success ? "SENT" : "FAILED",
           requestedById: context.userId,
+          sentAt: result.success ? new Date() : null,
         },
       });
 
-      succeeded.push({ applicationId, toEmail: log.toEmail });
+      succeeded.push({ applicationId, toEmail: log.toEmail, status: log.status as "SENT" | "FAILED" });
     } catch (error) {
       failed.push({ id: applicationId, reason: error instanceof Error ? error.message : "Unknown error" });
     }
@@ -451,8 +466,14 @@ export async function bulkEmailApplications(context: SessionContext, input: Appl
     action: AUDIT_ACTIONS.APPLICATION_BULK_EMAIL_REQUESTED,
     entityType: ENTITY.APPLICATION,
     entityId: "bulk",
-    changes: { after: { subject: input.subject, queued: succeeded.length, skipped: failed.length } },
+    changes: {
+      after: {
+        templateId: template.id,
+        sent: succeeded.filter((item) => item.status === "SENT").length,
+        failed: succeeded.filter((item) => item.status === "FAILED").length + failed.length,
+      },
+    },
   });
 
-  return { succeeded, failed } satisfies BulkResult<{ applicationId: string; toEmail: string }>;
+  return { succeeded, failed } satisfies BulkResult<{ applicationId: string; toEmail: string; status: "SENT" | "FAILED" }>;
 }

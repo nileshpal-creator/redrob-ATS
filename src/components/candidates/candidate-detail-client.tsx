@@ -139,6 +139,16 @@ type TimelineItem =
       actor: Person;
       reason: string | null;
       createdAt: string;
+    }
+  | {
+      type: "email_sent" | "email_failed";
+      id: string;
+      jobId: string;
+      jobTitle: string;
+      templateName: string;
+      subject: string;
+      requestedBy: Person;
+      createdAt: string;
     };
 
 export function CandidateDetailClient({

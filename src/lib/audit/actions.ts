@@ -51,6 +51,8 @@ export const AUDIT_ACTIONS = {
   OFFER_STATUS_CHANGED: "offer.status_changed",
   HANDOFF_INITIATED: "handoff.initiated",
   HANDOFF_STATUS_CHANGED: "handoff.status_changed",
+  COMMUNICATION_TEMPLATE_CREATED: "communication_template.created",
+  COMMUNICATION_TEMPLATE_UPDATED: "communication_template.updated",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];

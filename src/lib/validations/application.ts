@@ -81,14 +81,13 @@ export const applicationBulkTransitionSchema = z.discriminatedUnion("action", [
 export type ApplicationBulkTransitionInput = z.infer<typeof applicationBulkTransitionSchema>;
 
 /**
- * Infrastructure-only bulk email (Phase 2 decision): subject/body are
- * rendered server-side and logged, never sent — see
- * src/lib/services/applications.ts#bulkEmailApplications.
+ * Template-driven per §11.10's own M-requirement — subject/body are no
+ * longer typed ad hoc, a template is picked and rendered server-side and
+ * actually sent — see src/lib/services/applications.ts#bulkEmailApplications.
  */
 export const applicationBulkEmailSchema = z.object({
   applicationIds: z.array(z.string().min(1)).min(1, "Select at least one application").max(500),
-  subject: z.string().trim().min(1, "Subject is required").max(200),
-  body: z.string().trim().min(1, "Body is required").max(10000),
+  templateId: z.string().min(1, "A template is required"),
 });
 export type ApplicationBulkEmailInput = z.infer<typeof applicationBulkEmailSchema>;
 

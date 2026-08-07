@@ -92,6 +92,16 @@ type TimelineItem =
       actor: Person;
       reason: string | null;
       createdAt: string;
+    }
+  | {
+      type: "email_sent" | "email_failed";
+      id: string;
+      jobId: string;
+      jobTitle: string;
+      templateName: string;
+      subject: string;
+      requestedBy: Person;
+      createdAt: string;
     };
 
 const RECOMMENDATION_LABEL: Record<string, string> = {
@@ -324,14 +334,41 @@ function HandoffTimelineEntry({ item }: { item: HandoffTimelineItem }) {
   }
 }
 
+type EmailTimelineItem = Extract<TimelineItem, { type: "email_sent" | "email_failed" }>;
+
+/** Type predicate (not a plain boolean check) so the render dispatcher below narrows correctly. */
+function isEmailTimelineItem(item: TimelineItem): item is EmailTimelineItem {
+  return item.type === "email_sent" || item.type === "email_failed";
+}
+
+function EmailTimelineEntry({ item }: { item: EmailTimelineItem }) {
+  const jobLink = (
+    <Link href={`/jobs/${item.jobId}`} className="font-medium hover:underline">
+      {item.jobTitle}
+    </Link>
+  );
+
+  return (
+    <div>
+      <p className="text-sm">
+        {item.type === "email_sent" ? "Email sent" : "Email failed to deliver"} for {jobLink} — &quot;{item.subject}
+        &quot;
+      </p>
+      <p className="text-xs text-muted-foreground">
+        {item.templateName} &middot; sent by {item.requestedBy.name}
+      </p>
+    </div>
+  );
+}
+
 /**
  * Candidate timeline (§11.2 FR9) — originally sourced only from notes;
  * Module 4 is the first module to add its own `type`s to the same feed
  * (application_created/application_stage_changed/application_rejected/
  * application_withdrawn), exactly as the API contract
- * (`{ items: [{ type, ... }] }`) was built to extend. Modules 5, 6, and 7
- * (Interview, Offer, Handoff) follow the same pattern; a future
- * Communication Hub module adds more `type`s the same way.
+ * (`{ items: [{ type, ... }] }`) was built to extend. Modules 5, 6, 7, and 8
+ * (Interview, Offer, Handoff, Communication Hub) follow the same pattern; a
+ * future module adds more `type`s the same way.
  */
 export function CandidateTimeline({
   candidateId,
@@ -408,6 +445,8 @@ export function CandidateTimeline({
               <OfferTimelineEntry item={item} />
             ) : isHandoffTimelineItem(item) ? (
               <HandoffTimelineEntry item={item} />
+            ) : isEmailTimelineItem(item) ? (
+              <EmailTimelineEntry item={item} />
             ) : (
               <InterviewTimelineEntry item={item} />
             )}

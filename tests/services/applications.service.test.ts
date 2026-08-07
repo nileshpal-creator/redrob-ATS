@@ -15,7 +15,7 @@ import {
   transitionApplication,
   updateApplication,
 } from "@/lib/services/applications";
-import { deleteCandidate, createCandidate } from "@/lib/services/candidates";
+import { deleteCandidate, createCandidate, getCandidateTimeline } from "@/lib/services/candidates";
 import { createJob } from "@/lib/services/jobs";
 import type { CandidateCreateInput } from "@/lib/validations/candidate";
 import type { JobCreateInput } from "@/lib/validations/job";
@@ -468,7 +468,15 @@ describe("ApplicationService", () => {
     await prisma.application.deleteMany({ where: { id: { in: [a.id, b.id] } } });
   });
 
-  it("bulk-emails: renders the template, logs a PENDING row, and skips a candidate with no email", async () => {
+  it("bulk-emails: renders the template, sends, logs a SENT row, and skips a candidate with no email", async () => {
+    const template = await prisma.communicationTemplate.create({
+      data: {
+        name: `Application Update ${Date.now()}`,
+        subject: "Update on your application to {{job.title}}",
+        body: "Hi {{candidate.name}}, thanks for applying.",
+        createdById: recruiter.userId,
+      },
+    });
     const noEmailCandidate = await createCandidate(
       recruiter,
       candidateInput({ phone: "+1 555-0901", name: "No Email Candidate", email: undefined }),
@@ -482,21 +490,87 @@ describe("ApplicationService", () => {
 
     const result = await bulkEmailApplications(recruiter, {
       applicationIds: [withEmail.id, withoutEmail.id],
-      subject: "Update on your application to {{job.title}}",
-      body: "Hi {{candidate.name}}, thanks for applying.",
+      templateId: template.id,
     });
 
-    expect(result.succeeded).toEqual([{ applicationId: withEmail.id, toEmail: "jane@test.local" }]);
+    expect(result.succeeded).toEqual([{ applicationId: withEmail.id, toEmail: "jane@test.local", status: "SENT" }]);
     expect(result.failed).toEqual([{ id: withoutEmail.id, reason: expect.stringContaining("no email") }]);
 
     const log = await prisma.applicationEmailLog.findFirstOrThrow({ where: { applicationId: withEmail.id } });
-    expect(log.status).toBe("PENDING");
+    expect(log.status).toBe("SENT");
+    expect(log.templateId).toBe(template.id);
     expect(log.subject).toBe("Update on your application to Backend Engineer");
     expect(log.body).toBe("Hi Jane Applicant, thanks for applying.");
-    expect(log.sentAt).toBeNull();
+    expect(log.sentAt).not.toBeNull();
 
+    await prisma.applicationEmailLog.deleteMany({ where: { applicationId: { in: [withEmail.id, withoutEmail.id] } } });
     await prisma.application.deleteMany({ where: { id: { in: [withEmail.id, withoutEmail.id] } } });
     await prisma.candidate.delete({ where: { id: noEmailCandidate.id } });
+    await prisma.communicationTemplate.delete({ where: { id: template.id } });
+  });
+
+  it("bulk-emails: rejects the whole call for an unknown templateId — a shared precondition, not a per-item failure", async () => {
+    const application = await createApplication(recruiter, { candidateId, jobId, ownerId: recruiter.userId });
+
+    await expect(
+      bulkEmailApplications(recruiter, { applicationIds: [application.id], templateId: "nope" }),
+    ).rejects.toBeInstanceOf(ValidationError);
+
+    const logs = await prisma.applicationEmailLog.findMany({ where: { applicationId: application.id } });
+    expect(logs).toHaveLength(0);
+
+    await prisma.application.delete({ where: { id: application.id } });
+  });
+
+  it("bulk-emails: rejects the whole call for an inactive template", async () => {
+    const template = await prisma.communicationTemplate.create({
+      data: {
+        name: `Inactive Bulk Email ${Date.now()}`,
+        subject: "x",
+        body: "x",
+        isActive: false,
+        createdById: recruiter.userId,
+      },
+    });
+    const application = await createApplication(recruiter, { candidateId, jobId, ownerId: recruiter.userId });
+
+    await expect(
+      bulkEmailApplications(recruiter, { applicationIds: [application.id], templateId: template.id }),
+    ).rejects.toBeInstanceOf(ValidationError);
+
+    await prisma.application.delete({ where: { id: application.id } });
+    await prisma.communicationTemplate.delete({ where: { id: template.id } });
+  });
+
+  it("bulk-emails: surfaces an email_sent item on the candidate timeline", async () => {
+    const template = await prisma.communicationTemplate.create({
+      data: {
+        name: `Timeline Email Template ${Date.now()}`,
+        subject: "Update on {{job.title}}",
+        body: "Hi {{candidate.name}}",
+        createdById: recruiter.userId,
+      },
+    });
+    const candidate = await createCandidate(
+      recruiter,
+      candidateInput({ phone: "+1 555-0902", name: "Timeline Email Candidate", email: "timeline-email@test.local" }),
+    );
+    const application = await createApplication(recruiter, { candidateId: candidate.id, jobId, ownerId: recruiter.userId });
+
+    await bulkEmailApplications(recruiter, { applicationIds: [application.id], templateId: template.id });
+
+    const timeline = await getCandidateTimeline(recruiter, candidate.id);
+    const emailItem = timeline.items.find((item) => item.type === "email_sent");
+    expect(emailItem).toBeDefined();
+    if (emailItem?.type === "email_sent") {
+      expect(emailItem.templateName).toBe(template.name);
+      expect(emailItem.subject).toBe("Update on Backend Engineer");
+    }
+
+    await prisma.applicationEmailLog.deleteMany({ where: { applicationId: application.id } });
+    await prisma.application.delete({ where: { id: application.id } });
+    await prisma.candidate.delete({ where: { id: candidate.id } });
+    await prisma.communicationTemplate.delete({ where: { id: template.id } });
   });
 
   it("scopes listApplications to OWN records", async () => {

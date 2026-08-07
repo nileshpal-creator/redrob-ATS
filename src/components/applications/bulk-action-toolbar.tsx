@@ -6,7 +6,6 @@ import { Loader2, Mail, Ban, UserX, MoveRight } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Input } from "@/components/ui/input";
 import {
   Dialog,
   DialogContent,
@@ -25,9 +24,14 @@ import {
 
 type ReasonOption = { id: string; label: string };
 type StageOption = { id: string; name: string; isActive: boolean };
+type TemplateOption = { id: string; name: string; isActive: boolean };
 type SelectedRow = { id: string; version: number; job: { id: string; title: string } };
 
 type BulkResult = { succeeded: unknown[]; failed: { id: string; reason: string }[] };
+type EmailBulkResult = {
+  succeeded: { status: "SENT" | "FAILED" }[];
+  failed: { id: string; reason: string }[];
+};
 
 function reportResult(result: BulkResult, verb: string) {
   if (result.failed.length === 0) {
@@ -41,7 +45,24 @@ function reportResult(result: BulkResult, verb: string) {
   );
 }
 
-async function postJson(url: string, body: unknown) {
+/** Email's own result mixes a delivery outcome into "succeeded" (a log row was created either way) — see bulkEmailApplications. */
+function reportEmailResult(result: EmailBulkResult) {
+  const sent = result.succeeded.filter((item) => item.status === "SENT").length;
+  const deliveryFailed = result.succeeded.length - sent;
+  const skipped = result.failed.length;
+
+  if (deliveryFailed === 0 && skipped === 0) {
+    toast.success(`Sent ${sent} email${sent === 1 ? "" : "s"}.`);
+    return;
+  }
+  toast.warning(
+    `Sent ${sent}, ${deliveryFailed} failed to deliver, ${skipped} skipped${
+      result.failed[0] ? ` (${result.failed[0].reason})` : ""
+    }.`,
+  );
+}
+
+async function postJson<T = BulkResult>(url: string, body: unknown): Promise<T> {
   const response = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -51,7 +72,7 @@ async function postJson(url: string, body: unknown) {
   if (!response.ok) {
     throw new Error(data.error ?? "Request failed");
   }
-  return data as BulkResult;
+  return data as T;
 }
 
 /**
@@ -79,8 +100,8 @@ export function BulkActionToolbar({
   const [toStageId, setToStageId] = useState("");
   const [reasonId, setReasonId] = useState("");
   const [note, setNote] = useState("");
-  const [subject, setSubject] = useState("");
-  const [body, setBody] = useState("");
+  const [templates, setTemplates] = useState<TemplateOption[] | null>(null);
+  const [templateId, setTemplateId] = useState("");
 
   const jobIds = new Set(selectedRows.map((row) => row.job.id));
   const singleJobId = jobIds.size === 1 ? selectedRows[0]?.job.id : null;
@@ -98,14 +119,27 @@ export function BulkActionToolbar({
     };
   }, [dialog, singleJobId]);
 
+  useEffect(() => {
+    if (dialog !== "email") return;
+    let cancelled = false;
+    fetch("/api/communication-templates?isActive=true")
+      .then((response) => response.json())
+      .then((data: TemplateOption[]) => {
+        if (!cancelled) setTemplates(data);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [dialog]);
+
   function closeDialog() {
     setDialog(null);
     setStages(null);
     setToStageId("");
     setReasonId("");
     setNote("");
-    setSubject("");
-    setBody("");
+    setTemplates(null);
+    setTemplateId("");
   }
 
   async function runTransition(action: "STAGE_MOVE" | "REJECT" | "WITHDRAW") {
@@ -131,16 +165,15 @@ export function BulkActionToolbar({
   async function runEmail() {
     setSubmitting(true);
     try {
-      const result = await postJson("/api/applications/bulk/email", {
+      const result = await postJson<EmailBulkResult>("/api/applications/bulk/email", {
         applicationIds: selectedRows.map((row) => row.id),
-        subject,
-        body,
+        templateId,
       });
-      reportResult(result, "Queued email for");
+      reportEmailResult(result);
       closeDialog();
       onDone();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to queue email");
+      toast.error(error instanceof Error ? error.message : "Failed to send email");
     } finally {
       setSubmitting(false);
     }
@@ -245,24 +278,32 @@ export function BulkActionToolbar({
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Email {selectedRows.length} applications</DialogTitle>
-            <DialogDescription>
-              Queued only — this records what would be sent. Real delivery ships with the Communication module.
-              Use <code>{"{{candidate.name}}"}</code> and <code>{"{{job.title}}"}</code> as placeholders.
-            </DialogDescription>
+            <DialogDescription>Pick a template — it&apos;s rendered per candidate and sent immediately.</DialogDescription>
           </DialogHeader>
-          <div className="space-y-4">
-            <Input placeholder="Subject" value={subject} onChange={(event) => setSubject(event.target.value)} />
-            <Textarea
-              rows={5}
-              placeholder="Body"
-              value={body}
-              onChange={(event) => setBody(event.target.value)}
-            />
-          </div>
+          {templates === null ? (
+            <p className="text-sm text-muted-foreground">Loading templates…</p>
+          ) : templates.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No active templates yet. An admin can add one under Communication Templates.
+            </p>
+          ) : (
+            <Select value={templateId} onValueChange={setTemplateId}>
+              <SelectTrigger className="w-full">
+                <SelectValue placeholder="Select a template" />
+              </SelectTrigger>
+              <SelectContent>
+                {templates.map((template) => (
+                  <SelectItem key={template.id} value={template.id}>
+                    {template.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
           <DialogFooter>
-            <Button disabled={!subject.trim() || !body.trim() || submitting} onClick={runEmail}>
+            <Button disabled={!templateId || submitting} onClick={runEmail}>
               {submitting ? <Loader2 className="animate-spin" /> : null}
-              Queue email
+              Send email
             </Button>
           </DialogFooter>
         </DialogContent>

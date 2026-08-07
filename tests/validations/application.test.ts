@@ -118,33 +118,23 @@ describe("applicationBulkEmailSchema", () => {
   it("accepts a valid payload", () => {
     const result = applicationBulkEmailSchema.safeParse({
       applicationIds: ["app-1", "app-2"],
-      subject: "Update",
-      body: "Hello {{candidate.name}}",
+      templateId: "template-1",
     });
     expect(result.success).toBe(true);
   });
 
-  it("rejects an empty applicationIds, subject, or body", () => {
-    expect(
-      applicationBulkEmailSchema.safeParse({ applicationIds: [], subject: "s", body: "b" }).success,
-    ).toBe(false);
-    expect(
-      applicationBulkEmailSchema.safeParse({ applicationIds: ["app-1"], subject: "", body: "b" }).success,
-    ).toBe(false);
-    expect(
-      applicationBulkEmailSchema.safeParse({ applicationIds: ["app-1"], subject: "s", body: "" }).success,
-    ).toBe(false);
+  it("rejects an empty applicationIds or a missing templateId", () => {
+    expect(applicationBulkEmailSchema.safeParse({ applicationIds: [], templateId: "template-1" }).success).toBe(
+      false,
+    );
+    expect(applicationBulkEmailSchema.safeParse({ applicationIds: ["app-1"] }).success).toBe(false);
+    expect(applicationBulkEmailSchema.safeParse({ applicationIds: ["app-1"], templateId: "" }).success).toBe(false);
   });
 
-  it("rejects a subject over 200 chars or a body over 10000 chars", () => {
-    expect(
-      applicationBulkEmailSchema.safeParse({ applicationIds: ["app-1"], subject: "x".repeat(201), body: "b" })
-        .success,
-    ).toBe(false);
-    expect(
-      applicationBulkEmailSchema.safeParse({ applicationIds: ["app-1"], subject: "s", body: "x".repeat(10001) })
-        .success,
-    ).toBe(false);
+  it("no longer accepts free-typed subject/body — §11.10 requires a template", () => {
+    const parsed = applicationBulkEmailSchema.parse({ applicationIds: ["app-1"], templateId: "template-1" });
+    expect(parsed).not.toHaveProperty("subject");
+    expect(parsed).not.toHaveProperty("body");
   });
 });
 

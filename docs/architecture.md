@@ -596,15 +596,36 @@ application didn't move anywhere, it left.
 
 ### `ApplicationEmailLog`
 
-Bulk email is **infrastructure only** (§11.4, Phase 2 decision): `bulkEmailApplications` renders
-the subject/body template (`src/lib/templates/render.ts`, `{{candidate.name}}`/`{{job.title}}`
-placeholders) per recipient and writes one `ApplicationEmailLog` row with `status: PENDING` — it
-never calls a real mail provider. `SENT`/`FAILED`/`CANCELLED` are reserved for the future
-Communication Hub module to set once real delivery exists, the same "field exists, only a later
-module writes non-default values" pattern `Job.positionsFilledCount` already established in
-Module 2. The log is scoped narrowly to `Application` (one row per application per bulk-email
-call), not a polymorphic entity-agnostic log — Module 4 has exactly one feature that queues
-email (there is nothing else in this module for a polymorphic log to also serve).
+Originally **infrastructure only** (§11.4, Phase 2 decision) — every row wrote `status: PENDING`
+and nothing sent anything. Module 8 (Communication Hub, §11.10) completed the wire:
+`bulkEmailApplications` resolves an active `CommunicationTemplate`, renders it
+(`src/lib/templates/render.ts`, `{{candidate.name}}`/`{{job.title}}` placeholders) per recipient,
+sends it via `MailProvider` (`src/lib/mail/`, described just below), and writes the row already
+as `SENT`/`FAILED`. `subject`/`body` remain the *rendered*
+snapshot, not a live reference to the template — `templateId` records provenance without making
+history dependent on the template's current content. `CANCELLED` stays unwritten — no PRD
+requirement to cancel a queued send. The log is scoped narrowly to `Application` (one row per
+application per bulk-email call), not a polymorphic entity-agnostic log — nothing else in this
+codebase sends email yet for a polymorphic log to also serve.
+
+### `CommunicationTemplate` & mail delivery
+
+Module 8's own model: admin-managed `name` (unique), `channel` (`EMAIL`/`SMS` — only `EMAIL` is
+ever written; `SMS` is a recognized value nothing sends over yet, same "enum leaves room" pattern
+as `HandoffDeliveryMethod.API_PUSH`), `subject`, `body`, `isActive`. Deliberately the *minimal*
+slice of the Template Designer (§10.4) that §11.10's own M-requirement needs — not the full
+designer (multi-language variants, conditional blocks, version history + approval workflow),
+which stays its own future module. No hard delete — deactivate via `isActive`, same convention as
+`PipelineStage`; no optimistic-locking `version` — matches `CustomFieldDefinition`/
+`ControlledListValue`'s admin-metadata tier, not `Job`/`Offer`'s business-record tier.
+
+`src/lib/mail/` mirrors `StorageProvider`/`HrisProvider`'s shape exactly: a `MailProvider`
+interface, one real implementation (`ConsoleMailProvider` — logs the message, always succeeds;
+its only plausible failure precondition, an empty recipient, is already guaranteed non-empty by
+the caller before a log row is ever created, so unlike `StructuredExportProvider` there is no
+genuine failure condition for this dev-only provider to model), and an env-driven factory
+(`MAIL_PROVIDER`, defaulting to `"console"`). A real Gmail/Outlook API connector (§12) needs
+OAuth credentials out of scope for this pass.
 
 ### Board/list architecture
 

@@ -545,9 +545,11 @@ export async function deleteCandidateDocument(
  * "offer_declined"/"offer_revoked" (derived from Offer/OfferApproval rows,
  * same join pattern). Module 7 adds "handoff_initiated"/"handoff_delivered"/
  * "handoff_accepted"/"handoff_exception" (derived from HandoffRecord/
- * HandoffDeliveryAttempt rows, same join-through-Application pattern) —
- * each addition without changing the existing contract. Future modules
- * (Communication Hub) add more `type`s the same way.
+ * HandoffDeliveryAttempt rows, same join-through-Application pattern).
+ * Module 8 adds "email_sent"/"email_failed" (derived from
+ * ApplicationEmailLog rows, same join pattern) — each addition without
+ * changing the existing contract. Future modules add more `type`s the same
+ * way.
  */
 export async function getCandidateTimeline(context: SessionContext, candidateId: string) {
   const candidate = await prisma.candidate.findUnique({ where: { id: candidateId } });
@@ -556,7 +558,7 @@ export async function getCandidateTimeline(context: SessionContext, candidateId:
   }
   await assertCandidateAccess(context, candidate, "READ");
 
-  const [notes, applications, interviews, offers, handoffs] = await Promise.all([
+  const [notes, applications, interviews, offers, handoffs, emailLogs] = await Promise.all([
     prisma.candidateNote.findMany({
       where: { candidateId },
       orderBy: { createdAt: "desc" },
@@ -605,6 +607,18 @@ export async function getCandidateTimeline(context: SessionContext, candidateId:
         initiatedBy: { select: userSummarySelect },
         acknowledgedBy: { select: userSummarySelect },
         attempts: { include: { attemptedBy: { select: userSummarySelect } } },
+      },
+    }),
+    // Module 8 — joined through Application, the same way Offer/Handoff are.
+    // A candidate with no email never gets a row at all (bulkEmailApplications
+    // skips it before creating one), so there is nothing to surface for that
+    // case here — the timeline only ever shows sends that were attempted.
+    prisma.applicationEmailLog.findMany({
+      where: { application: { candidateId } },
+      include: {
+        application: { select: { jobId: true, job: { select: { title: true } } } },
+        requestedBy: { select: userSummarySelect },
+        template: { select: { name: true } },
       },
     }),
   ]);
@@ -780,6 +794,21 @@ export async function getCandidateTimeline(context: SessionContext, candidateId:
       createdAt: handoff.acknowledgedAt as Date,
     }));
 
+  // Module 8 (§11.10) — closes the "email" gap in §11.2's own candidate
+  // timeline requirement. requestedAt (not sentAt) is the timestamp: a
+  // FAILED row has no sentAt, and requestedAt is when the send was actually
+  // attempted either way (bulkEmailApplications sends synchronously).
+  const emailItems = emailLogs.map((log) => ({
+    type: (log.status === "SENT" ? "email_sent" : "email_failed") as "email_sent" | "email_failed",
+    id: log.id,
+    jobId: log.application.jobId,
+    jobTitle: log.application.job.title,
+    templateName: log.template.name,
+    subject: log.subject,
+    requestedBy: log.requestedBy,
+    createdAt: log.requestedAt,
+  }));
+
   const items = [
     ...noteItems,
     ...applicationItems,
@@ -793,6 +822,7 @@ export async function getCandidateTimeline(context: SessionContext, candidateId:
     ...handoffInitiatedItems,
     ...handoffDeliveryItems,
     ...handoffAcknowledgedItems,
+    ...emailItems,
   ].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 
   return { items };

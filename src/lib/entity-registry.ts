@@ -24,6 +24,7 @@ export const ENTITY = {
   INTERVIEW: "INTERVIEW",
   OFFER: "OFFER",
   HANDOFF: "HANDOFF",
+  COMMUNICATION_TEMPLATE: "COMMUNICATION_TEMPLATE",
 } as const;
 
 export type EntityKey = (typeof ENTITY)[keyof typeof ENTITY];
@@ -43,6 +44,7 @@ export const ENTITY_LABELS: Record<string, string> = {
   [ENTITY.INTERVIEW]: "Interviews",
   [ENTITY.OFFER]: "Offers",
   [ENTITY.HANDOFF]: "Onboarding Handoffs",
+  [ENTITY.COMMUNICATION_TEMPLATE]: "Communication Templates",
 };
 
 /** Entities core modules may attach admin-defined custom fields to (§10.1). */

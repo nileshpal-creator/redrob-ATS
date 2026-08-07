@@ -4,6 +4,7 @@ import {
   Contact,
   KanbanSquare,
   LayoutDashboard,
+  Mail,
   ScrollText,
   ShieldCheck,
   SlidersHorizontal,
@@ -34,5 +35,6 @@ export const adminNav: NavItem[] = [
   { title: "Users", href: "/admin/users", icon: Users },
   { title: "Roles & Permissions", href: "/admin/roles", icon: ShieldCheck },
   { title: "Custom Fields", href: "/admin/custom-fields", icon: SlidersHorizontal },
+  { title: "Communication Templates", href: "/admin/communication-templates", icon: Mail },
   { title: "Audit Log", href: "/admin/audit-log", icon: ScrollText },
 ];

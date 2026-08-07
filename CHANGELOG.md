@@ -1,5 +1,45 @@
 # Changelog
 
+## Module 8 — Communication Hub (PRD §11.10)
+
+### Added
+
+- `CommunicationTemplate` entity: admin-managed name/subject/body, `{{key}}` variable
+  substitution via the existing `renderTemplate()` helper — the minimal slice of the Template
+  Designer (§10.4) that §11.10's own M-requirement needs, not the full designer (multi-language
+  variants, conditional blocks, version history + approval workflow stay deferred to §10.4's own
+  future module). No hard delete — deactivate via `isActive`, same convention as `PipelineStage`.
+- `src/lib/mail/`: a `MailProvider` delivery abstraction mirroring `StorageProvider`/
+  `HrisProvider` — interface, one real implementation (`ConsoleMailProvider`), and an env-driven
+  factory (`MAIL_PROVIDER`, defaulting to `"console"`). A real Gmail/Outlook API connector (§12)
+  needs OAuth credentials out of scope for this pass.
+- `bulkEmailApplications` rewritten: `{applicationIds, subject, body}` becomes
+  `{applicationIds, templateId}` — the template is resolved and validated once upfront (a shared
+  precondition for the whole call, not a per-item concern), then rendered per recipient and
+  actually sent, with `ApplicationEmailLog` written directly as `SENT`/`FAILED` instead of a
+  permanent `PENDING`.
+- `/admin/communication-templates`: admin CRUD (create/edit subject-body/activate-deactivate) —
+  reading the list is open to any authenticated user (mirrors `listCustomFieldDefinitions`, since
+  the bulk-email picker needs it), mutations require `COMMUNICATION_TEMPLATE:CREATE/UPDATE`.
+- Candidate timeline gains `email_sent`/`email_failed` item types, derived from
+  `ApplicationEmailLog` joined through `Application` — completing §11.2's own "every application,
+  interview, offer, note and email in one view" requirement, which had shipped everything except
+  the email part until now.
+- Automated test coverage: validation tests, `CommunicationTemplateService` tests (RBAC via the
+  existing `isSuperAdmin` bypass — no new seeded grant needed — open read, duplicate-name
+  rejection, active/inactive filtering), and `bulkEmailApplications` tests (successful send,
+  no-candidate-email skip, unknown/inactive template rejection, candidate-timeline integration).
+
+### Fixed
+
+- `createCommunicationTemplate`'s duplicate-name pre-check had the same race as `createOffer`
+  warns about in its own comment — two concurrent creates with the same name could both pass the
+  `findUnique` check and one would hit the database's unique constraint as an unhandled 500.
+  Added the same `P2002 -> ValidationError` catch `createOffer` uses.
+- `communicationTemplateQuerySchema` used `z.coerce.boolean()` for `isActive`, which maps the
+  *string* `"false"` to `true` (`Boolean("false")` is truthy) — query params always arrive as
+  strings. Replaced with an explicit `"true"`/`"false"` string match.
+
 ## Module 7 — Onboarding Handoff / HRIS Integration (PRD §11.7)
 
 ### Added
@@ -66,8 +106,9 @@
   at creation. Never hard-deleted; "removing" a stage deactivates it.
 - `ApplicationEvent`: an immutable history row for every stage move and outcome change, modeled
   on `JobStatusChange`, written inside the same transaction as the `Application` it describes.
-- `ApplicationEmailLog`: infrastructure-only bulk email logging — every row this module writes
-  has `status: PENDING`; real delivery is deferred to the future Communication Hub module.
+- `ApplicationEmailLog`: bulk email logging — originally infrastructure-only (every row wrote
+  `status: PENDING`, nothing sent); Module 8 (Communication Hub) completed the wire — see its
+  own entry below.
 - **Pipeline board and list**: a per-job Kanban board (one column per active stage,
   `@dnd-kit/core`-powered drag-and-drop isolated to a single component) and a filterable list,
   sharing one dataset per job via a tab switch.
