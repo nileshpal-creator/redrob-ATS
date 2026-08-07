@@ -84,8 +84,28 @@ export async function replacePipelineStages(
     input.stages.filter((stage) => stage.id && existingById.has(stage.id)).map((stage) => stage.id as string),
   );
   const toDeactivate = existing.filter((stage) => !keptIds.has(stage.id) && stage.isActive);
+  const toRename = input.stages.filter(
+    (stage): stage is { id: string; name: string } => Boolean(stage.id) && existingById.has(stage.id!),
+  );
 
   await prisma.$transaction(async (tx) => {
+    // The (jobId, name) partial unique index only exempts inactive rows, so
+    // two kinds of transient collision are possible while this update runs
+    // and must both be cleared before anything gets its real target name:
+    // (1) swapping two kept stages' names, and (2) reusing a name that
+    // currently belongs to a stage about to be deactivated. Every kept
+    // stage is first moved to a name derived from its own id (which can
+    // never collide with anything), then every stage being removed is
+    // deactivated (exempting its old name from the index), and only then
+    // do the real target names/creates get applied.
+    for (const stage of toRename) {
+      await tx.pipelineStage.update({ where: { id: stage.id }, data: { name: `__pending__${stage.id}` } });
+    }
+
+    for (const stage of toDeactivate) {
+      await tx.pipelineStage.update({ where: { id: stage.id }, data: { isActive: false } });
+    }
+
     for (const [index, stage] of input.stages.entries()) {
       if (stage.id && existingById.has(stage.id)) {
         await tx.pipelineStage.update({
@@ -95,10 +115,6 @@ export async function replacePipelineStages(
       } else {
         await tx.pipelineStage.create({ data: { jobId, name: stage.name, sortOrder: index } });
       }
-    }
-
-    for (const stage of toDeactivate) {
-      await tx.pipelineStage.update({ where: { id: stage.id }, data: { isActive: false } });
     }
   });
 

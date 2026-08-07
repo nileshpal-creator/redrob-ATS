@@ -596,6 +596,16 @@ enum EmailLogStatus {
 // Application or ApplicationEvent (default onDelete: Restrict on those FKs)
 // — "removing" a stage from a pipeline deactivates it instead, the same
 // convention ControlledListValue already uses via isActive.
+//
+// Uniqueness on (jobId, name) is enforced only among ACTIVE stages — a
+// hand-written partial unique index added by hand in the generated
+// migration (Prisma has no schema syntax for partial indexes, same
+// limitation as JobRecruiterAssignment's one-primary-recruiter index):
+//   CREATE UNIQUE INDEX "pipeline_stage_active_name_unique"
+//     ON "PipelineStage" ("jobId", "name") WHERE "isActive" = true;
+// A full (unconditional) unique constraint here would permanently reserve a
+// deactivated stage's name and block ever reusing it for a new active
+// stage — the opposite of the "deactivate, don't delete" design intent.
 model PipelineStage {
   id        String   @id @default(cuid())
   jobId     String
@@ -610,7 +620,6 @@ model PipelineStage {
   eventsFrom   ApplicationEvent[] @relation("ApplicationEventFromStage")
   eventsTo     ApplicationEvent[] @relation("ApplicationEventToStage")
 
-  @@unique([jobId, name])
   @@index([jobId, sortOrder])
 }
 

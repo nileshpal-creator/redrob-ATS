@@ -66,10 +66,16 @@ export function JobPipelineClient({
     }, {});
 
   async function handleDropCard(applicationId: string, toStageId: string) {
-    const previous = applications;
     const target = applications.find((application) => application.id === applicationId);
     const toStage = stages.find((stage) => stage.id === toStageId);
     if (!target || !toStage) return;
+    // Snapshot only this card's prior stage, not the whole array — dragging
+    // a second card while the first request is still in flight must not
+    // let an unrelated, later-resolving failure roll back a different
+    // card's already-confirmed move. Rollback/reconciliation below always
+    // updates via a functional setState so it applies against whatever the
+    // latest state is, not a stale full-array snapshot.
+    const fromStage = target.stage;
 
     setApplications((prev) =>
       prev.map((application) =>
@@ -96,7 +102,9 @@ export function JobPipelineClient({
       );
       toast.success(`Moved to ${toStage.name}.`);
     } catch (error) {
-      setApplications(previous);
+      setApplications((prev) =>
+        prev.map((application) => (application.id === applicationId ? { ...application, stage: fromStage } : application)),
+      );
       toast.error(error instanceof Error ? error.message : "Failed to move stage");
     }
   }

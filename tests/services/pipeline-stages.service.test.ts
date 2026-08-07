@@ -179,9 +179,80 @@ describe("PipelineStageService", () => {
     expect(reactivated?.isActive).toBe(true);
   });
 
+  // Both of the following regression tests use a dedicated job rather than
+  // the shared `jobId` fixture — each intentionally leaves the pipeline in
+  // an unusual state (swapped names, a duplicate name across an active and
+  // an inactive row) that would otherwise leak into and break later tests
+  // in this file that assume a clean, uniquely-named, fully-active pipeline.
+
+  it("swaps two stage names in one request without a unique-constraint error", async () => {
+    const job = await createJob(recruiter, {
+      title: "Swap Names Job",
+      departmentId,
+      locationId,
+      employmentType: "FULL_TIME",
+      priority: "MEDIUM",
+      positionsCount: 1,
+      mustHaveCriteria: [],
+      goodToHaveCriteria: [],
+      recruiterUserIds: [recruiter.userId],
+      primaryRecruiterUserId: recruiter.userId,
+    } as JobCreateInput);
+
+    const current = await getPipelineStages(recruiter, job.id);
+    const [first, second] = current;
+
+    const after = await replacePipelineStages(recruiter, job.id, {
+      stages: current.map((stage) => {
+        if (stage.id === first.id) return { id: stage.id, name: second.name };
+        if (stage.id === second.id) return { id: stage.id, name: first.name };
+        return { id: stage.id, name: stage.name };
+      }),
+    });
+
+    expect(after.find((stage) => stage.id === first.id)?.name).toBe(second.name);
+    expect(after.find((stage) => stage.id === second.id)?.name).toBe(first.name);
+  });
+
+  it("allows a new active stage to reuse a name just freed by deactivation in the same request", async () => {
+    const job = await createJob(recruiter, {
+      title: "Reuse Freed Name Job",
+      departmentId,
+      locationId,
+      employmentType: "FULL_TIME",
+      priority: "MEDIUM",
+      positionsCount: 1,
+      mustHaveCriteria: [],
+      goodToHaveCriteria: [],
+      recruiterUserIds: [recruiter.userId],
+      primaryRecruiterUserId: recruiter.userId,
+    } as JobCreateInput);
+
+    const current = await getPipelineStages(recruiter, job.id);
+    const toDrop = current[0];
+    const kept = current.slice(1);
+
+    // Omit toDrop (deactivating it) while introducing a brand-new stage
+    // that reuses its exact name — this must not hit the partial unique
+    // index, since the old row is no longer active once this call returns.
+    const after = await replacePipelineStages(recruiter, job.id, {
+      stages: [...kept.map((stage) => ({ id: stage.id, name: stage.name })), { name: toDrop.name }],
+    });
+
+    const droppedRow = after.find((stage) => stage.id === toDrop.id)!;
+    expect(droppedRow.isActive).toBe(false);
+
+    const newRow = after.find((stage) => stage.name === toDrop.name && stage.id !== toDrop.id)!;
+    expect(newRow).toBeDefined();
+    expect(newRow.isActive).toBe(true);
+  });
+
   it("keeps an Application's stageId intact when its stage is later deactivated", async () => {
     const stages = await getPipelineStages(recruiter, jobId);
-    const targetStage = stages[0];
+    // Filtered rather than stages[0] — earlier tests in this file may have
+    // left an inactive stage sorted first, and creating an application
+    // requires an active one.
+    const targetStage = stages.find((stage) => stage.isActive)!;
 
     const candidate = await createCandidate(recruiter, {
       name: "Stage Candidate",
