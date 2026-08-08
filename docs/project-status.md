@@ -118,6 +118,11 @@ All `M`-priority requirements from §11.5 are implemented:
 - Interview does not itself decide the pipeline outcome — advancing/rejecting a candidate based
   on feedback still goes through Application's existing transition endpoint (Module 4), by
   design (§8: Interview schedules and records, it doesn't decide). ✅ (scoped)
+- Automatic email reminders to candidate and panel at configurable intervals. ✅ *(as of
+  Module 12)* — was left unimplemented at the time this module first shipped (no
+  scheduler/cron mechanism existed yet in this codebase); see Module 12 below for the reminder
+  model, retry/backoff logic, and the external-scheduler-invoked endpoint that actually sends
+  them.
 
 ### Module 6 — Offer Management (PRD §11.6)
 
@@ -274,6 +279,26 @@ All five requirements from §11.3 are implemented:
 There is no public, unauthenticated career-site/apply page in this codebase (§7's explicit scope
 boundary) — inbound applications are recorded by staff who already have a session, not received
 via an unauthenticated webhook from a real board.
+
+### Module 12 — Scheduler Infrastructure (§11.5 reminders / §11.12 scheduled reports / §10.2 TIME_IN_STAGE)
+
+Not its own PRD section — infrastructure the PRD's own M-tagged requirements need
+(§11.5's "automatic email reminders... at configurable intervals," §11.12's "scheduled report
+delivery by email," §10.2's "time elapsed in a stage" trigger) but that this codebase had no
+mechanism for until now (no cron/queue/worker process existed anywhere in the app):
+
+- Interview reminders (§11.5) are implemented from scratch — see Module 5's section above,
+  updated to mark this requirement done.
+- Scheduled report delivery (§11.12, Module 9) is unchanged in shape, with one real idempotency
+  gap fixed: the original `lastRunAt`-based check-then-act could double-send under overlapping
+  scheduler ticks (found via an adversarial self-review, not by the initial implementation).
+- TIME_IN_STAGE workflow triggers (§10.2, Module 10) are completely unchanged — the engine
+  already had correct idempotency; only a batch-size bound was added to its due-application
+  query.
+- **No cron/queue infrastructure exists inside this app, still** — `POST /api/scheduler/run` is a
+  secure, idempotent, bounded execution endpoint; genuine periodic invocation remains external
+  infrastructure's job (Vercel Cron, AWS EventBridge, a Railway/Render cron job, a Kubernetes
+  CronJob, Windows Task Scheduler, or a plain OS crontab).
 
 ## Completed phases (Module 2)
 
@@ -659,6 +684,87 @@ via an unauthenticated webhook from a real board.
    branch a status-guarded `updateMany` (`WHERE id AND status != 'POSTED'`), the same shape
    `removeJobPosting` already uses, plus a new concurrency test.
 
+## Completed phases (Module 12)
+
+1. **Investigation** — re-read §11.5/§11.12/§10.2 and §14's roadmap directly from the source PDF.
+   Confirmed via repo-wide grep that zero reminder-related code existed anywhere. Read
+   `runDueScheduledReports`/`runDueTimeInStageWorkflows` in full and found `runDueScheduledReports`
+   had a genuine, previously-undocumented idempotency gap (check-then-act on `lastRunAt`);
+   confirmed `runDueTimeInStageWorkflows`'s existing `WorkflowExecution`-based idempotency was
+   already sound. Confirmed `Organization` is a single global-settings row (not a multi-tenant
+   boundary — no `organizationId` exists anywhere else in the schema), correcting a multi-tenant
+   framing in the initiating instructions that didn't match this codebase's actual architecture.
+   Confirmed `withApiHandler` unconditionally requires a session, with no precedent anywhere in
+   this app for a non-session-authenticated route — the scheduler endpoint is a deliberate,
+   narrow first exception, not a general new capability.
+2. **Technical Design** — evaluated three architectures (a lightweight coordinator, a persistent
+   generic job-queue table, an external-trigger abstraction) and chose the coordinator: the three
+   consumers' own due-detection differs enough that a shared table would only paraphrase what
+   each already does well. `InterviewReminder` (new): one row per (interview occurrence, lead
+   time, recipient), combining unique-constraint-create-then-catch (first attempt) with a
+   status-guarded `updateMany` (retry/stale-claim recovery) — the same two idempotency idioms
+   `WorkflowExecution`/`removeJobPosting` already establish, applied together for the first time.
+   `Organization.interviewReminderLeadMinutes` reuses the app's one existing global-settings
+   singleton rather than a new settings table. Scheduler auth: a shared secret
+   (`SCHEDULER_SECRET`) compared via SHA-256-then-`timingSafeEqual`, since a bare
+   `timingSafeEqual` throws (and thus leaks) on a length mismatch.
+3. **Backend Implementation** — schema (`InterviewReminder` + 2 enums,
+   `Organization.interviewReminderLeadMinutes`) and migration; `src/lib/mail/test-failure-provider.ts`
+   (a real, factory-wired `MailProvider` implementation whose entire purpose is deterministically
+   failing sends, so retry logic has something genuine to exercise — `ConsoleMailProvider` never
+   fails); `src/lib/services/interview-reminders.ts`; `src/lib/scheduler/auth.ts` +
+   `src/lib/scheduler/run.ts`; `POST /api/scheduler/run`; `src/lib/services/organization.ts` +
+   `GET`/`PATCH /api/organization`; `/admin/interview-reminders` (a fixed preset checklist, not
+   free-text minute entry); audit actions
+   (`INTERVIEW_REMINDER_SENT`/`_FAILED`, `SCHEDULER_RUN`, `ORGANIZATION_SETTINGS_UPDATED`); two
+   `CommunicationTemplate` rows seeded so reminders work out of the box.
+4. **Existing-module integration** — `runDueScheduledReports`: added a `SavedReport.version`-based
+   atomic claim before sending (fixing the idempotency gap found in Phase 1) plus a
+   `MAX_REPORTS_PER_RUN` batch cap. `runDueTimeInStageWorkflows`: added a
+   `MAX_APPLICATIONS_PER_DEFINITION_PER_RUN` batch cap only — the engine itself
+   (`claimExecutionSlot`, `evaluateConditions`, `runActionsAndFinalize`) was not touched.
+5. **Testing** — `interview-reminders.service.test.ts` (13 tests: no-due-work, candidate+panelist
+   as separate rows, idempotent repeat, concurrent-invocation dedup, retry-then-succeeds,
+   permanent-failure-after-max-attempts, missing-email handling, one recipient's failure not
+   blocking a sibling's success, cancelled/completed interviews never send, a reschedule's new
+   occurrence still sends its own reminder, UTC due-time boundary correctness, batch-limit
+   cutoff), `scheduler-auth.test.ts` (11 tests), `scheduler-run.test.ts` (4 tests: all-consumers-run,
+   one-consumer-failure-isolation, all-three-fail, per-consumer duration reporting),
+   `scheduler-run.test.ts` under `tests/api/` (6 tests: missing/wrong/non-Bearer auth all `401`,
+   valid secret `200` with per-consumer shape, a `SCHEDULER` audit entry with `actorId: null`, the
+   secret never appears in any response body), plus 2 new regression tests added to
+   `scheduled-reports.service.test.ts` (concurrent-invocation dedup, batch-limit cutoff) and a
+   third added during self-review (below). Full regression suite: 561 passing project-wide.
+6. **Browser verification** — a real Chromium walkthrough via Playwright against the dev
+   database: logged in, visited the new `/admin/interview-reminders` settings page and toggled a
+   lead time, created a job/candidate/application/interview via the real APIs with the interview
+   scheduled inside a configured lead window, called `POST /api/scheduler/run` with the wrong
+   secret (`401`), then with the real secret (`200`, `interview-reminders` reported `sent: 2` —
+   candidate + panelist), then called it again immediately (`sent: 0`, `skipped: 2` — proving no
+   duplicate send). Investigated one transient console hydration warning observed during the
+   first pass; could not reproduce it across three clean follow-up runs (a single fresh load, a
+   single direct click, and all seven checkbox labels clicked individually), and the exact same
+   `<label><Checkbox/></label>` pattern already exists unmodified elsewhere in this codebase
+   (`recruiter-picker.tsx`) — concluded it was a one-off artifact of the verification script
+   itself, not a real regression. Test data (job/candidate/application/interview/reminders) and
+   the toggled setting were cleaned up from the dev database afterward.
+7. **Self code review** — an independent adversarial review agent found two real issues beyond
+   what the initial implementation and its own tests caught: (1) the *first* fix attempt for
+   `runDueScheduledReports`'s idempotency gap (a `version`-only claim) closed the race between two
+   callers reading the *identical* stale version simultaneously, but not a *subtler* one — a
+   second scheduler tick starting **after** the first tick's claim but **before** its send
+   finished would see the already-incremented version (not stale to it) and the still-old
+   `lastRunAt` (still "due" to it), and would send the report again. Fixed by stamping
+   `lastRunAt: now` as part of the *same* atomic claim that increments `version`, not after the
+   send — closing the gap for the send's entire duration, not just the instant of the claim; a
+   new regression test reproduces the exact scenario. (2) `sendOneReminder` looked up its
+   `CommunicationTemplate` via `findFirst` once per recipient — up to `MAX_REMINDERS_PER_RUN`
+   (500) separate queries per scheduler tick for only two distinct template names. Fixed by
+   resolving both templates once per `runDueInterviewReminders` call into a small `Map`, threaded
+   through instead of re-queried. A third, minor finding (never-run reports could starve behind
+   an already-run backlog under Postgres's default `NULLS LAST` ordering once due reports exceed
+   the batch cap) was fixed with `orderBy: { lastRunAt: { sort: "asc", nulls: "first" } }`.
+
 ## Remaining modules
 
 Per the PRD's §11 module breakdown and §14 roadmap, not yet started:
@@ -723,11 +829,10 @@ Per the PRD's §11 module breakdown and §14 roadmap, not yet started:
   exists yet (§12) — that needs OAuth credentials outside this environment's scope. Same
   intentional "infrastructure exists, only a later integration effort writes the other value"
   pattern as `HandoffDeliveryMethod.API_PUSH`.
-- **Interview Management's "automatic email reminders" requirement (§11.5, M) is still
-  unimplemented.** Module 8 (Communication Hub) gives the codebase a real send path, but nothing
-  schedules or triggers a reminder automatically — that needs a scheduler/cron mechanism that
-  doesn't exist anywhere in this codebase yet, discovered while implementing Module 8 and left
-  unfixed since it belongs to Interview Management's own scope, not Communication Hub's.
+- **Interview Management's "automatic email reminders" requirement (§11.5, M) is now
+  implemented (Module 12).** `InterviewReminder` + `runDueInterviewReminders`, invoked via
+  `POST /api/scheduler/run`. See Module 12's own Known limitations bullets below for what's
+  still not covered (real cron invocation, exactly-once delivery).
 - **Application stage transitions remain unrestricted (any stage to any stage), a Module 4
   scope decision Module 10 did not revisit.** The Workflow & Automation Builder (§10.2, Module
   10) *reacts* to a stage change via its `STAGE_CHANGE` trigger; it does not *gate* which
@@ -741,21 +846,36 @@ Per the PRD's §11 module breakdown and §14 roadmap, not yet started:
   notification").** `SEND_EMAIL` is the only send action — this codebase's one real
   notification channel (Module 8) — the same scope this app's own Communication Hub already
   has; there is no in-app/push notification system to route a second action type to.
-- **`TIME_IN_STAGE` needs the same external scheduler Module 9's scheduled reports do.**
-  `runDueTimeInStageWorkflows` is real, tested business logic; nothing in this codebase invokes
-  it periodically. `POST /api/workflows/run-due` exists for an external scheduler (OS cron, a
-  hosting platform's scheduled function) to call — the same gap `runDueScheduledReports`
-  documents below, now shared by a second module.
+- **`TIME_IN_STAGE`'s external-scheduler need is now served by Module 12's
+  `POST /api/scheduler/run`**, alongside scheduled reports and interview reminders. The
+  underlying gap this bullet used to describe — nothing inside this app invokes anything
+  periodically — is unchanged and still real; see Module 12's own Known limitations bullets
+  below.
 - **No generic drag-and-drop dashboard/report builder (§10.5's first bullet).** Module 9 built
   the four pre-built §11.12 reports plus a `SavedReport` that picks one of them with filters —
   not an arbitrary-entity, arbitrary-custom-field query/widget-layout engine. That full builder
   is a separate, substantially larger effort than any of the four M-priority report types
   themselves.
-- **No cron/queue infrastructure exists anywhere in this app.** First discovered while
-  implementing Module 8 (Interview reminders, above); Module 9's own scheduled-report delivery
-  hits the identical gap — `runDueScheduledReports` is real, tested business logic, but nothing
-  in this codebase invokes it periodically. `POST /api/saved-reports/run-due` exists for an
-  external scheduler (OS cron, a hosting platform's scheduled function) to call.
+- **No cron/queue infrastructure exists *inside* this app, even after Module 12.** `POST
+  /api/scheduler/run` (Module 12) is a real, secure, idempotent, bounded execution endpoint for
+  all three scheduler-driven capabilities — but nothing in this Next.js process invokes it
+  periodically on its own; no `setInterval`/`setTimeout` process exists, deliberately, since that
+  would not be real production scheduling. External infrastructure (Vercel Cron, AWS
+  EventBridge, a Railway/Render cron job, a Kubernetes CronJob, Windows Task Scheduler, or a
+  plain OS crontab) must call it — see [docs/api.md](api.md#post-apischedulerrun) for exact setup.
+- **Scheduled delivery (reports and interview reminders alike) is at-least-once, not
+  exactly-once.** If the process crashes after a mail send is confirmed but before the
+  finalizing database write commits, a later scheduler tick can legitimately reclaim and resend.
+  Genuine exactly-once delivery to an external system needs a transactional outbox or
+  provider-side idempotency keys — a materially larger undertaking than this module's scope,
+  and out of proportion to `ConsoleMailProvider` being this environment's only real send path
+  today.
+- **The `JobBoardProvider`-style "one implementation, real credentials pending" pattern applies
+  to the scheduler's own auth too, in spirit** — `SCHEDULER_SECRET` is a real, working
+  shared-secret mechanism (not a stub), but no specific external scheduler (Vercel Cron, AWS
+  EventBridge, etc.) has actually been wired up and exercised end-to-end in this environment;
+  only the endpoint's own auth/idempotency/batching was verified directly (via curl-equivalent
+  fetch calls in Playwright), not a real external cron provider's delivery.
 - **The offer/TAT compliance threshold is a report parameter, not a stored org policy.** The PRD
   names no fixed SLA number for §11.12's compliance reporting, so `tatThresholdDays` is supplied
   per report-run/export rather than configured once at the organization level.

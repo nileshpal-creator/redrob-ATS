@@ -1010,3 +1010,153 @@ best-effort, not transactional, across their candidate-create-then-application-c
 same documented precedent `bulkTransitionApplications` already establishes: if the application
 create fails after the candidate was created, the candidate record still exists and the
 application can be created separately via the normal `/applications/new` flow.
+
+## Module 12 — Scheduler Infrastructure (§11.5 / §11.12 / §10.2)
+
+**Architecture chosen: a lightweight orchestrator over three consumers, not a generic job-queue
+table.** Three real, PRD-committed capabilities need periodic evaluation with no single
+triggering write to hang off of: interview reminders (§11.5), scheduled report delivery (§11.12,
+Module 9), and `TIME_IN_STAGE` workflow triggers (§10.2, Module 10). The last two already had
+their own due-runners (`runDueScheduledReports`, `runDueTimeInStageWorkflows`) and their own
+`POST /api/*/run-due` endpoints, each independently documenting "no cron/queue infrastructure
+exists in this app." Rather than building a polymorphic `ScheduledJob` table all three would have
+to be reshaped around, `src/lib/scheduler/run.ts#runScheduledWork()` is a thin orchestrator that
+calls all three existing (or, for reminders, newly-built) due-runners, isolates each one's
+failure from the others, and reports per-consumer stats. This was evaluated against the three
+options the module's own design brief posed — (A) a lightweight coordinator, (B) a persistent
+scheduled-job table, (C) an external-trigger abstraction — and (A) was chosen because the three
+consumers' due-detection logic genuinely differs (a fixed lead time before an absolute instant,
+a daily/weekly cadence against a last-run timestamp, a stage-age threshold against `stageEnteredAt`)
+in ways a shared table would only paraphrase, not simplify; each consumer already owns its own
+idempotency/batching/retry logic well, and the real remaining gap was *invocation* — one place
+external infrastructure can call, not a new persistence model.
+
+**No cron/queue infrastructure inside this app, still.** `runScheduledWork()` is real, tested
+business logic; nothing calls it periodically from inside the Next.js process — no
+`setInterval`/`setTimeout` anywhere, consistent with every prior module's own documented
+limitation. `POST /api/scheduler/run` is the one HTTP entry point; genuine periodic invocation is
+external infrastructure's job (Vercel Cron, AWS EventBridge, a Railway/Render cron job, a
+Kubernetes CronJob, Windows Task Scheduler, or a plain `curl` in an OS crontab) — see
+[api.md](api.md#post-apischedulerrun) for exact setup per provider. Claiming this endpoint
+"implements" cron would be false; it implements the secure, idempotent, bounded *execution* a
+cron trigger can safely call, repeatedly, from anywhere.
+
+**Authentication: a shared secret, not a session — the one deliberate exception.**
+`withApiHandler` (`src/lib/api/handlers.ts`) unconditionally resolves a signed-in session and
+401s otherwise; every other route in this app is built on it. An external cron provider
+fundamentally cannot present a user session, so `POST /api/scheduler/run`
+(`src/app/api/scheduler/run/route.ts`) is deliberately NOT built on `withApiHandler` — it's a
+small, self-contained handler that checks `Authorization: Bearer <SCHEDULER_SECRET>` via
+`src/lib/scheduler/auth.ts#isValidSchedulerSecret` before doing anything else.
+`SCHEDULER_SECRET` is a plain environment variable, read server-side only, never sent to the
+client. The comparison hashes both the expected and provided secret to a fixed-length SHA-256
+digest before `crypto.timingSafeEqual` — a bare `timingSafeEqual(a, b)` throws on a length
+mismatch, which is itself an observable timing signal (fast-fail vs. slow-compare) an attacker
+could use to fish for the secret's length before brute-forcing its content; hashing first removes
+that branch entirely, so every comparison takes the same shape regardless of what was sent.
+
+**Interview reminders (§11.5: "automatic email reminders to candidate and panel at configurable
+intervals") — built from scratch, following the exact same idempotency idioms already
+established elsewhere in this codebase.** `InterviewReminder` (`prisma/schema.prisma`) is one row
+per (interview occurrence, lead time, recipient) — candidate and each active panelist get their
+own row, deliberately mirroring `ApplicationEmailLog`'s existing one-row-per-recipient shape
+(Module 8) rather than inventing a "batch" concept. `recipientId` is always non-null (the literal
+string `"candidate"`, or a panelist's real `User.id`) specifically so it can sit in a real,
+DB-enforced unique constraint — a nullable column used the same way would have silently defeated
+uniqueness, since Postgres never treats two NULLs as equal.
+
+*Claiming a slot* (`claimReminderSlot` in `src/lib/services/interview-reminders.ts`) combines both
+idempotency idioms this codebase already uses elsewhere, in sequence:
+1. **First-ever attempt**: `prisma.interviewReminder.create()` with `status: "PROCESSING"`. The
+   INSERT itself is the claim — a concurrent duplicate `create` fails on the unique constraint
+   (P2002), caught and treated as "someone else already claimed this," not an error.
+2. **Reclaiming an existing row** (a retry, or recovering an abandoned claim): a status-guarded
+   `updateMany` — `WHERE id AND (status='RETRYING' AND nextAttemptAt<=now) OR (status='PROCESSING'
+   AND updatedAt<staleCutoff)`, setting `status: 'PROCESSING'` as part of the same write. Changing
+   the status itself (not just incrementing a counter) is what makes this exclusive — two
+   concurrent `updateMany` calls with an *unchanged* status in their WHERE clause could both
+   match and both think they'd claimed it; transitioning the status is what makes the second
+   racer's identical WHERE clause stop matching once the first racer's write commits. This is the
+   same pattern `removeJobPosting`/`completeWorkflowTask` already establish for their own
+   claims, and the same "must recover after a timeout" requirement `claimExecutionSlot` satisfies
+   via a single atomic insert — here recovery needs its own staleness window
+   (`STALE_PROCESSING_MINUTES`) since the claim is a status, not a one-shot insert.
+
+*Rescheduling, cancelling, completing.* `scheduledAtFingerprint` (`Interview.scheduledAt` as an
+ISO string, captured at claim time) is folded into the uniqueness key for exactly the reason
+`WorkflowExecution`'s own fingerprint is: rescheduling an interview changes `scheduledAt`, which
+changes the fingerprint, so prior reminder rows for the *old* time are simply never revisited
+(the due-detection query only ever computes due-ness against the *current* `scheduledAt`) while a
+fresh reminder becomes claimable for the new time — no explicit invalidation step, the same
+"leaving and re-entering a stage produces a fresh fingerprint" pattern `TIME_IN_STAGE` already
+established. Cancelling or completing an interview removes it from the due-detection query's
+`status: "SCHEDULED"` filter entirely — no reminder is ever attempted for it again.
+
+*Retry, backoff, permanent failure.* Up to `MAX_ATTEMPTS` (3) attempts, exponential backoff
+(`BASE_BACKOFF_MINUTES * 2^(attempts-1)`) between them, then `status: "FAILED"` — recorded, never
+retried again. A missing email is recorded as an immediate, permanent `FAILED` (not a transient
+retry — an absent email doesn't become present on its own), with `lastError` explaining why, so
+it's diagnosable without becoming an infinite retry loop.
+
+*Timezone / UTC.* `Interview.scheduledAt` is a `TIMESTAMP(3)` column, the same convention every
+other timestamp in this schema already uses, treated as a UTC instant end to end. Due-time math
+(`scheduledAt − leadMinutes`) is pure arithmetic on absolute instants — it needs no per-org
+timezone conversion to be correct, since "45 minutes before this exact moment" means the same
+thing everywhere on Earth. Timezone only matters for *display* (already handled by the frontend's
+existing `toLocaleString()` calls), never for computing whether a reminder is due. §11.13 ties
+working days/hours/holidays explicitly to "SLA and TAT clocks" (Module 9's own consumer) — nothing
+in §11.5 asks reminders to respect business hours, so none was invented.
+
+*Configuration.* `Organization.interviewReminderLeadMinutes` (`Int[]`, default `[1440, 60]`) is
+one org-wide list, not a per-interview override — the PRD names no per-job/per-interview variant,
+and `Organization` is already this app's one existing global-settings singleton
+(workingDays/workingHours/timezone), previously registered in `entity-registry.ts` but never
+actually wired to any route or UI since Module 1. `/admin/interview-reminders` (a fixed preset
+checklist — 15 min/30 min/1h/2h/4h/1 day/2 days — not free-text minute entry) and
+`GET`/`PATCH /api/organization` are the first things to actually use that registration.
+
+**Scheduled reports (§11.12, Module 9) — reused, not rewritten, with one real bug fixed along the
+way.** `runDueScheduledReports` itself is untouched in shape: it still resolves each report's
+*creator's* own RBAC scope via `getSessionContextForUser` before rendering/sending, the same
+row-level-security guarantee ad-hoc report viewing already gets. What changed is the claim before
+that work starts. The first fix attempt used only `SavedReport.version` (already present for the
+CRUD edit path's own optimistic locking) as an atomic claim, incrementing it before sending — this
+closes the race between two callers reading the *identical* stale version simultaneously, but an
+adversarial review found it does **not** close a subtler race: rendering and sending a report is
+not instant, and the column `isDue()` actually reads (`lastRunAt`) was left untouched until *after*
+the send finished. A second scheduler tick starting mid-send would do its own fresh read, see the
+already-incremented version (not stale to *it*) and the still-old `lastRunAt` (still "due" to it),
+and successfully claim and send a second time. The fix: stamp `lastRunAt: now` as part of the
+*same* atomic `updateMany` that increments version, not after the send — so any tick that starts
+once this one has claimed sees a fresh `lastRunAt` for the whole duration of the send, not just at
+the instant of the claim. `MAX_REPORTS_PER_RUN` (100) bounds the batch, ordered
+`lastRunAt: {sort: "asc", nulls: "first"}` so never-run reports can't starve behind an
+already-run backlog under Postgres's default NULLS LAST. One residual, documented limitation: if
+the process crashes after the mail provider confirms success but before the finalize `update`
+commits, the row can be claimed and sent again by a later tick — true exactly-once delivery to an
+external system needs a transactional outbox or provider-side idempotency keys, out of scope here;
+this is an at-least-once, not exactly-once, guarantee, same as the interview-reminder claim's own
+inherent trade-off.
+
+**`TIME_IN_STAGE` workflows (§10.2, Module 10) — engine untouched, one bound added.** No change to
+`evaluateConditions`, `claimExecutionSlot`, or `runActionsAndFinalize` — the existing idempotency
+guard (`WorkflowExecution`'s unique `(version, applicationId, fingerprint)` constraint) was
+already correct and is reused exactly as-is. The only change:
+`prisma.application.findMany`'s per-definition due-application fetch inside
+`runDueTimeInStageWorkflows` now takes `MAX_APPLICATIONS_PER_DEFINITION_PER_RUN` (200), the same
+"bound the batch, work off a backlog over several ticks" discipline every other consumer in this
+module follows.
+
+**Observability.** Every interview-reminder attempt (`interview_reminder.sent`/`.failed`) and
+every scheduler invocation (`scheduler.run`, `actorId: null` — there is no human actor for a
+machine-triggered run) writes an `AuditLog` row via the existing `recordAudit` helper, the same
+audit trail every other module's actions already flow through. The scheduler endpoint's own
+response and audit entry report each consumer's name, success/failure, and duration — never
+message bodies, attachment contents, or the configured secret itself.
+
+**Self-review found and fixed one more real issue beyond the scheduled-reports race above**: the
+per-recipient send path (`sendOneReminder`) originally called `prisma.communicationTemplate.findFirst`
+once per recipient — up to `MAX_REMINDERS_PER_RUN` (500) separate queries per scheduler tick for
+what are really only two distinct template names. Fixed by resolving both templates once per
+`runDueInterviewReminders` call into a small `Map`, threaded through to each send instead of
+re-queried.

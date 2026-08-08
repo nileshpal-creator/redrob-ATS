@@ -14,6 +14,11 @@ import type { WorkflowAction, WorkflowCondition } from "@/lib/validations/workfl
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+// Module 12: bounds how many stale applications one TIME_IN_STAGE
+// definition's due-check considers per call — a large backlog is worked
+// off over several scheduler ticks rather than in one unbounded pass.
+const MAX_APPLICATIONS_PER_DEFINITION_PER_RUN = 200;
+
 const applicationForWorkflowSelect = {
   id: true,
   jobId: true,
@@ -352,6 +357,8 @@ export async function runDueTimeInStageWorkflows(now: Date = new Date()): Promis
         ...(definition.jobId ? { jobId: definition.jobId } : {}),
       },
       select: applicationForWorkflowSelect,
+      orderBy: { stageEnteredAt: "asc" },
+      take: MAX_APPLICATIONS_PER_DEFINITION_PER_RUN,
     });
 
     for (const application of applications) {

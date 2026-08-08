@@ -27,6 +27,11 @@ export const ENTITY = {
   COMMUNICATION_TEMPLATE: "COMMUNICATION_TEMPLATE",
   SAVED_REPORT: "SAVED_REPORT",
   WORKFLOW_DEFINITION: "WORKFLOW_DEFINITION",
+  // Not RBAC-gated (POST /api/scheduler/run authenticates via
+  // SCHEDULER_SECRET, not a session/role) — registered only so its own
+  // audit-log entries (actorId: null, entityType: SCHEDULER) get a real,
+  // distinct, searchable entity type rather than borrowing an unrelated one.
+  SCHEDULER: "SCHEDULER",
 } as const;
 
 export type EntityKey = (typeof ENTITY)[keyof typeof ENTITY];
@@ -49,6 +54,7 @@ export const ENTITY_LABELS: Record<string, string> = {
   [ENTITY.COMMUNICATION_TEMPLATE]: "Communication Templates",
   [ENTITY.SAVED_REPORT]: "Saved Reports",
   [ENTITY.WORKFLOW_DEFINITION]: "Workflow Automations",
+  [ENTITY.SCHEDULER]: "Scheduler",
 };
 
 /** Entities core modules may attach admin-defined custom fields to (§10.1). */

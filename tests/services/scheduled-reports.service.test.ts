@@ -147,4 +147,72 @@ describe("runDueScheduledReports", () => {
     expect(updated.lastRunAt).toEqual(now);
     expect(updated.lastRunStatus).toBe("FAILED");
   });
+
+  it("Module 12 regression: lets only one of two concurrent invocations send the same due report", async () => {
+    const report = await prisma.savedReport.create({ data: savedReportData() });
+
+    const now = new Date();
+    const [a, b] = await Promise.all([runDueScheduledReports(now), runDueScheduledReports(now)]);
+
+    const totalSent = a.sentCount + b.sentCount;
+    expect(totalSent).toBe(1);
+    expect(a.skippedCount + b.skippedCount).toBeGreaterThanOrEqual(1);
+
+    const updated = await prisma.savedReport.findUniqueOrThrow({ where: { id: report.id } });
+    expect(updated.lastRunStatus).toBe("SENT");
+    expect(updated.version).toBe(report.version + 1); // claimed exactly once, not twice
+  });
+
+  it("Module 12 regression: a second tick starting mid-send (after the claim, before the send finishes) must not also send", async () => {
+    // Reproduces the exact gap an adversarial review found in the first fix
+    // attempt: a version-only claim stops two callers who read the *same*
+    // stale version, but not a *later* caller whose own fresh read happens
+    // after the claim committed but before the send finished — because
+    // `lastRunAt` (what `isDue` checks) wasn't updated until after the send.
+    // The real fix stamps `lastRunAt` as part of the atomic claim itself, so
+    // a later reader sees a fresh timestamp immediately, for the whole
+    // duration of the send — simulated here by performing the exact same
+    // claim query runDueScheduledReports itself runs, then invoking the real
+    // function as "the next tick" before any send/finalize has happened.
+    const report = await prisma.savedReport.create({ data: savedReportData() });
+    const now = new Date();
+
+    const claim = await prisma.savedReport.updateMany({
+      where: { id: report.id, version: report.version },
+      data: { version: { increment: 1 }, lastRunAt: now },
+    });
+    expect(claim.count).toBe(1);
+
+    // "Tick B" starts here — while tick A's render/send/finalize (not
+    // simulated) would still be in flight in production.
+    const tickB = await runDueScheduledReports(new Date(now.getTime() + 1000));
+    const reportUnchangedByTickB = await prisma.savedReport.findUniqueOrThrow({ where: { id: report.id } });
+
+    expect(reportUnchangedByTickB.lastRunStatus).toBeNull(); // tick B never touched it
+    expect(reportUnchangedByTickB.version).toBe(report.version + 1); // still just tick A's claim
+    void tickB;
+  });
+
+  it("caps how many due reports one call processes, leaving the rest for a later run", async () => {
+    const now = new Date();
+    // Deliberately much older than any other fixture in this file (which
+    // all sit within a few days of "now") so these three sort first and
+    // unambiguously under `orderBy: { lastRunAt: "asc" }`, regardless of
+    // leftover state from earlier tests in this shared-state file.
+    const reports = await Promise.all([
+      prisma.savedReport.create({ data: savedReportData({ name: "Batch Report A", lastRunAt: new Date(now.getTime() - 30 * DAY_MS), lastRunStatus: "SENT" }) }),
+      prisma.savedReport.create({ data: savedReportData({ name: "Batch Report B", lastRunAt: new Date(now.getTime() - 29 * DAY_MS), lastRunStatus: "SENT" }) }),
+      prisma.savedReport.create({ data: savedReportData({ name: "Batch Report C", lastRunAt: new Date(now.getTime() - 28 * DAY_MS), lastRunStatus: "SENT" }) }),
+    ]);
+
+    const limited = await runDueScheduledReports(now, 2);
+    expect(limited.dueCount).toBe(2);
+    expect(limited.sentCount).toBe(2);
+
+    const untouched = await prisma.savedReport.findUniqueOrThrow({ where: { id: reports[2].id } });
+    expect(untouched.lastRunAt).toEqual(new Date(now.getTime() - 28 * DAY_MS)); // third report wasn't attempted at all this call
+
+    const rest = await runDueScheduledReports(new Date(now.getTime() + 1000), 2);
+    expect(rest.sentCount).toBe(1);
+  });
 });

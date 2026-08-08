@@ -180,14 +180,22 @@ model FieldPermission {
 // in Postgres without a trigger); the service layer only ever reads/writes the first
 // row. A second row is a data-integrity bug, not a case the schema needs to prevent.
 model Organization {
-  id               String   @id @default(cuid())
-  name             String
-  timezone         String   @default("UTC")
-  workingDays      Int[]    @default([1, 2, 3, 4, 5])
-  workingHourStart String   @default("09:00")
-  workingHourEnd   String   @default("18:00")
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  id                           String   @id @default(cuid())
+  name                         String
+  timezone                     String   @default("UTC")
+  workingDays                  Int[]    @default([1, 2, 3, 4, 5])
+  workingHourStart             String   @default("09:00")
+  workingHourEnd               String   @default("18:00")
+  // Module 12 (§11.5): "automatic email reminders... at configurable
+  // intervals" — minutes before Interview.scheduledAt, e.g. [1440, 60] for a
+  // 24h and a 1h reminder. One org-wide list rather than a per-interview
+  // override or a dedicated settings table — the PRD names no per-job/
+  // per-interview variant, and Organization is already this app's one
+  // existing global-settings singleton (workingDays/workingHours/timezone).
+  // Empty means no automatic reminders are sent.
+  interviewReminderLeadMinutes Int[]    @default([1440, 60])
+  createdAt                    DateTime @default(now())
+  updatedAt                    DateTime @updatedAt
 
   holidays Holiday[]
 }
@@ -963,6 +971,7 @@ model Interview {
   application Application         @relation(fields: [applicationId], references: [id])
   panelists   InterviewPanelist[]
   feedback    InterviewFeedback[]
+  reminders   InterviewReminder[]
 
   @@index([applicationId])
   @@index([scheduledById])
@@ -1011,6 +1020,83 @@ model InterviewFeedback {
 
   @@unique([interviewId, interviewerId])
   @@index([interviewId])
+}
+
+// ---------------------------------------------------------------------------
+// Module 12 — Scheduler Infrastructure (§11.5 reminders / §11.12 scheduled
+// reports / §10.2 TIME_IN_STAGE) — see src/lib/scheduler/ for the
+// orchestrator and docs/architecture.md for the full design.
+// ---------------------------------------------------------------------------
+
+enum InterviewReminderRecipientType {
+  CANDIDATE
+  PANELIST
+}
+
+enum InterviewReminderStatus {
+  // A transient "currently being attempted" state, not a resting state —
+  // any row found in this status by a later run is either mid-flight (rare)
+  // or abandoned by a crashed process (recoverable after a staleness
+  // timeout, same "after a timeout" requirement claimExecutionSlot-style
+  // idempotency needs to satisfy — see runDueInterviewReminders).
+  PROCESSING
+  SENT
+  // Failed at least once but attempts remain — eligible for another claim
+  // once nextAttemptAt passes.
+  RETRYING
+  // attempts exhausted, or no email existed to send to in the first place.
+  FAILED
+}
+
+// One row per (interview occurrence, lead time, recipient) reminder the
+// scheduler either sent or attempted — "candidate and panel reminders are
+// separate" (Phase-1 decision): each panelist and the candidate get their
+// own row, mirroring ApplicationEmailLog's existing one-row-per-recipient
+// shape (Module 8) rather than inventing a batched "one row per interview"
+// concept.
+//
+// `scheduledAtFingerprint` (Interview.scheduledAt at claim time, as an ISO
+// string) is folded into the uniqueness key for exactly the same reason
+// WorkflowExecution's fingerprint is: rescheduling an interview changes
+// scheduledAt, which naturally makes prior reminder rows for the *old* time
+// irrelevant (the "is this due" query now computes dueAt from the new
+// scheduledAt) without any explicit invalidation step, while still letting
+// a *new* reminder be claimed and sent for the new time — the same
+// "leaving and re-entering a stage produces a fresh fingerprint" pattern
+// TIME_IN_STAGE already established.
+//
+// `recipientId` is always non-null (the literal string "candidate", or a
+// PANELIST's User.id) specifically so it can sit in a real, DB-enforced
+// unique constraint — Postgres unique indexes don't treat two NULLs as
+// equal, which would have silently defeated a nullable-panelistId column
+// used the same way.
+model InterviewReminder {
+  id String @id @default(cuid())
+
+  interviewId            String
+  interview              Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+  scheduledAtFingerprint String
+  leadMinutes            Int
+
+  recipientType InterviewReminderRecipientType
+  recipientId   String
+  // Snapshot at claim time — if a candidate's email changes between claim
+  // and a later retry, the retry keeps targeting the address that was valid
+  // when this reminder was first due, the same "frozen at creation" choice
+  // HandoffRecord's payload snapshot already establishes elsewhere.
+  toEmail       String?
+
+  status        InterviewReminderStatus @default(PROCESSING)
+  attempts      Int                     @default(0)
+  lastError     String?
+  nextAttemptAt DateTime?
+  sentAt        DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([interviewId, scheduledAtFingerprint, leadMinutes, recipientId])
+  @@index([status, nextAttemptAt])
 }
 
 enum OfferStatus {

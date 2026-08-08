@@ -552,6 +552,41 @@ may reference one.
 distinct from `Candidate.sourceId`'s broader "where this person originally came from." Set only
 by `receiveInboundApplication`; every other application-creation path leaves it `null`.
 
+## New Module 12 tables
+
+| Table | Purpose |
+| --- | --- |
+| `InterviewReminder` | One row per (interview occurrence, lead time, recipient) reminder the scheduler attempted (§11.5). Doubles as both the idempotency claim and the retry/audit trail. See [architecture.md#module-12--scheduler-infrastructure-115--1112--102](architecture.md#module-12--scheduler-infrastructure-115--1112--102). |
+
+### `InterviewReminder` columns
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | `String` (cuid) | |
+| `interviewId` | `String` | FK → `Interview`, `onDelete: Cascade` |
+| `scheduledAtFingerprint` | `String` | `Interview.scheduledAt` as an ISO string, captured at claim time — rescheduling changes this, making old rows naturally stale without any explicit invalidation |
+| `leadMinutes` | `Int` | which of `Organization.interviewReminderLeadMinutes`'s configured lead times this row is for |
+| `recipientType` | `InterviewReminderRecipientType` | `CANDIDATE` / `PANELIST` |
+| `recipientId` | `String` | always non-null — the literal string `"candidate"`, or a panelist's real `User.id`; this (not a nullable `panelistUserId`) is what sits in the unique constraint, since Postgres never treats two NULLs as equal |
+| `toEmail` | `String?` | snapshot of the recipient's email at claim time; `null` means no email existed, which is recorded as an immediate permanent `FAILED`, never retried |
+| `status` | `InterviewReminderStatus` | `PROCESSING` (transient — claimed, in flight, or a stale abandoned claim) / `SENT` / `RETRYING` / `FAILED` |
+| `attempts` | `Int` | incremented on every claim (first attempt and every reclaim) |
+| `lastError` | `String?` | the most recent failure reason, if any |
+| `nextAttemptAt` | `DateTime?` | when a `RETRYING` row becomes reclaimable again (exponential backoff) |
+| `sentAt` | `DateTime?` | set only on a successful send |
+
+`@@unique([interviewId, scheduledAtFingerprint, leadMinutes, recipientId])` is the real
+idempotency guard — `create()` on a first attempt IS the claim (a concurrent duplicate fails on
+this constraint, P2002, caught and treated as "already claimed"); reclaiming an existing row (a
+retry, or recovering a claim abandoned by a crashed process) uses a status-guarded `updateMany`
+instead. Indexed on `(status, nextAttemptAt)` — the exact shape of "which rows are eligible for
+another attempt right now."
+
+`Organization` gained one new column in this module: `interviewReminderLeadMinutes Int[]`
+(default `[1440, 60]`) — minutes before `Interview.scheduledAt` to send a reminder; empty means no
+automatic reminders. One org-wide list, not a per-interview override — see
+[architecture.md](architecture.md#module-12--scheduler-infrastructure-115--1112--102) for why.
+
 ## Relationships
 
 - **User self-relation (`UserManager`)**: `User.managerId → User.id`. Drives

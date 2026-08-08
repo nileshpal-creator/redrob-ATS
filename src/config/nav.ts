@@ -1,6 +1,7 @@
 import type { LucideIcon } from "lucide-react";
 import {
   BarChart3,
+  BellRing,
   Briefcase,
   CheckSquare,
   Contact,
@@ -49,5 +50,6 @@ export const adminNav: NavItem[] = [
   { title: "Roles & Permissions", href: "/admin/roles", icon: ShieldCheck },
   { title: "Custom Fields", href: "/admin/custom-fields", icon: SlidersHorizontal },
   { title: "Communication Templates", href: "/admin/communication-templates", icon: Mail },
+  { title: "Interview Reminders", href: "/admin/interview-reminders", icon: BellRing },
   { title: "Audit Log", href: "/admin/audit-log", icon: ScrollText },
 ];

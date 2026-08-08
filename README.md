@@ -306,6 +306,48 @@ file behind the same interface, not a change to any service code.
 - **Referral capture, one combined step**: a "Refer a candidate" dialog creates the candidate and
   application together with source fixed to the "Referral" `CANDIDATE_SOURCE` value.
 
+### Module 12 — Scheduler Infrastructure (§11.5 reminders / §11.12 scheduled reports / §10.2 TIME_IN_STAGE)
+
+- **One orchestrator, three existing due-runners**: `POST /api/scheduler/run` → `runScheduledWork()`
+  (`src/lib/scheduler/run.ts`) → `runDueInterviewReminders` / `runDueScheduledReports` /
+  `runDueTimeInStageWorkflows`, run concurrently and isolated from each other (one throwing never
+  blocks or hides the other two's results). Not a generic polymorphic job-queue table — each
+  consumer's own due-detection differs enough (a lead time before an absolute instant, a
+  daily/weekly cadence, a stage-age threshold) that one shared row shape would only be a
+  paraphrase of what each already does well.
+- **No cron/queue infrastructure exists inside this app, still** — nothing here runs
+  `setInterval`/`setTimeout`. `POST /api/scheduler/run` is a secure endpoint external
+  infrastructure (Vercel Cron, AWS EventBridge, a Railway/Render cron job, a Kubernetes CronJob,
+  Windows Task Scheduler, plain `curl` in an OS crontab) must call periodically — see
+  [docs/api.md](docs/api.md) for exact per-provider setup.
+- **Machine-to-machine auth, not a session**: the endpoint authenticates via `Authorization: Bearer
+  <SCHEDULER_SECRET>` compared in constant time (`src/lib/scheduler/auth.ts`) — the one deliberate
+  exception to this app's otherwise session-only API convention, since a cron provider has no
+  user session to present.
+- **Interview reminders, built from scratch**: `InterviewReminder` (one row per interview
+  occurrence × lead time × recipient — candidate and each active panelist get their own row,
+  mirroring `ApplicationEmailLog`'s shape). Claimed via create-then-catch-unique-violation on
+  first attempt, a status-guarded `updateMany` to reclaim a retry or a stale abandoned attempt.
+  Rescheduling an interview changes `scheduledAt`, which changes the row's fingerprint — old
+  reminders are never revisited, new ones become claimable, with no explicit invalidation step
+  (the same pattern `WorkflowExecution`'s fingerprint already establishes). Configurable lead
+  times live on `Organization.interviewReminderLeadMinutes` (`/admin/interview-reminders`, the one
+  new admin settings surface this module needed), reusing this app's one existing global-settings
+  singleton rather than inventing a new one.
+- **Fixed a real duplicate-send gap in `runDueScheduledReports`**: the pre-existing check-then-act
+  (read `lastRunAt` → later write it) let two overlapping scheduler ticks both send the same
+  report. `SavedReport.version` (already there for its own CRUD optimistic locking) now doubles as
+  an atomic claim, stamping a fresh `lastRunAt` *as part of the claim* — not after the send — so a
+  tick starting mid-send sees the report as no-longer-due immediately, not just at the instant of
+  the claim.
+- **Bounded batches everywhere**: interview reminders, scheduled reports, and
+  `runDueTimeInStageWorkflows`'s own per-definition application fetch all cap how much they
+  process per call — a large backlog is worked off over several ticks, not one unbounded pass.
+- **Retry with backoff, then permanent failure**: interview reminders retry a failed send up to 3
+  times with exponential backoff, then stop — recorded on the row (`status`, `attempts`,
+  `lastError`), never retried forever. A missing email is recorded as an immediate, permanent
+  failure, not an infinite retry loop.
+
 ## Local development
 
 ```bash

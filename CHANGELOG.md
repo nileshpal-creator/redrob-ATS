@@ -1,5 +1,72 @@
 # Changelog
 
+## Module 12 — Scheduler Infrastructure (§11.5 reminders / §11.12 scheduled reports / §10.2 TIME_IN_STAGE)
+
+### Added
+
+- `InterviewReminder` + 2 enums (`prisma/schema.prisma`): §11.5's "automatic email reminders to
+  candidate and panel at configurable intervals," built from scratch (no reminder code existed
+  anywhere previously). One row per (interview occurrence, lead time, recipient) — candidate and
+  each active panelist get their own row, mirroring `ApplicationEmailLog`'s one-row-per-recipient
+  shape. Claimed via create-then-catch-unique-violation on first attempt, a status-guarded
+  `updateMany` to reclaim a retry or a stale abandoned attempt — the same two idempotency idioms
+  `WorkflowExecution`/`removeJobPosting` each already establish separately, combined here for the
+  first time. `scheduledAtFingerprint` (a reschedule-sensitive snapshot of `scheduledAt`) makes a
+  reschedule naturally invalidate old reminders and enable new ones with no explicit
+  invalidation step, the same pattern `WorkflowExecution`'s own fingerprint already establishes.
+  Up to 3 retry attempts with exponential backoff, then a permanent `FAILED`; a missing email is
+  an immediate permanent failure, never retried.
+- `Organization.interviewReminderLeadMinutes` (`Int[]`, default `[1440, 60]`): one org-wide list
+  of configurable lead times, reusing this app's one existing global-settings singleton rather
+  than a new settings table. `/admin/interview-reminders` (a fixed preset checklist) and
+  `GET`/`PATCH /api/organization` are the first things to actually use `Organization`'s
+  RBAC-registered-but-previously-unused entity slot.
+- `src/lib/mail/test-failure-provider.ts` + `MAIL_PROVIDER=test_failure`: a real, factory-wired
+  `MailProvider` implementation whose entire purpose is deterministically failing a send (marked
+  by a recipient-address substring, optionally with a fail-count) — `ConsoleMailProvider` never
+  fails, so retry/backoff/permanent-failure logic would otherwise be untestable.
+- `src/lib/scheduler/auth.ts` + `src/lib/scheduler/run.ts` + `POST /api/scheduler/run`: the one
+  HTTP entry point external scheduling infrastructure (Vercel Cron, AWS EventBridge, a
+  Railway/Render cron job, a Kubernetes CronJob, Windows Task Scheduler, or a plain OS crontab)
+  calls to run all three scheduler-driven consumers. Authenticated via `Authorization: Bearer
+  <SCHEDULER_SECRET>`, compared as SHA-256 digests through `crypto.timingSafeEqual` (avoiding the
+  length-mismatch timing signal a bare `timingSafeEqual` would leak) — the one deliberate
+  exception to this app's otherwise session-only API convention (`withApiHandler` is not used
+  here), since a cron provider has no user session to present. Each of the three consumers is
+  invoked concurrently and isolated — one throwing never blocks or hides the other two's results.
+- Batch caps added to all three consumers: interview reminders (200 interviews / 500 sends per
+  call), scheduled reports (100), and `runDueTimeInStageWorkflows`'s per-definition
+  due-application fetch (200) — a large backlog is worked off over several scheduler ticks, not
+  one unbounded pass.
+- Audit actions: `INTERVIEW_REMINDER_SENT`, `INTERVIEW_REMINDER_FAILED`, `SCHEDULER_RUN`
+  (`actorId: null` — no human actor for a machine-triggered run), `ORGANIZATION_SETTINGS_UPDATED`.
+- Automated test coverage: `interview-reminders.service.test.ts` (13 tests),
+  `scheduler-auth.test.ts` (11 tests), `scheduler-run.test.ts` under `tests/lib/` (4 tests) and
+  under `tests/api/` (6 tests), plus 3 new regression tests in
+  `scheduled-reports.service.test.ts` (2 concurrency/batch tests plus a third added during
+  self-review, below). Full regression suite: 561 tests passing project-wide.
+
+### Fixed
+
+- `runDueScheduledReports` (Module 9) had a real, previously-undocumented duplicate-send gap:
+  check-then-act on `lastRunAt` meant two overlapping scheduler ticks could both send the same
+  report. The first fix attempt used only `SavedReport.version` as an atomic claim, which closed
+  the race between two callers reading the *identical* stale version simultaneously — but an
+  independent adversarial review found it did not close a subtler one: a second tick starting
+  **after** the first tick's claim but **before** its send finished would see the
+  already-incremented version (not stale to it) and the still-old `lastRunAt` (still "due" to
+  it), and would send again. Fixed by stamping `lastRunAt: now` as part of the *same* atomic
+  claim that increments `version`, not after the send — closing the gap for the send's entire
+  duration. A new regression test reproduces the exact scenario.
+- `sendOneReminder` looked up its `CommunicationTemplate` via `findFirst` once per recipient — an
+  N+1 query found during self-review: up to `MAX_REMINDERS_PER_RUN` (500) separate queries per
+  scheduler tick for only two distinct template names. Fixed by resolving both templates once
+  per `runDueInterviewReminders` call into a small `Map`, threaded through instead of re-queried.
+- `runDueScheduledReports`'s `orderBy: { lastRunAt: "asc" }` could let never-run reports
+  (`lastRunAt: null`) starve behind an already-run backlog once due reports exceed the new batch
+  cap, since Postgres's default `NULLS LAST` on ascending order puts them last. Fixed with
+  `orderBy: { lastRunAt: { sort: "asc", nulls: "first" } }`.
+
 ## Module 11 — Sourcing & Job Board Distribution (PRD §11.3)
 
 ### Added

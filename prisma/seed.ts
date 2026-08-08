@@ -430,6 +430,41 @@ async function main() {
   });
 
   console.log(`Bootstrapped admin user: ${adminEmail}`);
+
+  // Module 12 (§11.5): runDueInterviewReminders resolves these two templates
+  // by exact name — seeded so reminders work out of the box without an
+  // admin hand-authoring them first. Idempotent upsert, same as everything
+  // else in this file; editable/deactivatable afterward via the existing
+  // Communication Templates admin screen like any other template.
+  await prisma.communicationTemplate.upsert({
+    where: { name: "Interview Reminder — Candidate" },
+    update: {},
+    create: {
+      name: "Interview Reminder — Candidate",
+      channel: "EMAIL",
+      subject: "Reminder: your {{interview.roundName}} interview for {{job.title}}",
+      body:
+        "Hi {{candidate.name}},\n\nThis is a reminder that your {{interview.roundName}} interview for " +
+        "{{job.title}} is coming up in {{reminder.leadTime}}, at {{interview.scheduledAt}}.\n\n" +
+        "Good luck!",
+      createdById: adminUser.id,
+    },
+  });
+  await prisma.communicationTemplate.upsert({
+    where: { name: "Interview Reminder — Panelist" },
+    update: {},
+    create: {
+      name: "Interview Reminder — Panelist",
+      channel: "EMAIL",
+      subject: "Reminder: {{interview.roundName}} interview for {{job.title}} in {{reminder.leadTime}}",
+      body:
+        "Hi {{panelist.name}},\n\nThis is a reminder that you're on the panel for a {{interview.roundName}} " +
+        "interview for {{job.title}} with {{candidate.name}}, coming up in {{reminder.leadTime}}, at " +
+        "{{interview.scheduledAt}}.",
+      createdById: adminUser.id,
+    },
+  });
+  console.log("Seeded interview reminder email templates");
 }
 
 main()
