@@ -548,8 +548,11 @@ export async function deleteCandidateDocument(
  * HandoffDeliveryAttempt rows, same join-through-Application pattern).
  * Module 8 adds "email_sent"/"email_failed" (derived from
  * ApplicationEmailLog rows, same join pattern) — each addition without
- * changing the existing contract. Future modules add more `type`s the same
- * way.
+ * changing the existing contract. Module 10 adds "task_created" plus one of
+ * "task_completed"/"task_approved"/"task_rejected" (derived from
+ * WorkflowTask rows, same join-through-Application pattern; a still-OPEN
+ * task only ever contributes the "created" item). Future modules add more
+ * `type`s the same way.
  */
 export async function getCandidateTimeline(context: SessionContext, candidateId: string) {
   const candidate = await prisma.candidate.findUnique({ where: { id: candidateId } });
@@ -558,7 +561,7 @@ export async function getCandidateTimeline(context: SessionContext, candidateId:
   }
   await assertCandidateAccess(context, candidate, "READ");
 
-  const [notes, applications, interviews, offers, handoffs, emailLogs] = await Promise.all([
+  const [notes, applications, interviews, offers, handoffs, emailLogs, workflowTasks] = await Promise.all([
     prisma.candidateNote.findMany({
       where: { candidateId },
       orderBy: { createdAt: "desc" },
@@ -619,6 +622,14 @@ export async function getCandidateTimeline(context: SessionContext, candidateId:
         application: { select: { jobId: true, job: { select: { title: true } } } },
         requestedBy: { select: userSummarySelect },
         template: { select: { name: true } },
+      },
+    }),
+    // Module 10 — joined through Application, the same way ApplicationEmailLog is.
+    prisma.workflowTask.findMany({
+      where: { application: { candidateId } },
+      include: {
+        application: { select: { jobId: true, job: { select: { title: true } } } },
+        assignedTo: { select: userSummarySelect },
       },
     }),
   ]);
@@ -809,6 +820,36 @@ export async function getCandidateTimeline(context: SessionContext, candidateId:
     createdAt: log.requestedAt,
   }));
 
+  // Module 10 (§10.2) — no separate WorkflowTaskEvent history table exists
+  // (same "updatedAt/completedAt is the timestamp proxy" choice as Interview
+  // above); a still-OPEN task only ever contributes its "created" item.
+  const taskCreatedItems = workflowTasks.map((task) => ({
+    type: "task_created" as const,
+    id: `${task.id}:created`,
+    jobId: task.application.jobId,
+    jobTitle: task.application.job.title,
+    title: task.title,
+    assignedTo: task.assignedTo,
+    dueAt: task.dueAt,
+    createdAt: task.createdAt,
+  }));
+
+  const taskResolvedItems = workflowTasks
+    .filter((task) => task.status !== "OPEN" && task.completedAt)
+    .map((task) => ({
+      type: (task.status === "DONE"
+        ? "task_completed"
+        : task.status === "APPROVED"
+          ? "task_approved"
+          : "task_rejected") as "task_completed" | "task_approved" | "task_rejected",
+      id: `${task.id}:${task.status.toLowerCase()}`,
+      jobId: task.application.jobId,
+      jobTitle: task.application.job.title,
+      title: task.title,
+      assignedTo: task.assignedTo,
+      createdAt: task.completedAt as Date,
+    }));
+
   const items = [
     ...noteItems,
     ...applicationItems,
@@ -823,6 +864,8 @@ export async function getCandidateTimeline(context: SessionContext, candidateId:
     ...handoffDeliveryItems,
     ...handoffAcknowledgedItems,
     ...emailItems,
+    ...taskCreatedItems,
+    ...taskResolvedItems,
   ].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 
   return { items };

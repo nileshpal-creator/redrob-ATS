@@ -12,11 +12,12 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     redirect("/login");
   }
 
-  const [showJobsNav, showCandidatesNav, showApplicationsNav, canViewOfferReports] = await Promise.all([
+  const [showJobsNav, showCandidatesNav, showApplicationsNav, canViewOfferReports, showWorkflowsNav] = await Promise.all([
     can(context, ENTITY.JOB, "READ"),
     can(context, ENTITY.CANDIDATE, "READ"),
     can(context, ENTITY.APPLICATION, "READ"),
     can(context, ENTITY.OFFER, "READ"),
+    can(context, ENTITY.WORKFLOW_DEFINITION, "READ"),
   ]);
   // Reports are reachable with either JOB:READ or OFFER:READ (see
   // src/app/(app)/reports/page.tsx) — showJobsNav already answers the first half.
@@ -30,6 +31,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         showCandidatesNav={showCandidatesNav}
         showApplicationsNav={showApplicationsNav}
         showReportsNav={showReportsNav}
+        showWorkflowsNav={showWorkflowsNav}
       />
       <div className="flex flex-1 flex-col overflow-hidden">
         <AppTopbar name={context.name} email={context.email} />

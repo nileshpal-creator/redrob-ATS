@@ -875,3 +875,77 @@ runner calls `renderReportBuffer` directly (an internal, non-viewer-initiated re
 produce a viewer-attributed audit entry), while the ad-hoc export API route calls `exportReport`
 (a viewer explicitly asked for a file, which — like `candidate-export.ts`'s own export — is
 always logged).
+
+### Workflow & Automation Builder (Module 10, §10.2)
+
+`src/lib/services/workflows.ts` is the evaluate/execute engine, called from two directions:
+`evaluateApplicationWorkflows(context, applicationId, triggerType, triggerMatches, fingerprint)`
+for the three event-driven triggers (`STAGE_CHANGE`, `FIELD_UPDATE`, `FORM_SUBMISSION`), and
+`runDueTimeInStageWorkflows(now)` for `TIME_IN_STAGE`, which has no single triggering write.
+Both share the same inner loop: find every active `WorkflowDefinition` whose active version's
+`triggerType` matches and whose `jobId` is either `null` (global) or the application's own job,
+apply the trigger-specific `triggerMatches` predicate against `triggerConfig` (e.g. "does this
+event's destination stage equal `config.toStageId`?"), evaluate the AND-only condition list
+against `Application.customFields`, then run each action in its own `try`/`catch` (so one bad
+action — an inactive template, a deleted user — never blocks the others in the same workflow).
+
+**Versioning**: `WorkflowDefinition` never stores its own trigger/conditions/actions directly —
+`WorkflowDefinitionVersion` does, and `WorkflowDefinition.activeVersionId` points at the current
+one. Saving a new configuration creates a new version row and re-points the pointer; it never
+mutates or deletes an old version. Rollback (`rollbackWorkflowDefinition`) is exactly the same
+operation aimed at an older version id — the same append-only-history-plus-pointer pattern
+`JobStatusChange`/`ApplicationEvent`/`OfferApproval` already establish for their own entities,
+just with the pointer living on the parent row instead of being derived by querying "most recent
+row." This is what makes §10.2's "full version history... with the ability to roll back"
+trivially true: every version ever saved stays queryable via `WorkflowDefinition.versions`
+regardless of which one is active.
+
+**Idempotency**: `WorkflowExecution` has a unique index on `(workflowDefinitionVersionId,
+applicationId, fingerprint)`. `claimExecutionSlot` attempts an INSERT into that table *before*
+running any action; a `P2002` unique-violation means another evaluation already claimed this
+exact occurrence, and the caller treats that as "already handled," not an error — the same
+"let the database's unique constraint be the real guard against a race, not a check-then-act
+pre-check" pattern `createOffer`/`createCommunicationTemplate` already use. This matters most for
+`TIME_IN_STAGE`: nothing "causes" it the way a stage move causes `STAGE_CHANGE`, so
+`runDueTimeInStageWorkflows` is designed to be called repeatedly (by an external scheduler) while
+an application sits in the same stage, and must not re-fire on every call. Its fingerprint is
+`stageEnteredAt.toISOString()` — re-entering the same stage later produces a fresh timestamp and
+can fire again, which is the correct behavior. The three event-driven triggers use a fingerprint
+tied to the specific occurrence: the new `ApplicationEvent.id` for `STAGE_CHANGE`, an
+`updatedAt` timestamp for `FIELD_UPDATE`, and the new `Application.id` for `FORM_SUBMISSION`
+(each of these can only ever happen once per row, or produces a fresh id/timestamp each time).
+
+**Business-record tier, not admin-metadata tier**: unlike `CommunicationTemplate` (open read,
+no `version`, no hard delete), `WorkflowDefinition` gets `OWN`/`TEAM`/`ALL` scope on
+`createdById`, an optimistic-locking `version`, and deactivate-don't-delete — because an
+automation has real side-effect risk (it can send email, reassign ownership, or create
+approval-gated tasks) with no further per-action human review, the same risk profile that puts
+`Job`/`Offer`/`SavedReport` in this tier rather than `CommunicationTemplate`'s.
+
+**Cross-module hooks**: `src/lib/services/applications.ts`'s `transitionApplication`,
+`updateApplication`, and `createApplication` each call a shared `fireWorkflowsInBackground`
+wrapper *after* their own write has committed — deliberately outside that write's own
+transaction, and with any error from workflow evaluation caught and only logged. `SEND_EMAIL` is
+external I/O; a misbehaving automation must never roll back or fail the user's own action that
+triggered it. `FIELD_UPDATE`'s hook diffs the application's *before* and *after*
+`customFields` to find which keys actually changed (`JSON.stringify` comparison per key) — a
+no-op re-save of the same value must not re-fire an automation keyed to that field.
+
+**`WorkflowTask` dual access**: `CREATE_TASK` and `REQUEST_APPROVAL` both produce a
+`WorkflowTask` row, resolved via `completeWorkflowTask`/`decideWorkflowTask`
+(`src/lib/services/workflow-tasks.ts`). `assertWorkflowTaskAccess` grants access two ways: an
+unscoped or ownership-scoped `APPLICATION:UPDATE` grant over the owning application, **or** the
+task's own assignee, unconditionally — not gated by any Application permission at all. This is
+deliberately *not* identical to `Interview`'s scheduler-vs-panelist dual-path check (which
+additionally requires an OWN-scope grant on the panelist themselves): `REQUEST_APPROVAL` exists
+specifically to route a decision to someone who may hold no Application-mutation permission at
+all (e.g. a Hiring Manager), so gating the assignee path on any Application grant would defeat
+the action's own purpose. Resolution uses a status-guarded `updateMany` (`WHERE id AND
+status = 'OPEN'`) as its optimistic-concurrency guard, rather than a dedicated `version` column
+— the only "conflict" that matters here (did someone else already resolve this task) is fully
+captured by the status field itself.
+
+**No cron/queue infrastructure**, the same environment limit `MailProvider`/`StorageProvider`/
+`HrisProvider`/Module 9's scheduled reports already document: `runDueTimeInStageWorkflows` is
+real, tested logic; `POST /api/workflows/run-due` exists for an external scheduler to call it
+periodically, but nothing in this codebase invokes it on its own.

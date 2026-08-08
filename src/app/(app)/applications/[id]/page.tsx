@@ -7,6 +7,7 @@ import { getApplication } from "@/lib/services/applications";
 import { listInterviews } from "@/lib/services/interviews";
 import { listOffers } from "@/lib/services/offers";
 import { listHandoffs } from "@/lib/services/handoffs";
+import { listWorkflowTasks } from "@/lib/services/workflow-tasks";
 import { getControlledListValues } from "@/lib/services/controlled-lists";
 import { NotFoundError } from "@/lib/errors";
 import { ApplicationDetailClient } from "@/components/applications/application-detail-client";
@@ -32,6 +33,7 @@ export default async function ApplicationDetailPage({ params }: { params: Promis
     interviewsResult,
     offersResult,
     handoffsResult,
+    tasksResult,
   ] = await Promise.all([
     can(context, ENTITY.APPLICATION, "UPDATE", { ownerId: application.ownerId }),
     getControlledListValues("REJECTION_REASON"),
@@ -48,6 +50,10 @@ export default async function ApplicationDetailPage({ params }: { params: Promis
       throw error;
     }),
     listHandoffs(context, { applicationId: id, page: 1, pageSize: 50 }).catch((error) => {
+      if (error instanceof ForbiddenError) return null;
+      throw error;
+    }),
+    listWorkflowTasks(context, { applicationId: id }).catch((error) => {
       if (error instanceof ForbiddenError) return null;
       throw error;
     }),
@@ -97,6 +103,8 @@ export default async function ApplicationDetailPage({ params }: { params: Promis
       }))
     : [];
 
+  const tasks = tasksResult ?? [];
+
   // Sole source of truth for the read-only/archive banner — mirrors
   // assertApplicationNotHandedOff's server-side check exactly (see
   // src/lib/services/handoffs.ts) so the UI never shows action buttons the
@@ -116,6 +124,7 @@ export default async function ApplicationDetailPage({ params }: { params: Promis
       offerOutcomeReasons={offerOutcomeReasons.values}
       handoffs={JSON.parse(JSON.stringify(handoffs))}
       isArchivedByHandoff={isArchivedByHandoff}
+      tasks={JSON.parse(JSON.stringify(tasks))}
       currentUserId={context.userId}
     />
   );

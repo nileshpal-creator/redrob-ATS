@@ -27,8 +27,9 @@ All `M`-priority requirements from §11.1 are implemented:
   date, priority. ✅
 - Configurable-workflow-shaped approval flow before a job opens for sourcing (draft → pending
   approval → open) — built as a **simple, fixed** state machine per Phase 1's explicit scope
-  decision; the fully configurable workflow builder is deferred to the PRD's Workflow &
-  Automation Builder (§10.2). ✅ (scoped)
+  decision, not rewired onto the PRD's separate Workflow & Automation Builder (§10.2, Module 10)
+  once that shipped — Module 10's builder reacts to Application-level events, not Job's own
+  status transitions. ✅ (scoped)
 - Assign one or more recruiters, with a primary owner. ✅
 - Status: open, on hold, closed, cancelled — reason required on hold/close/cancel. ✅
 - Attach job description and structured must-have/good-to-have criteria (stored as string
@@ -222,6 +223,31 @@ the Template Designer:
 - Export to Excel/CSV and PDF. ✅ — XLSX/CSV reuse `candidate-export.ts`'s exact pattern; PDF is
   new (`pdf-lib`, this module's one new dependency) and renders a plain text table, not a
   fully laid-out grid.
+
+### Module 10 — Workflow & Automation Builder (PRD §10.2)
+
+All five requirements from §10.2 are implemented:
+
+- A no-code rule builder: "when [event] and [condition], then [action]". ✅ — `/admin/workflows`,
+  a form-based builder (trigger picker + type-specific config, an AND-only condition list, one
+  or more actions), not a drag-and-drop canvas. AND-only matches §10.2's own literal phrasing;
+  there is no OR/grouping.
+- Supported triggers: stage change, field update, time elapsed in a stage, form submission. ✅
+  — `STAGE_CHANGE`/`FIELD_UPDATE`/`TIME_IN_STAGE`/`FORM_SUBMISSION`, all four implemented and
+  wired into their real triggering call sites in `applications.ts`.
+- Supported actions: send templated email/notification, create a task, change a field, reassign
+  an owner, request approval. ✅ (scoped) — `SEND_EMAIL` (this codebase's one real notification
+  channel, per Module 8; there is no separate in-app notification action),
+  `CREATE_TASK`/`CHANGE_FIELD`/`REASSIGN_OWNER`/`REQUEST_APPROVAL`, all five implemented.
+  `CHANGE_FIELD` is scoped to `Application.customFields` only — core lifecycle fields
+  (stage/outcome/owner) keep their own guarded state-machine/transition paths, which a generic
+  field-setter would otherwise bypass.
+- Per-job and per-pipeline configuration, not forced to apply globally. ✅ — `jobId` is nullable
+  on `WorkflowDefinition` (`null` = every job); `STAGE_CHANGE`/`TIME_IN_STAGE` triggers require a
+  non-null `jobId` since the `PipelineStage` they reference is itself job-scoped.
+- Full version history, with the ability to roll back. ✅ — every trigger/conditions/actions
+  save creates a new `WorkflowDefinitionVersion` row and re-points `activeVersionId`; rollback
+  re-points it at an older, still-existing version. History is never mutated or deleted.
 
 ## Completed phases (Module 2)
 
@@ -468,6 +494,76 @@ the Template Designer:
    (NextAuth's ESM/CJS interop with `next/server` doesn't resolve outside the Next.js runtime) —
    discovered while writing `scheduled-reports.service.test.ts`.
 
+## Completed phases (Module 10)
+
+1. **Investigation** — re-read the PRD directly rather than from memory: §10.2 (Workflow &
+   Automation Builder), §10.4 (Template Designer), and §11.3 (Sourcing) were all plausible
+   candidates for "the next module" — §14's roadmap lists §10.2/§10.4 together under V1 Core
+   Parity's "full Customization Engine" bucket but conspicuously omits §11.3 despite its own
+   M-tags. Presented all three to the user; §10.2 was selected. Checked existing architecture
+   for precedent: `PipelineStage`'s "deactivate, don't delete" convention, `Offer`/`SavedReport`'s
+   business-record tier (OWN/TEAM/ALL + optimistic locking) vs `CommunicationTemplate`'s
+   admin-metadata tier (open read, no version), `JobStatusChange`'s append-only history pattern,
+   and confirmed (again) that no cron/queue infrastructure exists anywhere in this app.
+2. **Technical Design** — `WorkflowDefinition`/`WorkflowDefinitionVersion` versioned the same
+   way `Job`'s status history is; business-record tier, not admin-metadata, since an automation
+   has real side-effect risk with no further per-action human review; a `WorkflowExecution`
+   ledger with a unique `(version, applicationId, fingerprint)` constraint as the idempotency
+   guard (the same "let the database be the guard" pattern `createOffer` already establishes),
+   needed specifically because `TIME_IN_STAGE` has no single triggering write and gets
+   re-evaluated on every scheduler call; `WorkflowTask`'s two-path access (application-manager or
+   assignee, unconditionally) reasoned through explicitly as *not* identical to Interview's
+   panelist path, since a `REQUEST_APPROVAL` recipient may hold no `APPLICATION:UPDATE` grant at
+   all; `CHANGE_FIELD` scoped to `customFields` only, to avoid bypassing existing guarded
+   lifecycle-field transitions; automations run after their triggering write commits, outside
+   its transaction, since `SEND_EMAIL` is external I/O that must never roll back the user's own
+   action.
+3. **Backend Implementation** — schema (`WorkflowDefinition`/`WorkflowDefinitionVersion`/
+   `WorkflowTask`/`WorkflowExecution` + 4 enums, two migrations — the second added mid-design
+   once the idempotency-ledger need was recognized) and migrations; `entity-registry`/seed RBAC
+   grants; Zod validations (`workflow.ts`, discriminated unions per trigger/action type); the
+   evaluate/execute engine (`workflows.ts`); `WorkflowDefinition` CRUD + versioning + rollback
+   (`workflow-definitions.ts`); `WorkflowTask` lifecycle (`workflow-tasks.ts`); thin API routes
+   for all of the above, including `POST /api/workflows/run-due` for an external scheduler.
+4. **Cross-module hooks** — `transitionApplication`/`updateApplication`/`createApplication` in
+   `applications.ts` each call `evaluateApplicationWorkflows` after their own write commits,
+   with a shared `fireWorkflowsInBackground` wrapper that catches and only logs any error so a
+   misbehaving automation can never fail or roll back the triggering request.
+5. **Candidate timeline integration** — `task_created`/`task_completed`/`task_approved`/
+   `task_rejected` item types in `getCandidateTimeline`, plus the corresponding render types in
+   both `candidate-timeline.tsx` and `candidate-detail-client.tsx`.
+6. **Frontend Implementation** — `/admin/workflows` (list, create, edit-with-version-history-
+   and-rollback), a form-based trigger/condition/action builder (plain `useState`, not
+   `react-hook-form` — conditions/actions are dynamic, differently-shaped-per-type arrays with no
+   `useFieldArray` precedent elsewhere in this codebase), a Tasks card on the Application detail
+   page, and `/tasks` ("My Tasks"). Nav entries gated on real RBAC grants
+   (`WORKFLOW_DEFINITION:READ`), not restricted to super-admin.
+7. **Testing** — `workflow.test.ts` (Zod schemas, 21 tests), `workflow-definitions.service.test.ts`
+   (CRUD/versioning/rollback/RBAC/optimistic-locking concurrency, 16 tests),
+   `workflow-tasks.service.test.ts` (dual access path, status-guarded concurrency, decide
+   outcomes, 10 tests), `workflows.service.test.ts` (all three event-driven trigger hooks, all 5
+   condition operators, all 5 action types, the idempotency guard, partial-failure handling, 20
+   tests). Full regression suite: 489 tests passing project-wide.
+8. **Browser verification** — a real Chromium walkthrough via Playwright against the dev
+   database: logged in, built a `STAGE_CHANGE → CREATE_TASK` workflow through the real
+   `/admin/workflows/new` form end to end, confirmed it listed on `/admin/workflows`, then
+   triggered it via a real application stage transition and confirmed (via direct database
+   inspection, since the exact click sequence for the transition dialog needed a few iterations
+   to get right in the test script) that `WorkflowExecution` recorded `SUCCESS` and a
+   `WorkflowTask` was created. Separately confirmed the created task rendered on both the
+   Application detail page's Tasks card and `/tasks`, and that clicking "Mark done" there
+   correctly resolved it (`OPEN` → `DONE`, verified in the database). Test data cleaned up from
+   the dev database afterward.
+9. **Self code review** — found and fixed one architecturally real issue and one static-check
+   issue before any test ran against it: (1) the `/admin/workflows/[id]` edit page cast the
+   stored version's JSON `conditions`/`actions` straight into the builder form's editable-draft
+   shape (`as never`), but the two shapes don't match (optional fields vs. always-present
+   strings) — left as a cast, this would have both mis-rendered the edit form and made the
+   "did anything actually change" check always report a false positive, spawning a needless new
+   version on every save. Fixed with real normalizer functions used for both purposes. (2) two
+   stale comments elsewhere in the codebase still said the Workflow Builder "is Module 8", a
+   leftover from before Module 8 became the Communication Hub — corrected to Module 10.
+
 ## Remaining modules
 
 Per the PRD's §11 module breakdown and §14 roadmap, not yet started:
@@ -475,7 +571,6 @@ Per the PRD's §11 module breakdown and §14 roadmap, not yet started:
 | PRD § | Module | Roadmap phase |
 | --- | --- | --- |
 | 11.3 | Sourcing & Job Board Distribution | V1 — Core Parity |
-| 10.2 | Workflow & Automation Builder (visual, no-code, per-job/pipeline) | *implicit, underlies later V1 modules' configurability* |
 | 10.4 | Template Designer (email templates, offer letters, e-signature-ready) | *implicit* |
 | 11.8 | Client / Staffing Portal *(optional module)* | P2 — Extended Capability |
 | 11.9 | Contingent Workforce & Compliance Tools *(optional module)* | Deferred until a business need is confirmed / Future |
@@ -539,12 +634,24 @@ Per the PRD's §11 module breakdown and §14 roadmap, not yet started:
   schedules or triggers a reminder automatically — that needs a scheduler/cron mechanism that
   doesn't exist anywhere in this codebase yet, discovered while implementing Module 8 and left
   unfixed since it belongs to Interview Management's own scope, not Communication Hub's.
-- **No Workflow & Automation Builder yet (§10.2).** Both Job's approval flow (Module 2) and
-  Application's pipeline stages (Module 4) are configurable *data* (a status-transition table,
-  a per-job ordered stage list) but not a visual, no-code, admin-authored workflow — that's the
-  PRD's separate Workflow & Automation Builder module, not yet started. Application stage
-  transitions are also **unrestricted** (any stage to any stage) rather than gated by a
-  configurable rule set, a deliberate Phase 2 scope decision for this module, not an oversight.
+- **Application stage transitions remain unrestricted (any stage to any stage), a Module 4
+  scope decision Module 10 did not revisit.** The Workflow & Automation Builder (§10.2, Module
+  10) *reacts* to a stage change via its `STAGE_CHANGE` trigger; it does not *gate* which
+  transitions are legal — that stays Application's own state machine, unchanged.
+- **`WorkflowTask` doesn't distinguish a plain to-do from an approval request at the schema
+  level.** Both `CREATE_TASK` and `REQUEST_APPROVAL` produce the same row shape; the UI offers
+  "Mark done" and "Approve"/"Reject" on every open task and lets whoever resolves it pick the
+  one that matches what the task's title/description actually asks for, rather than the schema
+  enforcing it.
+- **No separate in-app notification action for workflows (§10.2's "send templated email/
+  notification").** `SEND_EMAIL` is the only send action — this codebase's one real
+  notification channel (Module 8) — the same scope this app's own Communication Hub already
+  has; there is no in-app/push notification system to route a second action type to.
+- **`TIME_IN_STAGE` needs the same external scheduler Module 9's scheduled reports do.**
+  `runDueTimeInStageWorkflows` is real, tested business logic; nothing in this codebase invokes
+  it periodically. `POST /api/workflows/run-due` exists for an external scheduler (OS cron, a
+  hosting platform's scheduled function) to call — the same gap `runDueScheduledReports`
+  documents below, now shared by a second module.
 - **No generic drag-and-drop dashboard/report builder (§10.5's first bullet).** Module 9 built
   the four pre-built §11.12 reports plus a `SavedReport` that picks one of them with filters —
   not an arbitrary-entity, arbitrary-custom-field query/widget-layout engine. That full builder

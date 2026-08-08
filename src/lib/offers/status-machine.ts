@@ -6,7 +6,7 @@ import type { OfferStatus, PermissionAction } from "@/generated/prisma/enums";
  * Offer's draft → submit → approve/reject → extend → accept/decline
  * sequence (plus revoke from anywhere non-terminal) is a true sequential
  * workflow like Job's, unlike Interview's independent schedule/cancel/
- * complete actions. A future generic Workflow & Automation Builder (§10.2)
+ * complete actions. Module 10 (Workflow & Automation Builder, §10.2)
  * is expected to read/extend this table the same way it would Job's.
  */
 export const OFFER_ACTIONS = ["SUBMIT", "APPROVE", "REJECT", "EXTEND", "ACCEPT", "DECLINE", "REVOKE"] as const;

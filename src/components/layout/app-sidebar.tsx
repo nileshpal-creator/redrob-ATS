@@ -10,6 +10,7 @@ import {
   jobsNavItem,
   primaryNav,
   reportsNavItem,
+  workflowsNavItem,
   type NavItem,
 } from "@/config/nav";
 import { cn } from "@/lib/utils";
@@ -41,12 +42,14 @@ export function AppSidebar({
   showCandidatesNav,
   showApplicationsNav,
   showReportsNav,
+  showWorkflowsNav,
 }: {
   showAdminNav: boolean;
   showJobsNav: boolean;
   showCandidatesNav: boolean;
   showApplicationsNav: boolean;
   showReportsNav: boolean;
+  showWorkflowsNav: boolean;
 }) {
   return (
     <aside className="hidden w-60 shrink-0 border-r border-sidebar-border bg-sidebar md:flex md:flex-col">
@@ -61,6 +64,7 @@ export function AppSidebar({
         {showCandidatesNav ? <NavLink item={candidatesNavItem} /> : null}
         {showApplicationsNav ? <NavLink item={applicationsNavItem} /> : null}
         {showReportsNav ? <NavLink item={reportsNavItem} /> : null}
+        {showWorkflowsNav ? <NavLink item={workflowsNavItem} /> : null}
 
         {showAdminNav ? (
           <>

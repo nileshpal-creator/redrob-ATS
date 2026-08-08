@@ -102,6 +102,25 @@ type TimelineItem =
       subject: string;
       requestedBy: Person;
       createdAt: string;
+    }
+  | {
+      type: "task_created";
+      id: string;
+      jobId: string;
+      jobTitle: string;
+      title: string;
+      assignedTo: Person;
+      dueAt: string | null;
+      createdAt: string;
+    }
+  | {
+      type: "task_completed" | "task_approved" | "task_rejected";
+      id: string;
+      jobId: string;
+      jobTitle: string;
+      title: string;
+      assignedTo: Person;
+      createdAt: string;
     };
 
 const RECOMMENDATION_LABEL: Record<string, string> = {
@@ -361,14 +380,55 @@ function EmailTimelineEntry({ item }: { item: EmailTimelineItem }) {
   );
 }
 
+type TaskTimelineItem = Extract<
+  TimelineItem,
+  { type: "task_created" | "task_completed" | "task_approved" | "task_rejected" }
+>;
+
+/** Type predicate (not a plain boolean check) so the render dispatcher below narrows correctly. */
+function isTaskTimelineItem(item: TimelineItem): item is TaskTimelineItem {
+  return (
+    item.type === "task_created" ||
+    item.type === "task_completed" ||
+    item.type === "task_approved" ||
+    item.type === "task_rejected"
+  );
+}
+
+function TaskTimelineEntry({ item }: { item: TaskTimelineItem }) {
+  const jobLink = (
+    <Link href={`/jobs/${item.jobId}`} className="font-medium hover:underline">
+      {item.jobTitle}
+    </Link>
+  );
+
+  if (item.type === "task_created") {
+    return (
+      <p className="text-sm">
+        Task created for {jobLink} — &quot;{item.title}&quot;, assigned to {item.assignedTo.name}
+        {item.dueAt ? ` (due ${new Date(item.dueAt).toLocaleDateString()})` : ""}
+      </p>
+    );
+  }
+
+  const label =
+    item.type === "task_completed" ? "completed" : item.type === "task_approved" ? "approved" : "rejected";
+  return (
+    <p className="text-sm">
+      Task {label} for {jobLink} — &quot;{item.title}&quot; by {item.assignedTo.name}
+    </p>
+  );
+}
+
 /**
  * Candidate timeline (§11.2 FR9) — originally sourced only from notes;
  * Module 4 is the first module to add its own `type`s to the same feed
  * (application_created/application_stage_changed/application_rejected/
  * application_withdrawn), exactly as the API contract
- * (`{ items: [{ type, ... }] }`) was built to extend. Modules 5, 6, 7, and 8
- * (Interview, Offer, Handoff, Communication Hub) follow the same pattern; a
- * future module adds more `type`s the same way.
+ * (`{ items: [{ type, ... }] }`) was built to extend. Modules 5, 6, 7, 8, and
+ * 10 (Interview, Offer, Handoff, Communication Hub, Workflow & Automation
+ * Builder) follow the same pattern; a future module adds more `type`s the
+ * same way.
  */
 export function CandidateTimeline({
   candidateId,
@@ -447,6 +507,8 @@ export function CandidateTimeline({
               <HandoffTimelineEntry item={item} />
             ) : isEmailTimelineItem(item) ? (
               <EmailTimelineEntry item={item} />
+            ) : isTaskTimelineItem(item) ? (
+              <TaskTimelineEntry item={item} />
             ) : (
               <InterviewTimelineEntry item={item} />
             )}

@@ -247,6 +247,24 @@ const SAVED_REPORT_ROLE_PERMISSIONS = [
   { role: "Recruiting Manager", action: "DELETE", scope: "TEAM" },
 ] as const;
 
+// Module 10 — Workflow & Automation Builder (§10.2). Ownership resolves
+// against WorkflowDefinition.createdById, same single-column anchor as
+// every prior module. No DELETE grant for anyone — same "no hard delete,
+// deactivate instead" precedent as CommunicationTemplate/PipelineStage.
+// Hiring Manager gets READ only, matching SavedReport's identical reasoning:
+// authoring an automation that sends email, reassigns ownership, and
+// creates approval-gated tasks without further per-action human review is a
+// meaningfully different capability than approving requisitions/offers.
+const WORKFLOW_DEFINITION_ROLE_PERMISSIONS = [
+  { role: "Recruiter", action: "CREATE", scope: "ALL" },
+  { role: "Recruiter", action: "READ", scope: "ALL" },
+  { role: "Recruiter", action: "UPDATE", scope: "OWN" },
+  { role: "Hiring Manager", action: "READ", scope: "ALL" },
+  { role: "Recruiting Manager", action: "CREATE", scope: "ALL" },
+  { role: "Recruiting Manager", action: "READ", scope: "TEAM" },
+  { role: "Recruiting Manager", action: "UPDATE", scope: "TEAM" },
+] as const;
+
 async function main() {
   const organization = await prisma.organization.upsert({
     where: { id: "default" },
@@ -368,6 +386,16 @@ async function main() {
     });
   }
   console.log(`Seeded ${SAVED_REPORT_ROLE_PERMISSIONS.length} default Saved Report role permissions`);
+
+  for (const grant of WORKFLOW_DEFINITION_ROLE_PERMISSIONS) {
+    const role = await prisma.role.findUniqueOrThrow({ where: { name: grant.role } });
+    await prisma.rolePermission.upsert({
+      where: { roleId_resource_action: { roleId: role.id, resource: "WORKFLOW_DEFINITION", action: grant.action } },
+      update: { scope: grant.scope },
+      create: { roleId: role.id, resource: "WORKFLOW_DEFINITION", action: grant.action, scope: grant.scope },
+    });
+  }
+  console.log(`Seeded ${WORKFLOW_DEFINITION_ROLE_PERMISSIONS.length} default Workflow Definition role permissions`);
 
   const adminEmail = process.env.SEED_ADMIN_EMAIL;
   const adminPassword = process.env.SEED_ADMIN_PASSWORD;

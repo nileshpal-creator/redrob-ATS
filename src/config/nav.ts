@@ -2,6 +2,7 @@ import type { LucideIcon } from "lucide-react";
 import {
   BarChart3,
   Briefcase,
+  CheckSquare,
   Contact,
   KanbanSquare,
   LayoutDashboard,
@@ -10,6 +11,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Users,
+  Workflow,
 } from "lucide-react";
 
 export type NavItem = {
@@ -20,6 +22,10 @@ export type NavItem = {
 
 export const primaryNav: NavItem[] = [
   { title: "Dashboard", href: "/", icon: LayoutDashboard },
+  // Any active user can be assigned a WorkflowTask (see assertWorkflowTaskAccess's
+  // unconditional assignee path) regardless of their broader RBAC grants, so
+  // "My Tasks" is unconditional too — not gated by a resource permission.
+  { title: "My Tasks", href: "/tasks", icon: CheckSquare },
 ];
 
 /** Shown only when the viewer has JOB:READ — see (app)/layout.tsx. */
@@ -33,6 +39,9 @@ export const applicationsNavItem: NavItem = { title: "Applications", href: "/app
 
 /** Shown only when the viewer has JOB:READ or OFFER:READ — see (app)/layout.tsx. */
 export const reportsNavItem: NavItem = { title: "Reports", href: "/reports", icon: BarChart3 };
+
+/** Shown only when the viewer has WORKFLOW_DEFINITION:READ — see (app)/layout.tsx. */
+export const workflowsNavItem: NavItem = { title: "Workflows", href: "/admin/workflows", icon: Workflow };
 
 /** Rendered only for super-admin roles — see AppSidebar. Every module adds its admin screens here. */
 export const adminNav: NavItem[] = [

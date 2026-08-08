@@ -1,5 +1,82 @@
 # Changelog
 
+## Module 10 — Workflow & Automation Builder (PRD §10.2)
+
+### Added
+
+- `WorkflowDefinition` + `WorkflowDefinitionVersion` (`prisma/schema.prisma`): a
+  trigger/conditions/actions configuration, versioned the same way `Job`'s status history is —
+  every save of trigger/conditions/actions creates a new version row and re-points
+  `activeVersionId`, never mutating history, so §10.2's "full version history... with the
+  ability to roll back" holds exactly. Business-record tier (`OWN`/`TEAM`/`ALL` scope on
+  `createdById`, optimistic-locking `version`, deactivate-don't-delete) rather than
+  admin-metadata tier like `CommunicationTemplate` — an automation can send email, reassign
+  ownership, or create approval-gated tasks with no further per-action human review, so it gets
+  the same guardrails as `Job`/`Offer`.
+- Four trigger types (`STAGE_CHANGE`, `FIELD_UPDATE`, `TIME_IN_STAGE`, `FORM_SUBMISSION`),
+  AND-only conditions against `Application.customFields` (5 operators: `EQUALS`/`NOT_EQUALS`/
+  `GREATER_THAN`/`LESS_THAN`/`CONTAINS`), and five action types (`SEND_EMAIL`, `CREATE_TASK`,
+  `CHANGE_FIELD`, `REASSIGN_OWNER`, `REQUEST_APPROVAL`) — `src/lib/validations/workflow.ts`
+  (discriminated unions per trigger/action type) and `src/lib/services/workflows.ts` (the
+  evaluate/execute engine).
+- `WorkflowExecution` ledger: a `(workflowDefinitionVersionId, applicationId, fingerprint)`
+  unique constraint is the real guard against double-firing the same occurrence of a trigger —
+  the same "let the database's unique constraint be the guard, not a check-then-act pre-check"
+  pattern `createOffer`/`createCommunicationTemplate` already establish. Required specifically
+  for `TIME_IN_STAGE`, which has no single triggering write and would otherwise re-fire every
+  time an external scheduler calls `POST /api/workflows/run-due`.
+- `WorkflowTask`: the row `CREATE_TASK`/`REQUEST_APPROVAL` both produce. Two independent access
+  paths — whoever manages the owning Application, or the task's own assignee, unconditionally
+  (unlike Interview's panelist path, a Hiring Manager routed a `REQUEST_APPROVAL` task may hold
+  no `APPLICATION:UPDATE` grant at all and must still be able to act on it). Status-guarded
+  `updateMany` (`OPEN` → `DONE`/`APPROVED`/`REJECTED`) is the optimistic-concurrency guard here,
+  in place of a dedicated `version` column.
+- Cross-module hooks into `src/lib/services/applications.ts`: `transitionApplication`
+  (STAGE_CHANGE), `updateApplication` (FIELD_UPDATE, diffed against the actually-changed
+  `customFields` keys — a no-op re-save of the same value must not re-fire), and
+  `createApplication` (FORM_SUBMISSION) all call `evaluateApplicationWorkflows` after their own
+  write has committed, outside that write's transaction and with its own errors caught and only
+  logged — a misbehaving automation must never roll back or fail the user's own action that
+  triggered it.
+- `/admin/workflows`: list, create, and edit pages with a trigger/condition/action builder form
+  and version history + rollback UI. `/tasks` ("My Tasks"): every `WorkflowTask` assigned to the
+  viewer across every application, essential since an automation-created task would otherwise
+  only be discoverable by whoever happens to open the exact application it lives on. A Tasks
+  card on the Application detail page. Both nav entries are gated by real RBAC grants
+  (`WORKFLOW_DEFINITION:READ`), not restricted to super-admin like `CommunicationTemplate`'s
+  admin screens — Recruiter/Recruiting Manager/Hiring Manager are seeded with real grants.
+- Candidate timeline gains `task_created`/`task_completed`/`task_approved`/`task_rejected` item
+  types, derived from `WorkflowTask` joined through `Application`.
+- `ENTITY.WORKFLOW_DEFINITION` + seeded default grants (`Recruiter`: CREATE/READ ALL, UPDATE
+  OWN; `Recruiting Manager`: CREATE ALL, READ/UPDATE TEAM; `Hiring Manager`: READ ALL only).
+- Automated test coverage: `workflow.test.ts` (Zod schemas), `workflow-definitions.service.test.ts`
+  (CRUD, versioning, rollback, optimistic-locking concurrency, RBAC scoping),
+  `workflow-tasks.service.test.ts` (dual access path, status-guarded concurrency, decide
+  outcomes), `workflows.service.test.ts` (all three event-driven trigger hooks, all 5 condition
+  operators, all 5 action types, the `WorkflowExecution` idempotency guard against both a
+  repeat `runDueTimeInStageWorkflows` call and an identical-fingerprint re-evaluation, and
+  partial-failure handling when one action in a multi-action workflow fails).
+
+### Fixed
+
+- Two stale comments (`src/lib/jobs/status-machine.ts`, `src/lib/offers/status-machine.ts`)
+  said the generic Workflow & Automation Builder "is Module 8" — a leftover from before Module 8
+  became the Communication Hub. Corrected to Module 10.
+- `claimExecutionSlot` originally returned the full created `WorkflowExecution` row (or `null`)
+  from a `.catch()`-guarded `.create()` call, but its callers treated the return value as a
+  plain execution-id string — caught by `tsc`, not a test failure, before it ever ran. Fixed by
+  changing the return type to `Promise<string | null>` and extracting `.id` internally.
+- The `/admin/workflows/[id]` edit page cast the stored version's `conditions`/`actions` JSON
+  straight into the builder form's editable-draft shape (`as never`), but the two shapes don't
+  match — stored actions have optional `description`/`dueInDays` and a `string | number`
+  condition value; the draft shape requires every field present as a plain string, since that's
+  what a controlled `<Input>` needs. Left as a cast, this would have rendered `undefined` into
+  controlled inputs (a React console warning and a blank field) and made the "did the config
+  actually change" comparison always report a false positive whenever a numeric condition value
+  was in play — spawning a needless new `WorkflowDefinitionVersion` on every save, even a
+  metadata-only one. Fixed with real `toActionDraft`/`toConditionDraft` normalizers, used both
+  to initialize form state and to compute the unchanged-check.
+
 ## Module 9 — Reporting & Analytics (PRD §11.12)
 
 ### Added

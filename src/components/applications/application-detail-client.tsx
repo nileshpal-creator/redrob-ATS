@@ -20,6 +20,7 @@ import {
 import { ApplicationInterviews, type Interview } from "@/components/interviews/application-interviews";
 import { ApplicationOffers, type Offer } from "@/components/offers/application-offers";
 import { ApplicationHandoffs, type Handoff } from "@/components/handoffs/application-handoffs";
+import { ApplicationTasks, type ApplicationTask } from "@/components/workflows/application-tasks";
 
 type Person = { id: string; name: string; email: string };
 type ReasonOption = { id: string; label: string };
@@ -78,6 +79,7 @@ export function ApplicationDetailClient({
   offerOutcomeReasons,
   handoffs,
   isArchivedByHandoff,
+  tasks,
   currentUserId,
 }: {
   application: ApplicationDetail;
@@ -91,6 +93,7 @@ export function ApplicationDetailClient({
   offerOutcomeReasons: ReasonOption[];
   handoffs: Handoff[];
   isArchivedByHandoff: boolean;
+  tasks: ApplicationTask[];
   currentUserId: string;
 }) {
   const router = useRouter();
@@ -231,6 +234,15 @@ export function ApplicationDetailClient({
         </CardHeader>
         <CardContent>
           <ApplicationHandoffs handoffs={handoffs} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Tasks</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <ApplicationTasks tasks={tasks} canManageAll={canEdit} currentUserId={currentUserId} />
         </CardContent>
       </Card>
 

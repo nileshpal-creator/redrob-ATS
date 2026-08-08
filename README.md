@@ -250,6 +250,42 @@ file behind the same interface, not a change to any service code.
   scheduling emails to arbitrary recipients is a meaningfully more sensitive capability than
   reading a template.
 
+### Module 10 — Workflow & Automation Builder (PRD §10.2)
+
+- **Trigger → conditions → actions**: an admin-configurable `WorkflowDefinition` fires when an
+  application enters a specific pipeline stage, a custom field changes, an application has sat
+  in a stage for N days, or a new application is submitted — optionally gated by AND-only
+  conditions on `Application.customFields` (the PRD's own phrasing is "when X **and** Y" — no
+  OR/grouping) — then runs one or more actions: send a templated email, create a task, change a
+  custom field, reassign the owner, or route a decision to an approver.
+- **Full version history + rollback**: every save of trigger/conditions/actions creates a new
+  `WorkflowDefinitionVersion` row and re-points `WorkflowDefinition.activeVersionId` at it —
+  history is never mutated or deleted, so rolling back is just re-pointing that pointer at an
+  older, still-existing version. Plain metadata edits (name, active/inactive) don't create a new
+  version.
+- **Business-record tier, not admin-metadata**: unlike `CommunicationTemplate`,
+  `WorkflowDefinition` has real side-effect risk (it can send email, reassign ownership, or
+  create approval-gated tasks with no further human review) — so it gets `OWN`/`TEAM`/`ALL`
+  scope on `createdById`, optimistic-locking `version`, and "deactivate, don't delete" (a
+  `WorkflowTask.sourceVersionId` can still reference an old version).
+- **Idempotent by construction**: a `WorkflowExecution` ledger row is claimed via a unique
+  `(version, applicationId, fingerprint)` constraint before any action runs — the same database-
+  constraint-as-guard pattern `createOffer`/`createCommunicationTemplate` already use — so the
+  same occurrence of a trigger (one stage change, one field update, one time-in-stage window)
+  can never fire an automation twice, even under concurrent evaluation.
+- **Tasks and approvals**: `CREATE_TASK`/`REQUEST_APPROVAL` both produce a `WorkflowTask` row,
+  visible on the owning Application's detail page and on the new `/tasks` ("My Tasks") page —
+  essential since an automation-created task would otherwise only be discoverable by whoever
+  happens to open that exact application. A task is actionable by whoever manages the
+  application *or* by its assignee directly, regardless of the assignee's own broader
+  permissions (a Hiring Manager with no `APPLICATION:UPDATE` grant can still act on a task
+  routed to them).
+- **No cron/queue infrastructure** (same limitation Module 9's scheduled reports already
+  documents): the time-in-stage trigger's real evaluation logic is `runDueTimeInStageWorkflows`,
+  exposed at `POST /api/workflows/run-due` for an external scheduler to call periodically.
+- **Timeline integration**: the candidate timeline gains `task_created`/`task_completed`/
+  `task_approved`/`task_rejected` item types.
+
 ## Local development
 
 ```bash

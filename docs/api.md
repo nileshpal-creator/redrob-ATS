@@ -766,6 +766,129 @@ provide.
   permission model rather than a bespoke `isSuperAdmin` check.
 - **Status codes**: `200` success · `403` no qualifying grant.
 
+## Workflows
+
+Admin-configurable trigger → conditions → actions automations (§10.2, Module 10) —
+business-record tier, not admin-metadata tier: `OWN`/`TEAM`/`ALL` scope on `createdById`,
+optimistic-locking `version`, deactivate-don't-delete.
+
+### `GET /api/workflows`
+
+- **Query params** (`workflowDefinitionQuerySchema`): `jobId?`, `isActive?` (`"true"`/`"false"`
+  string, coerced explicitly — not `z.coerce.boolean()`, which maps the string `"false"` to
+  `true`).
+- **Response**: `WorkflowDefinition[]`, each including `job`, `createdBy`, and `activeVersion`
+  (the full current trigger/conditions/actions), scoped by `WORKFLOW_DEFINITION:READ`.
+- **Permissions**: `WORKFLOW_DEFINITION:READ`.
+- **Status codes**: `200` success · `403` no qualifying grant.
+
+### `POST /api/workflows`
+
+- **Request body** (`workflowDefinitionCreateSchema`): `{ "name": "string, 1-200 chars,
+  required", "jobId": "string | null, optional — null/omitted applies to every job", "isActive":
+  "boolean, default true", "trigger": "{ type, config } — see trigger shapes below",
+  "conditions": "array of { field, operator, value }, max 20, default []", "actions": "array of
+  { type, ... }, 1-10 required" }`.
+  - Trigger shapes: `{ type: "STAGE_CHANGE", config: { toStageId } }` · `{ type:
+    "FIELD_UPDATE", config: { fieldKey } }` · `{ type: "TIME_IN_STAGE", config: { stageId,
+    days } }` · `{ type: "FORM_SUBMISSION", config: {} }`. `STAGE_CHANGE`/`TIME_IN_STAGE`
+    require a non-null `jobId` — the `PipelineStage` they reference is itself job-scoped.
+  - Condition operators: `EQUALS` / `NOT_EQUALS` / `GREATER_THAN` / `LESS_THAN` / `CONTAINS`,
+    always against an `Application.customFields` key (AND-only — no OR/grouping).
+  - Action shapes: `{ type: "SEND_EMAIL", templateId }` · `{ type: "CREATE_TASK", title,
+    description?, assignedToId, dueInDays? }` · `{ type: "CHANGE_FIELD", fieldKey, value }` ·
+    `{ type: "REASSIGN_OWNER", userId }` · `{ type: "REQUEST_APPROVAL", title, description?,
+    approverId }`. `CHANGE_FIELD` is scoped to `Application.customFields` only — core lifecycle
+    fields (stage/outcome/owner) keep their own guarded transition paths.
+- **Response**: the created `WorkflowDefinition`, `version: 0`, with its first
+  `WorkflowDefinitionVersion` (`versionNumber: 1`) as `activeVersion`.
+- **Status codes**: `201`/`200` success · `400` schema validation failure, an unknown/inactive
+  referenced custom field, template, or user, or a stage-referencing trigger with no `jobId` ·
+  `403` no `WORKFLOW_DEFINITION:CREATE` grant.
+
+### `GET /api/workflows/[id]`
+
+- **Response**: the `WorkflowDefinition` including its full `versions` history (newest first),
+  each with its own `createdBy`.
+- **Permissions**: `WORKFLOW_DEFINITION:READ`, unscoped or scoped to this definition's own
+  `createdById`.
+- **Status codes**: `200` success · `403` no qualifying grant · `404` unknown id.
+
+### `PATCH /api/workflows/[id]`
+
+- **Request body** (`workflowDefinitionUpdateSchema`): `version` (required) plus any of `name`,
+  `isActive` (plain metadata, no version bump implication) and `trigger`/`conditions`/`actions`
+  (**all-or-nothing** — supplying any one without the other two fails validation; supplying all
+  three creates a new `WorkflowDefinitionVersion` and re-points `activeVersionId`, never
+  mutating the previous version). `jobId` is not editable here — re-scoping a live workflow to a
+  different job is a bigger design question than this pass answers; create a new workflow
+  instead.
+- **Status codes**: `200` success · `400` validation failure or an invalid trigger/condition/
+  action reference · `403` no qualifying `WORKFLOW_DEFINITION:UPDATE` grant · `404` unknown id ·
+  `409` stale `version`.
+
+### `POST /api/workflows/[id]/rollback`
+
+- **Request body** (`workflowRollbackSchema`): `{ "version": number, "targetVersionId": string
+  }`.
+- Re-points `activeVersionId` at an older, still-existing version — never mutates or deletes
+  any version row, so every version ever saved stays queryable via `GET /api/workflows/[id]`
+  regardless of which one is active.
+- **Status codes**: `200` success · `400` `targetVersionId` doesn't belong to this workflow ·
+  `403` no qualifying `WORKFLOW_DEFINITION:UPDATE` grant · `404` unknown id · `409` stale
+  `version`.
+
+### `POST /api/workflows/run-due`
+
+Evaluates every active `TIME_IN_STAGE` workflow against every application currently past its
+configured stage-age threshold. No cron/queue infrastructure exists anywhere in this app — this
+endpoint is the real business logic; actually invoking it periodically is external infra (an OS
+cron or a hosting platform's scheduled function) this pass does not provide. Each fired
+automation runs attributed to the workflow's own creator (there is no live triggering request
+to borrow a session from); a deactivated creator's workflows are skipped, not run as no one.
+
+- **Response**: `{ evaluatedCount, firedCount }`.
+- **Permissions**: `WORKFLOW_DEFINITION:UPDATE` with no ownership context — in practice only an
+  ALL-scope grant (System Administrator by default) passes, the same gating
+  `POST /api/saved-reports/run-due` uses.
+- **Status codes**: `200` success · `403` no qualifying grant.
+
+## Workflow Tasks
+
+Tasks and approval requests an automation created (`CREATE_TASK`/`REQUEST_APPROVAL`, §10.2,
+Module 10). Access is two independent paths: whoever can manage the owning Application
+(`APPLICATION:UPDATE`, unscoped or scoped to its owner), **or** the task's own assignee,
+unconditionally — not gated by any Application permission at all, since `REQUEST_APPROVAL`
+exists specifically to route a decision to someone who may hold none (e.g. a Hiring Manager).
+
+### `GET /api/workflow-tasks`
+
+- **Query params** (`workflowTaskQuerySchema`): `applicationId?` (requires the caller be able
+  to read that application; returns every task on it, any assignee), `assignedToId?` (defaults
+  to the caller's own id when `applicationId` is omitted — this is the "My Tasks" query),
+  `status?` (`OPEN`/`DONE`/`APPROVED`/`REJECTED`).
+- **Status codes**: `200` success · `403` `applicationId` given but the caller can't read that
+  application · `404` unknown `applicationId`.
+
+### `POST /api/workflow-tasks/[id]/complete`
+
+Resolves an `OPEN` task to `DONE`.
+
+- **Status codes**: `200` success · `400` task already resolved · `403` caller is neither the
+  assignee nor able to manage the owning application · `404` unknown id · `409` the task was
+  already resolved by a concurrent request (status-guarded `updateMany`, the same optimistic-
+  concurrency shape as a `version`-guarded update, keyed on `status` instead of an integer since
+  "did someone else already resolve this" is the only conflict that matters here).
+
+### `POST /api/workflow-tasks/[id]/decide`
+
+- **Request body**: `{ "outcome": "APPROVED" | "REJECTED" }`.
+- Resolves an `OPEN` task to the given outcome — the same status-guarded update as `complete`,
+  just with a caller-supplied terminal status instead of a fixed `DONE`.
+- **Status codes**: `200` success · `400` task already resolved · `403` caller is neither the
+  assignee nor able to manage the owning application · `404` unknown id · `409` already resolved
+  by a concurrent request.
+
 ## Roles & Permissions
 
 ### `GET /api/roles`

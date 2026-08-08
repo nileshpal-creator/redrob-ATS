@@ -436,6 +436,91 @@ implementation detail with no user-facing "revision history" surface.
   the same pattern Job uses for `departmentId`/`locationId`.
 - **`CandidateDocument.documentTypeId` → `DOCUMENT_TYPE`**: required; same validation pattern.
 
+## New Module 10 tables
+
+| Table | Purpose |
+| --- | --- |
+| `WorkflowDefinition` | An admin-configured automation (§10.2) — name, optional `jobId` scope, active/inactive, and a pointer at its current configuration. See columns below. |
+| `WorkflowDefinitionVersion` | The actual trigger/conditions/actions configuration for one version of a `WorkflowDefinition`. Never mutated or deleted once created — see [architecture.md#workflow--automation-builder-module-10-102](architecture.md#workflow--automation-builder-module-10-102). |
+| `WorkflowTask` | A task or approval request an automation created (`CREATE_TASK`/`REQUEST_APPROVAL`), tied to one `Application`. |
+| `WorkflowExecution` | The idempotency ledger — one row per (version, application, trigger occurrence) that ever fired, real or attempted. |
+
+### `WorkflowDefinition` columns
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | `String` (cuid) | |
+| `name` | `String` | not unique — same convention as `SavedReport.name` |
+| `jobId` | `String?` | FK → `Job`, `onDelete: Cascade`; `null` = applies to every job (§10.2: "does not have to apply globally") |
+| `isActive` | `Boolean` | default `true` — deactivate, don't delete (a `WorkflowTask.sourceVersionId` can still reference one of this definition's versions) |
+| `activeVersionId` | `String?` | FK → `WorkflowDefinitionVersion`, `@unique`, `onDelete: SetNull` — the pointer rollback re-points |
+| `createdById` | `String` | FK → `User` — the OWN/TEAM scope column |
+| `version` | `Int` | optimistic locking — same pattern as `Job.version`/`Offer.version`/`SavedReport.version` |
+| `createdAt` / `updatedAt` | `DateTime` | |
+
+Indexed on `(jobId, isActive)` — the exact shape of `evaluateApplicationWorkflows`'s "find every
+active definition scoped to this job (or global)" query — and on `createdById`, the same
+OWN/TEAM-scope-column precedent as `Offer`/`SavedReport`.
+
+### `WorkflowDefinitionVersion` columns
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | `String` (cuid) | |
+| `workflowDefinitionId` | `String` | FK → `WorkflowDefinition`, `onDelete: Cascade` |
+| `versionNumber` | `Int` | 1, 2, 3... per definition — `@@unique([workflowDefinitionId, versionNumber])` |
+| `triggerType` | `WorkflowTriggerType` | `STAGE_CHANGE` / `FIELD_UPDATE` / `TIME_IN_STAGE` / `FORM_SUBMISSION` |
+| `triggerConfig` | `Json` | shape depends on `triggerType` (e.g. `{ toStageId }` for `STAGE_CHANGE`, `{ stageId, days }` for `TIME_IN_STAGE`), validated against `workflowTriggerSchema`'s discriminated union at the service boundary, not DB-enforced — same convention as `Job.customFields` |
+| `conditions` | `Json` | an array of `{ field, operator, value }`, AND-only (§10.2's own phrasing has no OR/grouping) |
+| `actions` | `Json` | an array of `{ type, ... }`, at least one — `type` is one of `SEND_EMAIL`/`CREATE_TASK`/`CHANGE_FIELD`/`REASSIGN_OWNER`/`REQUEST_APPROVAL` |
+| `createdById` | `String` | FK → `User` — whoever saved *this* version, not necessarily the definition's original creator |
+| `createdAt` | `DateTime` | |
+
+A `WorkflowDefinitionVersion` row is immutable once created — see
+[architecture.md#workflow--automation-builder-module-10-102](architecture.md#workflow--automation-builder-module-10-102)
+for why (the same append-only-history pattern `JobStatusChange`/`ApplicationEvent`/
+`OfferApproval` already use).
+
+### `WorkflowTask` columns
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | `String` (cuid) | |
+| `applicationId` | `String` | FK → `Application`, `onDelete: Cascade` |
+| `title` / `description` | `String` / `String?` | |
+| `assignedToId` | `String` | FK → `User` — the task's own access path, independent of any Application permission |
+| `status` | `WorkflowTaskStatus` | `OPEN` (default) / `DONE` / `APPROVED` / `REJECTED` — the concurrency guard column (see below), not a version integer |
+| `dueAt` | `DateTime?` | only set when `CREATE_TASK`'s `dueInDays` was supplied |
+| `sourceVersionId` | `String?` | FK → `WorkflowDefinitionVersion`, `onDelete: SetNull` (never actually exercised — neither a `WorkflowDefinition` nor its versions are ever deleted) — which automation created this task |
+| `createdAt` / `completedAt` | `DateTime` / `DateTime?` | |
+
+Indexed on `applicationId` (the Application detail page's Tasks card query) and on
+`(assignedToId, status)` — the exact shape of the "My Tasks" page's query. `CREATE_TASK` and
+`REQUEST_APPROVAL` produce the identical row shape; nothing on the row distinguishes a plain
+to-do from an approval request (see
+[project-status.md#known-limitations](project-status.md#known-limitations)).
+
+### `WorkflowExecution` columns
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | `String` (cuid) | |
+| `workflowDefinitionVersionId` | `String` | FK → `WorkflowDefinitionVersion`, `onDelete: Cascade` |
+| `applicationId` | `String` | FK → `Application`, `onDelete: Cascade` |
+| `fingerprint` | `String` | uniquely identifies *one occurrence* of the trigger — see below |
+| `status` | `WorkflowExecutionStatus` | `SUCCESS` / `PARTIAL_FAILURE` / `FAILED`, set once every action has run |
+| `actionsSummary` | `Json` | per-action `{ type, success, error? }`, for audit/debugging |
+| `errorMessage` | `String?` | the first failing action's error, if any |
+| `executedAt` | `DateTime` | |
+
+`@@unique([workflowDefinitionVersionId, applicationId, fingerprint])` is the real idempotency
+guard — a row is inserted (status `FAILED` as a placeholder) *before* any action runs, and a
+unique-constraint violation on that insert means this exact occurrence was already claimed by
+another evaluation. See
+[architecture.md#workflow--automation-builder-module-10-102](architecture.md#workflow--automation-builder-module-10-102)
+for what `fingerprint` is per trigger type, and why it has to differ per trigger type for the
+guard to mean the right thing in each case.
+
 ## Relationships
 
 - **User self-relation (`UserManager`)**: `User.managerId → User.id`. Drives
@@ -484,6 +569,14 @@ implementation detail with no user-facing "revision history" surface.
   anchor for `OWN`/`TEAM` scope. No relation to any report's underlying entities (Job/Application/
   Offer) at all — a saved report's data comes from re-running its query at read time, not from a
   stored row-set, which is exactly what keeps row-level security correct per-viewer.
+- **WorkflowDefinition → Job** (optional, `onDelete: Cascade`), **→ WorkflowDefinitionVersion**
+  (`activeVersionId`, `@unique`, `onDelete: SetNull`), **→ User** (`createdById`).
+- **WorkflowDefinitionVersion → WorkflowDefinition** (`onDelete: Cascade`), **→ User**
+  (`createdById`).
+- **WorkflowTask → Application** (`onDelete: Cascade`), **→ User** (`assignedToId`), **→
+  WorkflowDefinitionVersion** (`sourceVersionId`, optional, `onDelete: SetNull`).
+- **WorkflowExecution → WorkflowDefinitionVersion** (`onDelete: Cascade`), **→ Application**
+  (`onDelete: Cascade`).
 
 ## Enums
 
@@ -504,6 +597,10 @@ implementation detail with no user-facing "revision history" surface.
 | `ReportExportFormat` | `XLSX`, `CSV`, `PDF` | `SavedReport.exportFormat` (Module 9) |
 | `ReportScheduleFrequency` | `NONE`, `DAILY`, `WEEKLY` | `SavedReport.scheduleFrequency` (Module 9) |
 | `ReportRunStatus` | `SENT`, `FAILED` | `SavedReport.lastRunStatus` (Module 9) |
+| `WorkflowTriggerType` | `STAGE_CHANGE`, `FIELD_UPDATE`, `TIME_IN_STAGE`, `FORM_SUBMISSION` | `WorkflowDefinitionVersion.triggerType` (Module 10) |
+| `WorkflowActionType` | `SEND_EMAIL`, `CREATE_TASK`, `CHANGE_FIELD`, `REASSIGN_OWNER`, `REQUEST_APPROVAL` | not stored as a column — each action's `type` discriminator lives inside `WorkflowDefinitionVersion.actions`' JSON array (Module 10) |
+| `WorkflowTaskStatus` | `OPEN`, `DONE`, `APPROVED`, `REJECTED` | `WorkflowTask.status` (Module 10) |
+| `WorkflowExecutionStatus` | `SUCCESS`, `PARTIAL_FAILURE`, `FAILED` | `WorkflowExecution.status` (Module 10) |
 
 `APPROVE` was added to `PermissionAction` in Module 2 (Phase 1 decision: approval must be its
 own permission, not overloaded onto `UPDATE`). `ApplicationOutcome`, `ApplicationEventType`, and

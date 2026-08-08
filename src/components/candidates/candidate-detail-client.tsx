@@ -149,6 +149,25 @@ type TimelineItem =
       subject: string;
       requestedBy: Person;
       createdAt: string;
+    }
+  | {
+      type: "task_created";
+      id: string;
+      jobId: string;
+      jobTitle: string;
+      title: string;
+      assignedTo: Person;
+      dueAt: string | null;
+      createdAt: string;
+    }
+  | {
+      type: "task_completed" | "task_approved" | "task_rejected";
+      id: string;
+      jobId: string;
+      jobTitle: string;
+      title: string;
+      assignedTo: Person;
+      createdAt: string;
     };
 
 export function CandidateDetailClient({

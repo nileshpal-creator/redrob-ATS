@@ -4,7 +4,7 @@ import type { JobStatus, PermissionAction } from "@/generated/prisma/enums";
  * Single source of truth for the Job status lifecycle (§11.1: "configurable
  * approval workflow before a job opens for sourcing"). This is a
  * purpose-built, fixed table for v1 — the generic, admin-configurable
- * visual Workflow & Automation Builder (§10.2) is Module 8. Module 8 is
+ * visual Workflow & Automation Builder (§10.2) is Module 10. Module 10 is
  * expected to read/extend this same shape rather than reimplement job
  * transitions from scratch, which is why this table is data (an array),
  * not a scattering of `if` statements.

@@ -74,6 +74,10 @@ model User {
 
   savedReportsCreated SavedReport[] @relation("SavedReportCreatedBy")
 
+  workflowDefinitionsCreated WorkflowDefinition[]        @relation("WorkflowDefinitionCreatedBy")
+  workflowVersionsCreated    WorkflowDefinitionVersion[] @relation("WorkflowVersionCreatedBy")
+  workflowTasksAssigned      WorkflowTask[]              @relation("WorkflowTaskAssignedTo")
+
   @@index([isActive])
   @@index([managerId])
 }
@@ -432,8 +436,9 @@ model Job {
   recruiters    JobRecruiterAssignment[]
   statusChanges JobStatusChange[]
 
-  pipelineStages PipelineStage[]
-  applications   Application[]
+  pipelineStages      PipelineStage[]
+  applications        Application[]
+  workflowDefinitions WorkflowDefinition[]
 
   @@index([status])
   @@index([departmentId])
@@ -733,11 +738,13 @@ model Application {
   createdBy     User                 @relation("ApplicationCreatedBy", fields: [createdById], references: [id])
   outcomeReason ControlledListValue? @relation("ApplicationOutcomeReason", fields: [outcomeReasonId], references: [id])
 
-  events         ApplicationEvent[]
-  emailLogs      ApplicationEmailLog[]
-  interviews     Interview[]
-  offers         Offer[]
-  handoffRecords HandoffRecord[]
+  events             ApplicationEvent[]
+  emailLogs          ApplicationEmailLog[]
+  interviews         Interview[]
+  offers             Offer[]
+  handoffRecords     HandoffRecord[]
+  workflowTasks      WorkflowTask[]
+  workflowExecutions WorkflowExecution[]
 
   @@index([candidateId])
   @@index([jobId])
@@ -1253,4 +1260,210 @@ model SavedReport {
   // "index the actual query pattern" precedent as
   // CommunicationTemplate.@@index([channel, isActive]).
   @@index([scheduleFrequency, lastRunAt])
+}
+
+// ---------------------------------------------------------------------------
+// Module 10 — Workflow & Automation Builder (§10.2)
+// ---------------------------------------------------------------------------
+
+// "Form submission" maps to Application creation — the closest existing
+// "intake" event in this codebase; there is no separate public-facing form
+// entity. TIME_IN_STAGE is evaluated by runDueTimeInStageWorkflows (see
+// src/lib/services/workflows.ts), not event-driven like the other three —
+// same "no cron/queue infrastructure exists in this app" limitation Module
+// 9's scheduled reports already document.
+enum WorkflowTriggerType {
+  STAGE_CHANGE
+  FIELD_UPDATE
+  TIME_IN_STAGE
+  FORM_SUBMISSION
+}
+
+// "Change a field" is scoped to Application.customFields only (see
+// WorkflowDefinitionVersion's own comment) — there is no CHANGE_STAGE action;
+// the PRD's action list names none, and Application's core lifecycle fields
+// (stageId/outcome/ownerId) already have their own state-machine-guarded
+// paths (transitionApplication/updateApplication) that a generic field
+// setter would bypass. "Send templated email/notification" is EMAIL only —
+// the one real channel this codebase has (Module 8); there is no separate
+// in-app notification system. CREATE_TASK and REQUEST_APPROVAL both produce
+// a WorkflowTask row — request-approval is a task with an approve/reject
+// outcome instead of a plain done/not-done one.
+enum WorkflowActionType {
+  SEND_EMAIL
+  CREATE_TASK
+  CHANGE_FIELD
+  REASSIGN_OWNER
+  REQUEST_APPROVAL
+}
+
+enum WorkflowTaskStatus {
+  OPEN
+  DONE
+  APPROVED
+  REJECTED
+}
+
+// One automation rule. Deliberately not itself the mutable config — every
+// edit to trigger/conditions/actions creates a new WorkflowDefinitionVersion
+// row and re-points activeVersionId, so "full version history... with the
+// ability to roll back" (§10.2's own last bullet) falls out of an
+// append-only child table rather than a separate history mechanism, the
+// same "append-only, never overwritten" convention as JobStatusChange/
+// ApplicationEvent/OfferApproval.
+//
+// `jobId` null means "applies to every job's pipeline" — §10.2: "Per-job and
+// per-pipeline configuration, so a configuration used for one hiring
+// process does not have to apply globally." onDelete: Cascade — a workflow
+// scoped to one job has no meaning once that job is gone (Job currently has
+// no delete endpoint, so this is a forward-looking safety net, not a live
+// path).
+//
+// Business-record tier, not admin-metadata tier: has OWN/TEAM/ALL scope and
+// optimistic-locking `version`, the same choice Module 9 made for
+// SavedReport over CommunicationTemplate's open-read tier — an automation
+// can send email, reassign ownership, and create approval-gated tasks
+// without further per-action human review, a real side-effect risk serious
+// enough to need a real seeded grant. No hard delete — WorkflowTask rows
+// hold a historical reference to whichever version created them (Restrict),
+// so "removing" a workflow deactivates it instead, same convention as
+// PipelineStage/CommunicationTemplate.
+model WorkflowDefinition {
+  id   String @id @default(cuid())
+  name String
+
+  jobId String?
+  job   Job?    @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  isActive Boolean @default(true)
+
+  activeVersionId String?                     @unique
+  activeVersion   WorkflowDefinitionVersion?  @relation("WorkflowDefinitionActiveVersion", fields: [activeVersionId], references: [id], onDelete: SetNull)
+  versions        WorkflowDefinitionVersion[] @relation("WorkflowDefinitionVersions")
+
+  createdById String
+  createdBy   User   @relation("WorkflowDefinitionCreatedBy", fields: [createdById], references: [id])
+
+  // Optimistic locking — same pattern as Job.version/Offer.version. Guards
+  // both plain metadata edits (name/isActive) and the version-bump-plus-
+  // repoint-activeVersionId transaction that a config change performs.
+  version Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([jobId, isActive])
+  @@index([createdById])
+}
+
+// One saved configuration snapshot — created once, never updated in place.
+// `triggerConfig`/`conditions`/`actions` are JSON (shape depends on
+// triggerType/each action's own type), validated by Zod at the service
+// boundary (src/lib/validations/workflow.ts), not DB-enforced — same "JSON
+// shape validated at the service boundary" convention as Job.customFields.
+// `conditions` is an array evaluated as AND-only, matching §10.2's own
+// literal phrasing: "when [event] and [condition], then [action]" — there
+// is no OR/grouping support.
+model WorkflowDefinitionVersion {
+  id                   String @id @default(cuid())
+  workflowDefinitionId String
+
+  versionNumber Int
+
+  triggerType   WorkflowTriggerType
+  triggerConfig Json                @default("{}")
+  conditions    Json                @default("[]")
+  actions       Json
+
+  createdById String
+  createdBy   User   @relation("WorkflowVersionCreatedBy", fields: [createdById], references: [id])
+
+  createdAt DateTime @default(now())
+
+  workflowDefinition WorkflowDefinition  @relation("WorkflowDefinitionVersions", fields: [workflowDefinitionId], references: [id], onDelete: Cascade)
+  activeFor          WorkflowDefinition? @relation("WorkflowDefinitionActiveVersion")
+  tasksCreated       WorkflowTask[]
+  executions         WorkflowExecution[]
+
+  @@unique([workflowDefinitionId, versionNumber])
+  @@index([workflowDefinitionId])
+}
+
+// Backs both CREATE_TASK (plain OPEN -> DONE) and REQUEST_APPROVAL (OPEN ->
+// APPROVED/REJECTED instead) — one model, not two, since both are
+// fundamentally "something a person needs to act on regarding an
+// Application," differing only in what "acted on" means. `sourceVersionId`
+// is optional, defaulting to Prisma's SetNull-on-delete for an optional
+// relation — never actually exercised, since neither WorkflowDefinition nor
+// WorkflowDefinitionVersion rows are ever deleted (deactivate-only, same as
+// PipelineStage/CommunicationTemplate); a task's provenance link is
+// permanent for the life of the system in practice.
+model WorkflowTask {
+  id String @id @default(cuid())
+
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  title       String
+  description String?
+
+  // Ownership anchor for task-completion access — resolved independently of
+  // Application.ownerId (see assertWorkflowTaskAccess in
+  // src/lib/services/workflows.ts), the same "two independent access paths"
+  // shape Interview already uses for scheduler-vs-panelist.
+  assignedToId String
+  assignedTo   User   @relation("WorkflowTaskAssignedTo", fields: [assignedToId], references: [id])
+
+  status WorkflowTaskStatus @default(OPEN)
+  dueAt  DateTime?
+
+  sourceVersionId String?
+  sourceVersion   WorkflowDefinitionVersion? @relation(fields: [sourceVersionId], references: [id])
+
+  createdAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  @@index([applicationId])
+  @@index([assignedToId, status])
+}
+
+enum WorkflowExecutionStatus {
+  SUCCESS
+  PARTIAL_FAILURE
+  FAILED
+}
+
+// One row per time a workflow actually ran against one application — gives
+// an admin real visibility into "did my automation fire and what happened,"
+// and (for TIME_IN_STAGE specifically) is the idempotency guard against
+// firing twice for the same stay in a stage. `fingerprint` is a
+// trigger-type-specific string identifying *this occurrence* of the
+// trigger — the ApplicationEvent id for STAGE_CHANGE, the Application's own
+// id for FORM_SUBMISSION (an application is only ever created once), an
+// `updatedAt` ISO string for FIELD_UPDATE, and `stageEnteredAt`'s ISO string
+// for TIME_IN_STAGE (so leaving and re-entering the same stage later gets a
+// new fingerprint and can fire again) — see src/lib/services/workflows.ts.
+// The unique constraint is the real guard against runDueTimeInStageWorkflows
+// firing the same stay twice across repeated calls; for the three
+// event-driven triggers it's cheap insurance, never actually exercised,
+// since each is only ever called once per real write.
+model WorkflowExecution {
+  id String @id @default(cuid())
+
+  workflowDefinitionVersionId String
+  workflowDefinitionVersion   WorkflowDefinitionVersion @relation(fields: [workflowDefinitionVersionId], references: [id], onDelete: Cascade)
+
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  fingerprint String
+
+  status         WorkflowExecutionStatus
+  actionsSummary Json
+  errorMessage   String?
+
+  executedAt DateTime @default(now())
+
+  @@unique([workflowDefinitionVersionId, applicationId, fingerprint])
+  @@index([applicationId])
 }

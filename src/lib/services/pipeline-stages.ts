@@ -62,6 +62,24 @@ export async function getPipelineStages(context: SessionContext, jobId: string) 
 }
 
 /**
+ * Bulk picker data for the Module 10 workflow builder — STAGE_CHANGE/
+ * TIME_IN_STAGE triggers reference one PipelineStage id, and the builder
+ * needs every active stage across every job the caller can already see to
+ * populate that picker. A single findMany across all of `jobIds`, not one
+ * getPipelineStages call per job, to avoid an N+1. Stage names/ids aren't
+ * sensitive beyond the job list the caller already has access to (same
+ * "structural, not sensitive" reasoning listCustomFieldDefinitions uses),
+ * so no extra per-job RBAC check here.
+ */
+export async function listActivePipelineStagesForJobs(jobIds: string[]) {
+  if (jobIds.length === 0) return [];
+  return prisma.pipelineStage.findMany({
+    where: { jobId: { in: jobIds }, isActive: true },
+    orderBy: [{ jobId: "asc" }, { sortOrder: "asc" }],
+  });
+}
+
+/**
  * Full-set replace, same convention as updateJobRecruiters: the client
  * always PUTs the complete desired pipeline. Entries whose `id` matches an
  * existing stage are renamed/reordered/reactivated in place; entries with no

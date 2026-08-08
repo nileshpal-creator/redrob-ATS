@@ -58,6 +58,11 @@ export const AUDIT_ACTIONS = {
   SAVED_REPORT_DELETED: "saved_report.deleted",
   REPORT_EXPORTED: "report.exported",
   SAVED_REPORT_SCHEDULE_RUN: "saved_report.schedule_run",
+  WORKFLOW_DEFINITION_CREATED: "workflow_definition.created",
+  WORKFLOW_DEFINITION_UPDATED: "workflow_definition.updated",
+  WORKFLOW_DEFINITION_ROLLED_BACK: "workflow_definition.rolled_back",
+  WORKFLOW_EXECUTED: "workflow_definition.executed",
+  WORKFLOW_TASK_COMPLETED: "workflow_task.completed",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];

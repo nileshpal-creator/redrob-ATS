@@ -22,6 +22,13 @@ const RESOURCE_ACTIONS: Partial<Record<string, PermissionAction[]>> = {
   // for a send (ApplicationEmailLog.templateId) — "removing" one deactivates
   // it instead, same convention as PipelineStage.
   [ENTITY.COMMUNICATION_TEMPLATE]: ["CREATE", "READ", "UPDATE"],
+  // No DELETE: a WorkflowTask holds a historical reference to whichever
+  // WorkflowDefinitionVersion created it — "removing" a workflow deactivates
+  // it instead, same convention as CommunicationTemplate/PipelineStage. No
+  // APPROVE: approving/rejecting a WorkflowTask (the REQUEST_APPROVAL action)
+  // is gated through APPLICATION:UPDATE, not a WORKFLOW_DEFINITION action —
+  // see assertWorkflowTaskAccess in src/lib/services/workflows.ts.
+  [ENTITY.WORKFLOW_DEFINITION]: ["CREATE", "READ", "UPDATE"],
 };
 
 export function getApplicableActions(resource: string): PermissionAction[] {

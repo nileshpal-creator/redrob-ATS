@@ -12,6 +12,7 @@ import { renderTemplate } from "@/lib/templates/render";
 import { assertApplicationNotHandedOff } from "@/lib/services/handoffs";
 import { getActiveCommunicationTemplateOrThrow } from "@/lib/services/communication-templates";
 import { getMailProvider } from "@/lib/mail";
+import { evaluateApplicationWorkflows } from "@/lib/services/workflows";
 import type {
   ApplicationBulkEmailInput,
   ApplicationBulkTransitionInput,
@@ -71,6 +72,20 @@ async function assertActiveUser(userId: string, fieldLabel: string) {
   if (!user || !user.isActive) {
     throw new ValidationError(`${fieldLabel} must be an active user.`);
   }
+}
+
+/**
+ * Module 10 (§10.2): fires configured automations after the triggering
+ * write has already committed (see evaluateApplicationWorkflows's own doc
+ * comment for why it runs outside that write's transaction). Awaited so it
+ * completes before the response is sent, but its own errors are caught
+ * here and only logged — a misbehaving automation must never fail or roll
+ * back the user's own action that triggered it.
+ */
+async function fireWorkflowsInBackground(...args: Parameters<typeof evaluateApplicationWorkflows>) {
+  await evaluateApplicationWorkflows(...args).catch((error: unknown) => {
+    console.error("Workflow evaluation failed:", error);
+  });
 }
 
 async function validateApplicationCustomFields(customFields: Record<string, unknown> | undefined) {
@@ -242,6 +257,11 @@ export async function createApplication(context: SessionContext, input: Applicat
     changes: { after: { candidateId: created.candidateId, jobId: created.jobId, stageId } },
   });
 
+  // FORM_SUBMISSION has no trigger-config to match beyond the job-scoping
+  // evaluateApplicationWorkflows already applies; the new application's own
+  // id is a one-time fingerprint (this application is only ever created once).
+  await fireWorkflowsInBackground(context, created.id, "FORM_SUBMISSION", () => true, created.id);
+
   return { ...created, priorApplications };
 }
 
@@ -279,6 +299,26 @@ export async function updateApplication(context: SessionContext, id: string, inp
     entityId: id,
     changes: { before: existing, after: data },
   });
+
+  // FIELD_UPDATE workflows key off *which* customFields keys actually
+  // changed, not merely that the request touched customFields at all — a
+  // no-op write (same value re-saved) must not re-fire the automation.
+  if (customFields !== undefined) {
+    const before = (existing.customFields as Record<string, unknown>) ?? {};
+    const allKeys = new Set([...Object.keys(before), ...Object.keys(customFields)]);
+    const changedKeys = new Set(
+      [...allKeys].filter((key) => JSON.stringify(before[key]) !== JSON.stringify(customFields[key])),
+    );
+    if (changedKeys.size > 0) {
+      await fireWorkflowsInBackground(
+        context,
+        id,
+        "FIELD_UPDATE",
+        (triggerConfig) => changedKeys.has((triggerConfig as { fieldKey?: string } | null)?.fieldKey ?? ""),
+        updated.updatedAt.toISOString(),
+      );
+    }
+  }
 
   return updated;
 }
@@ -325,13 +365,13 @@ export async function transitionApplication(
     eventType = outcome;
   }
 
-  const updated = await prisma.$transaction(async (tx) => {
+  const { updated, eventId } = await prisma.$transaction(async (tx) => {
     const result = await tx.application.updateMany({ where: { id, version: input.version }, data });
     if (result.count === 0) {
       throw new ConflictError("This application was changed by someone else. Reload and try again.");
     }
 
-    await tx.applicationEvent.create({
+    const event = await tx.applicationEvent.create({
       data: {
         applicationId: id,
         type: eventType,
@@ -343,7 +383,8 @@ export async function transitionApplication(
       },
     });
 
-    return tx.application.findUniqueOrThrow({ where: { id }, include: applicationDetailInclude });
+    const application = await tx.application.findUniqueOrThrow({ where: { id }, include: applicationDetailInclude });
+    return { updated: application, eventId: event.id };
   });
 
   await recordAudit({
@@ -358,6 +399,20 @@ export async function transitionApplication(
     entityId: id,
     changes: { before: { stageId: existing.stageId, outcome: existing.outcome }, after: data },
   });
+
+  // STAGE_CHANGE workflows are keyed to one specific destination stage
+  // (config.toStageId) — REJECT/WITHDRAW don't move a stage, so they never
+  // trigger this. The ApplicationEvent this transition just created is a
+  // one-time fingerprint (each transition creates exactly one new event).
+  if (input.action === "STAGE_MOVE") {
+    await fireWorkflowsInBackground(
+      context,
+      id,
+      "STAGE_CHANGE",
+      (triggerConfig) => (triggerConfig as { toStageId?: string } | null)?.toStageId === toStageId,
+      eventId,
+    );
+  }
 
   return updated;
 }
