@@ -16,8 +16,14 @@ import { ConflictError, NotFoundError, ValidationError } from "@/lib/errors";
 import { recordAudit } from "@/lib/audit/log";
 import { AUDIT_ACTIONS } from "@/lib/audit/actions";
 import { buildCustomFieldValueSchema } from "@/lib/custom-fields/dynamic-schema";
-import { findTransition } from "@/lib/offers/status-machine";
+import { findTransition, type OfferTransition } from "@/lib/offers/status-machine";
 import type { OfferCreateInput, OfferQuery, OfferTransitionInput, OfferUpdateInput } from "@/lib/validations/offer";
+import {
+  assertCanDecideStep,
+  buildApprovalStepSnapshots,
+  isChainComplete,
+  selectCurrentPendingStep,
+} from "@/lib/services/approvals";
 import { assertApplicationNotHandedOff, createHandoffForOffer } from "@/lib/services/handoffs";
 
 const NON_TERMINAL_STATUSES: OfferStatus[] = ["DRAFT", "PENDING_APPROVAL", "APPROVED", "EXTENDED"];
@@ -39,7 +45,12 @@ const offerDetailInclude = {
   ...offerListInclude,
   outcomeReason: true,
   approvals: {
-    orderBy: { createdAt: "desc" },
+    // Chronological, not stepOrder alone — a resubmit-after-reject cycle
+    // creates a fresh batch of rows alongside the old cycle's (REJECTED/
+    // SKIPPED) rows, and this keeps each cycle's steps grouped together in
+    // the order they were created rather than interleaving cycles that
+    // happen to share the same stepOrder values.
+    orderBy: [{ createdAt: "asc" }, { stepOrder: "asc" }],
     include: { approver: { select: userSummarySelect } },
   },
 } satisfies Prisma.OfferInclude;
@@ -265,6 +276,10 @@ export async function transitionOffer(context: SessionContext, id: string, input
     await assertControlledListValue(transition.reasonListKey!, input.reasonId, "reason");
   }
 
+  if (input.action === "APPROVE" || input.action === "REJECT") {
+    return decideOfferApprovalStep(context, id, existing, input, transition);
+  }
+
   const { offer: updated, handoff } = await prisma.$transaction(async (tx) => {
     let handoffResult: { id: string; status: string } | null = null;
 
@@ -281,18 +296,13 @@ export async function transitionOffer(context: SessionContext, id: string, input
       throw new ConflictError("This offer was changed by someone else. Reload and try again.");
     }
 
+    // §11.6: "Configurable approval steps." The chain is snapshotted onto
+    // OfferApproval at the moment an Offer is actually submitted — see
+    // buildApprovalStepSnapshots's own comment for why this must be a
+    // snapshot, not a live reference to ApprovalStepConfig.
     if (input.action === "SUBMIT") {
-      await tx.offerApproval.create({ data: { offerId: id, status: "PENDING" } });
-    } else if (input.action === "APPROVE" || input.action === "REJECT") {
-      await tx.offerApproval.updateMany({
-        where: { offerId: id, status: "PENDING" },
-        data: {
-          status: input.action === "APPROVE" ? "APPROVED" : "REJECTED",
-          approverId: context.userId,
-          comments: input.comments,
-          decidedAt: new Date(),
-        },
-      });
+      const steps = await buildApprovalStepSnapshots(tx, "OFFER");
+      await tx.offerApproval.createMany({ data: steps.map((step) => ({ offerId: id, ...step })) });
     } else if (input.action === "ACCEPT") {
       // §11.6: the Offer module is what actually fills a position — Job's
       // positionsFilledCount otherwise never moves off its default 0 (see
@@ -326,6 +336,86 @@ export async function transitionOffer(context: SessionContext, id: string, input
       entityType: ENTITY.HANDOFF,
       entityId: handoff.id,
       changes: { after: { status: handoff.status, offerId: id } },
+    });
+  }
+
+  const fieldAccess = await getFieldAccess(context, ENTITY.OFFER);
+  return sanitizeForRead(updated, fieldAccess);
+}
+
+/**
+ * APPROVE/REJECT act on the single current step (lowest stepOrder among
+ * PENDING rows), not directly on Offer.status — mirrors
+ * decideJobApprovalStep in src/lib/services/jobs.ts exactly, reusing the
+ * same shared helpers from src/lib/services/approvals.ts. REJECT always
+ * fails the whole chain immediately (existing single-step semantics
+ * preserved) and marks every other still-PENDING row SKIPPED. APPROVE
+ * only flips Offer.status to the transition table's `to` once no PENDING
+ * rows remain — an intermediate approval (more steps still pending)
+ * records the decision but leaves Offer.status at PENDING_APPROVAL for
+ * the next approver.
+ */
+async function decideOfferApprovalStep(
+  context: SessionContext,
+  id: string,
+  existing: { status: OfferStatus },
+  input: OfferTransitionInput,
+  transition: OfferTransition,
+) {
+  const steps = await prisma.offerApproval.findMany({ where: { offerId: id } });
+  const currentStep = selectCurrentPendingStep(steps);
+  if (!currentStep) {
+    throw new ValidationError("No pending approval step found for this offer.");
+  }
+  assertCanDecideStep(context, currentStep);
+
+  const decision = input.action === "APPROVE" ? "APPROVED" : "REJECTED";
+  const chainWillComplete = input.action === "REJECT" || isChainComplete(steps, currentStep.id);
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const decided = await tx.offerApproval.updateMany({
+      where: { id: currentStep.id, status: "PENDING" },
+      data: { status: decision, approverId: context.userId, comments: input.comments, decidedAt: new Date() },
+    });
+    if (decided.count === 0) {
+      throw new ConflictError("This approval step was already decided by someone else. Reload and try again.");
+    }
+
+    if (input.action === "REJECT") {
+      await tx.offerApproval.updateMany({
+        where: { offerId: id, status: "PENDING", id: { not: currentStep.id } },
+        data: { status: "SKIPPED" },
+      });
+    }
+
+    if (chainWillComplete) {
+      const result = await tx.offer.updateMany({
+        where: { id, version: input.version },
+        data: { status: transition.to, version: { increment: 1 } },
+      });
+      if (result.count === 0) {
+        throw new ConflictError("This offer was changed by someone else. Reload and try again.");
+      }
+    }
+
+    return tx.offer.findUniqueOrThrow({ where: { id }, include: offerDetailInclude });
+  });
+
+  await recordAudit({
+    actorId: context.userId,
+    action: AUDIT_ACTIONS.OFFER_APPROVAL_STEP_DECIDED,
+    entityType: ENTITY.OFFER,
+    entityId: id,
+    changes: { after: { stepOrder: currentStep.stepOrder, decision, chainComplete: chainWillComplete } },
+  });
+
+  if (chainWillComplete) {
+    await recordAudit({
+      actorId: context.userId,
+      action: AUDIT_ACTIONS.OFFER_STATUS_CHANGED,
+      entityType: ENTITY.OFFER,
+      entityId: id,
+      changes: { before: { status: existing.status }, after: { status: transition.to, action: input.action } },
     });
   }
 

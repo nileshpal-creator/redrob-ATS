@@ -756,6 +756,133 @@ describe("OfferService", () => {
     });
   });
 
+  describe("configurable multi-step approval", () => {
+    let financeRoleId: string;
+    let financeApprover: SessionContext;
+
+    async function configureTwoStepChain() {
+      await prisma.approvalStepConfig.deleteMany({ where: { entityType: "OFFER" } });
+      await prisma.approvalStepConfig.createMany({
+        data: [
+          { entityType: "OFFER", stepOrder: 1, name: "Hiring Manager review", requiredRoleId: hiringManagerRoleId },
+          { entityType: "OFFER", stepOrder: 2, name: "Finance review", requiredRoleId: financeRoleId },
+        ],
+      });
+    }
+
+    async function submitOffer() {
+      const offer = await createOffer(recruiter, offerInput());
+      return transitionOffer(recruiter, offer.id, { action: "SUBMIT", version: 0 });
+    }
+
+    beforeAll(async () => {
+      const passwordHash = await bcrypt.hash("Test123!Test123!", 4);
+      const financeRole = await prisma.role.create({
+        data: {
+          name: "Test Offer Finance Approver",
+          rolePermissions: {
+            createMany: { data: [{ resource: "OFFER", action: "READ", scope: "ALL" }, { resource: "OFFER", action: "APPROVE", scope: "ALL" }] },
+          },
+        },
+      });
+      financeRoleId = financeRole.id;
+
+      const financeUser = await prisma.user.create({
+        data: { name: "Offer Finance Approver", email: "of-finance@test.local", passwordHash },
+      });
+      await prisma.userRole.create({ data: { userId: financeUser.id, roleId: financeRoleId } });
+      financeApprover = contextFor({ ...financeUser, roles: [{ id: financeRoleId, name: "Test Offer Finance Approver", isSuperAdmin: false }] });
+    });
+
+    afterAll(async () => {
+      // ApprovalStepConfig is genuinely global state — every other test
+      // file's own OFFER SUBMIT calls assume "no configured chain" unless
+      // they set one up themselves.
+      await prisma.approvalStepConfig.deleteMany({ where: { entityType: "OFFER" } });
+      await prisma.userRole.deleteMany({ where: { roleId: financeRoleId } });
+      await prisma.user.deleteMany({ where: { email: "of-finance@test.local" } });
+      await prisma.role.deleteMany({ where: { id: financeRoleId } });
+    });
+
+    it("creates one PENDING OfferApproval row per configured step at SUBMIT, snapshotting name/role", async () => {
+      await configureTwoStepChain();
+      const submitted = await submitOffer();
+
+      expect(submitted.approvals).toHaveLength(2);
+      expect(submitted.approvals.map((a) => ({ stepOrder: a.stepOrder, stepName: a.stepName, status: a.status }))).toEqual([
+        { stepOrder: 1, stepName: "Hiring Manager review", status: "PENDING" },
+        { stepOrder: 2, stepName: "Finance review", status: "PENDING" },
+      ]);
+
+      await prisma.offer.delete({ where: { id: submitted.id } });
+    });
+
+    it("walks a 2-step chain: step 1 approval leaves status PENDING_APPROVAL, step 2 approval advances to APPROVED", async () => {
+      await configureTwoStepChain();
+      const submitted = await submitOffer();
+
+      const afterStep1 = await transitionOffer(hiringManager, submitted.id, { action: "APPROVE", version: submitted.version });
+      expect(afterStep1.status).toBe("PENDING_APPROVAL");
+      expect(afterStep1.version).toBe(submitted.version);
+      expect(afterStep1.approvals[0].status).toBe("APPROVED");
+      expect(afterStep1.approvals[1].status).toBe("PENDING");
+
+      const afterStep2 = await transitionOffer(financeApprover, submitted.id, { action: "APPROVE", version: afterStep1.version });
+      expect(afterStep2.status).toBe("APPROVED");
+      expect(afterStep2.approvals[1].status).toBe("APPROVED");
+      expect(afterStep2.approvals[1].approverId).toBe(financeApprover.userId);
+
+      await prisma.offer.delete({ where: { id: submitted.id } });
+    });
+
+    it("blocks the Hiring Manager from deciding the Finance-only step, even though they hold OFFER:APPROVE", async () => {
+      await configureTwoStepChain();
+      const submitted = await submitOffer();
+      const afterStep1 = await transitionOffer(hiringManager, submitted.id, { action: "APPROVE", version: submitted.version });
+
+      await expect(
+        transitionOffer(hiringManager, submitted.id, { action: "APPROVE", version: afterStep1.version }),
+      ).rejects.toBeInstanceOf(ForbiddenError);
+
+      await prisma.offer.delete({ where: { id: submitted.id } });
+    });
+
+    it("REJECT at step 1 fails the whole chain immediately and marks the untouched step 2 SKIPPED", async () => {
+      await configureTwoStepChain();
+      const submitted = await submitOffer();
+
+      const rejected = await transitionOffer(hiringManager, submitted.id, { action: "REJECT", version: submitted.version });
+      expect(rejected.status).toBe("DRAFT");
+      expect(rejected.approvals[0].status).toBe("REJECTED");
+      expect(rejected.approvals[1].status).toBe("SKIPPED");
+
+      await prisma.offer.delete({ where: { id: submitted.id } });
+    });
+
+    it("two concurrent decisions racing for the same step: exactly one succeeds, the other gets ConflictError", async () => {
+      await configureTwoStepChain();
+      const submitted = await submitOffer();
+
+      const results = await Promise.allSettled([
+        transitionOffer(hiringManager, submitted.id, { action: "APPROVE", version: submitted.version }),
+        transitionOffer(hiringManager, submitted.id, { action: "APPROVE", version: submitted.version }),
+      ]);
+
+      const fulfilled = results.filter((result) => result.status === "fulfilled");
+      const rejected = results.filter((result) => result.status === "rejected");
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(ConflictError);
+
+      const step1 = await prisma.offerApproval.findFirstOrThrow({ where: { offerId: submitted.id, stepOrder: 1 } });
+      expect(step1.status).toBe("APPROVED");
+      const step2 = await prisma.offerApproval.findFirstOrThrow({ where: { offerId: submitted.id, stepOrder: 2 } });
+      expect(step2.status).toBe("PENDING");
+
+      await prisma.offer.delete({ where: { id: submitted.id } });
+    });
+  });
+
   describe("candidate timeline integration", () => {
     it("surfaces created, approved, extended, and accepted items on the candidate timeline", async () => {
       const candidate = await createCandidate(recruiter, {

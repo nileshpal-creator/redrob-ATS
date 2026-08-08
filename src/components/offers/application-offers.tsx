@@ -43,7 +43,10 @@ type OfferStatus =
 
 type OfferApprovalEntry = {
   id: string;
-  status: "PENDING" | "APPROVED" | "REJECTED";
+  stepOrder: number;
+  stepName: string | null;
+  requiredRoleName: string | null;
+  status: "PENDING" | "APPROVED" | "REJECTED" | "SKIPPED";
   approver: Person | null;
   comments: string | null;
   decidedAt: string | null;
@@ -100,6 +103,16 @@ async function requestJson(url: string, init: RequestInit) {
 
 function toDateInputValue(iso: string) {
   return iso.slice(0, 10);
+}
+
+/** Explains why "Review approval" is hidden — the caller can approve/reject but not decide this specific step. */
+function currentPendingStepLabel(approvals: OfferApprovalEntry[]) {
+  const pending = approvals.filter((approval) => approval.status === "PENDING");
+  if (pending.length === 0) return null;
+  const current = pending.reduce((min, approval) => (approval.stepOrder < min.stepOrder ? approval : min));
+  return current.requiredRoleName
+    ? `Awaiting ${current.stepName ?? "approval"} — requires the ${current.requiredRoleName} role.`
+    : "Awaiting approval.";
 }
 
 type OfferFormValues = {
@@ -302,11 +315,17 @@ function ApprovalDialog({
     }
   }
 
+  const currentStep = offer
+    ? offer.approvals
+        .filter((approval) => approval.status === "PENDING")
+        .reduce((min, approval) => (!min || approval.stepOrder < min.stepOrder ? approval : min), null as OfferApprovalEntry | null)
+    : null;
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Review offer for approval</DialogTitle>
+          <DialogTitle>{currentStep?.stepName ? `Review: ${currentStep.stepName}` : "Review offer for approval"}</DialogTitle>
           <DialogDescription>
             Compensation: {offer?.compensation} &middot; Drafted by {offer?.createdBy.name}
           </DialogDescription>
@@ -501,8 +520,14 @@ export function ApplicationOffers({
                   {offer.approvals.map((approval) => (
                     <p key={approval.id} className="flex items-center gap-2 text-xs">
                       <CheckCircle2 className="size-3" />
-                      <span className="font-medium">{approval.approver?.name ?? "Pending"}</span>
+                      {approval.stepName ? <span className="font-medium">{approval.stepName}</span> : null}
+                      <span className={approval.stepName ? "text-muted-foreground" : "font-medium"}>
+                        {approval.approver?.name ?? "Pending"}
+                      </span>
                       <Badge variant="outline">{approval.status}</Badge>
+                      {approval.status === "PENDING" && approval.requiredRoleName ? (
+                        <span className="text-muted-foreground">requires {approval.requiredRoleName}</span>
+                      ) : null}
                       {approval.comments ? <span className="text-muted-foreground">— {approval.comments}</span> : null}
                     </p>
                   ))}
@@ -530,6 +555,11 @@ export function ApplicationOffers({
                   <Button size="sm" variant="outline" onClick={() => setDialog({ type: "APPROVAL", offer })}>
                     Review approval
                   </Button>
+                ) : null}
+                {offer.status === "PENDING_APPROVAL" && !offer.canApprove ? (
+                  <p className="self-center text-xs text-muted-foreground">
+                    {currentPendingStepLabel(offer.approvals)}
+                  </p>
                 ) : null}
                 {offer.status === "APPROVED" && offer.canManage ? (
                   <Button

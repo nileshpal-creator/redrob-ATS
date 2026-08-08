@@ -52,6 +52,7 @@ export const AUDIT_ACTIONS = {
   OFFER_UPDATED: "offer.updated",
   OFFER_STATUS_CHANGED: "offer.status_changed",
   OFFER_LAPSED: "offer.lapsed",
+  OFFER_APPROVAL_STEP_DECIDED: "offer.approval_step_decided",
   HANDOFF_INITIATED: "handoff.initiated",
   HANDOFF_STATUS_CHANGED: "handoff.status_changed",
   COMMUNICATION_TEMPLATE_CREATED: "communication_template.created",

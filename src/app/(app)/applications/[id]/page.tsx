@@ -87,11 +87,28 @@ export default async function ApplicationDetailPage({ params }: { params: Promis
       }))
     : [];
 
+  // §11.6: a configured multi-step chain can require a *specific* role for
+  // the currently-pending step, not just any OFFER:APPROVE holder — mirrors
+  // assertCanDecideStep in src/lib/services/approvals.ts exactly, so the
+  // "Review approval" button never appears for someone the backend would
+  // reject anyway. A step with no requiredRoleId is the legacy no-chain
+  // row, where the plain scope check is the only gate (unchanged behavior).
+  const isSuperAdmin = context.isSuperAdmin;
+  const roleIds = context.roles.map((role) => role.id);
+
+  function canDecideCurrentStep(approvals: { stepOrder: number; status: string; requiredRoleId: string | null }[]) {
+    const pending = approvals.filter((approval) => approval.status === "PENDING");
+    if (pending.length === 0) return false;
+    const current = pending.reduce((min, approval) => (approval.stepOrder < min.stepOrder ? approval : min));
+    if (!current.requiredRoleId) return true;
+    return isSuperAdmin || roleIds.includes(current.requiredRoleId);
+  }
+
   const offers = offersResult
     ? offersResult.offers.map((offer) => ({
         ...offer,
         canManage: scopeIncludes(offerManageScope, offer.createdById),
-        canApprove: scopeIncludes(offerApproveScope, offer.createdById),
+        canApprove: scopeIncludes(offerApproveScope, offer.createdById) && canDecideCurrentStep(offer.approvals),
       }))
     : [];
 
