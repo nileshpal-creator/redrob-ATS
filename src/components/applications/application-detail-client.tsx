@@ -46,13 +46,14 @@ type ApplicationDetail = {
   customFields: Record<string, unknown>;
   candidateId: string;
   jobId: string;
-  candidate: { id: string; name: string; phone: string; email: string | null };
+  candidate: { id: string; name: string; phone: string; email: string | null; source: { label: string } | null };
   job: { id: string; title: string };
   stage: { id: string; name: string };
   owner: Person;
   createdBy: Person;
   outcomeReason: { label: string } | null;
   events: ApplicationEvent[];
+  sourcedFromPosting: { id: string; source: { label: string } } | null;
 };
 
 const OUTCOME_BADGE_VARIANT: Record<string, "default" | "secondary" | "destructive"> = {
@@ -153,6 +154,10 @@ export function ApplicationDetailClient({
             <Badge variant={OUTCOME_BADGE_VARIANT[application.outcome]}>{application.outcome}</Badge>
             <span>&middot; Stage: {application.stage.name}</span>
             <span>&middot; Owner: {application.owner.name}</span>
+            <span>
+              &middot; Source: {application.candidate.source?.label ?? "—"}
+              {application.sourcedFromPosting ? ` (${application.sourcedFromPosting.source.label} posting)` : ""}
+            </span>
             {canEdit ? (
               <ApplicationOwnerEditor
                 applicationId={application.id}

@@ -63,6 +63,10 @@ export const AUDIT_ACTIONS = {
   WORKFLOW_DEFINITION_ROLLED_BACK: "workflow_definition.rolled_back",
   WORKFLOW_EXECUTED: "workflow_definition.executed",
   WORKFLOW_TASK_COMPLETED: "workflow_task.completed",
+  JOB_POSTING_CREATED: "job_posting.created",
+  JOB_POSTING_REMOVED: "job_posting.removed",
+  JOB_POSTING_INBOUND_APPLICATION_RECEIVED: "job_posting.inbound_application_received",
+  CANDIDATE_REFERRED: "candidate.referred",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];

@@ -78,6 +78,8 @@ model User {
   workflowVersionsCreated    WorkflowDefinitionVersion[] @relation("WorkflowVersionCreatedBy")
   workflowTasksAssigned      WorkflowTask[]              @relation("WorkflowTaskAssignedTo")
 
+  jobPostingsPosted JobPosting[] @relation("JobPostingPostedBy")
+
   @@index([isActive])
   @@index([managerId])
 }
@@ -236,6 +238,7 @@ model ControlledListValue {
 
   candidatesAsSource       Candidate[]         @relation("CandidateSource")
   candidateDocumentsAsType CandidateDocument[] @relation("CandidateDocumentType")
+  jobPostingsAsSource      JobPosting[]        @relation("JobPostingSource")
 
   applicationsAsOutcomeReason Application[]      @relation("ApplicationOutcomeReason")
   applicationEventsAsReason   ApplicationEvent[] @relation("ApplicationEventReason")
@@ -439,6 +442,7 @@ model Job {
   pipelineStages      PipelineStage[]
   applications        Application[]
   workflowDefinitions WorkflowDefinition[]
+  postings            JobPosting[]
 
   @@index([status])
   @@index([departmentId])
@@ -724,6 +728,20 @@ model Application {
   stageEnteredAt DateTime @default(now())
   customFields   Json?
 
+  // §11.3: which JobPosting this application arrived through, if any — null
+  // for every application created the normal way (recruiter-entered, or via
+  // the Refer-a-candidate flow). Deliberately separate from
+  // Candidate.sourceId: that column answers "where did this person first
+  // come from" (set once, per §9's "held once globally"); this one answers
+  // "did THIS specific application arrive via one of our tracked postings" —
+  // relevant the moment a candidate applies to more than one job through the
+  // same board over time. onDelete: SetNull is a backstop only — JobPosting
+  // rows are never deleted (status is toggled POSTED/REMOVED in place), so it
+  // never actually fires in normal use, same convention as
+  // ApplicationEvent.fromStageId.
+  sourcedFromPostingId String?
+  sourcedFromPosting   JobPosting? @relation(fields: [sourcedFromPostingId], references: [id], onDelete: SetNull)
+
   createdById String
   // Optimistic locking — same pattern as Job.version / Candidate.version.
   version     Int    @default(0)
@@ -752,6 +770,7 @@ model Application {
   @@index([candidateId, jobId])
   @@index([ownerId])
   @@index([outcome])
+  @@index([sourcedFromPostingId])
 }
 
 // Immutable history row for every stage move and outcome change — modeled
@@ -807,6 +826,65 @@ model ApplicationEmailLog {
   @@index([applicationId])
   @@index([status])
   @@index([templateId])
+}
+
+// ---------------------------------------------------------------------------
+// Module 11 — Sourcing & Job Board Distribution (§11.3)
+// ---------------------------------------------------------------------------
+
+enum JobPostingStatus {
+  POSTED
+  REMOVED
+  FAILED
+}
+
+/**
+ * "Post a job to major job boards from a single requisition" (§11.3) — one
+ * persistent row per (job, board), not an append-only log: posting and
+ * removing toggle the same row's `status` in place, so `@@unique([jobId,
+ * sourceId])` is the real guard against ever posting the same job to the
+ * same board twice (the same "let the database's unique constraint be the
+ * guard, not a check-then-act pre-check" pattern createOffer/
+ * createCommunicationTemplate already use). Never hard-deleted — removing a
+ * posting sets status = REMOVED, exactly like every other "deactivate,
+ * don't delete" entity in this codebase (PipelineStage, CommunicationTemplate),
+ * since Application.sourcedFromPostingId may still reference this row.
+ * `sourceId` reuses the *exact same* CANDIDATE_SOURCE controlled list
+ * Candidate.sourceId already uses — a posting's board IS the source every
+ * inbound application through it gets tagged with, so there is no separate
+ * "job board" list to keep in sync with it. RBAC is not its own resource:
+ * managing a job's postings is authorized as JOB:<action> scoped to the
+ * job's own primaryRecruiterId, the same reuse PipelineStage's configuration
+ * already establishes — posting/removing a board listing is a facet of
+ * managing the job, not an independent capability.
+ */
+model JobPosting {
+  id String @id @default(cuid())
+
+  jobId String
+  job   Job    @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  sourceId String
+  source   ControlledListValue @relation("JobPostingSource", fields: [sourceId], references: [id])
+
+  status JobPostingStatus @default(POSTED)
+
+  // Opaque handle from the (mock, for now) provider — a real board API would
+  // return a listing id here, used to target a later removal call.
+  externalPostingId String?
+  errorMessage      String?
+
+  postedById String
+  postedBy   User   @relation("JobPostingPostedBy", fields: [postedById], references: [id])
+
+  postedAt  DateTime  @default(now())
+  removedAt DateTime?
+
+  applications Application[]
+
+  @@unique([jobId, sourceId])
+  @@index([jobId])
+  @@index([sourceId])
 }
 
 // ---------------------------------------------------------------------------

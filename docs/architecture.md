@@ -949,3 +949,64 @@ captured by the status field itself.
 `HrisProvider`/Module 9's scheduled reports already document: `runDueTimeInStageWorkflows` is
 real, tested logic; `POST /api/workflows/run-due` exists for an external scheduler to call it
 periodically, but nothing in this codebase invokes it on its own.
+
+## Module 11 — Sourcing & Job Board Distribution (§11.3)
+
+**`JobBoardProvider` abstraction**: `src/lib/job-boards/provider.ts` defines `post`/`remove`
+only — deliberately no `fetchInboundApplications`/webhook-receiver method, since real boards
+vary wildly in how they push inbound applications back (webhook, polling API, email digest) and
+modeling one specific shape without a real board to validate it against would invent a
+requirement the PRD doesn't state. `src/lib/job-boards/index.ts#getJobBoardProvider()` is an
+env-driven (`JOB_BOARD_PROVIDER`, default `"mock"`) cached-singleton factory, the same shape as
+`getStorageProvider`/`getHrisProvider`/`getMailProvider`. Only `MockJobBoardProvider` exists —
+its `post()` fails deterministically when `job.description` is empty (a plausible real-board
+rejection reason), its `remove()` always succeeds (removal is idempotent by nature; "already
+gone" is a service-layer status check on `JobPosting.status`, not a provider-level failure).
+
+**`JobPosting` — persistent, status-toggled row, not append-only**: one row per `(jobId,
+sourceId)`, reusing `ControlledListValue`/`CANDIDATE_SOURCE` as the board list rather than
+inventing a parallel `JOB_BOARD` list — the same board a candidate is later attributed to is the
+board a job is posted to, and there is no reason for those to be two different lists. Re-posting
+after a removal updates the existing row (`status: REMOVED -> POSTED`) rather than creating a
+second one; `@@unique([jobId, sourceId])` is the real guard against a genuine double-post race (two
+concurrent first-time posts to the same board), not a pre-check — a `P2002` on the `create` branch
+is caught and turned into a `ConflictError`. `JobPosting` rows are never hard-deleted (`REMOVED`
+instead of a delete), since `Application.sourcedFromPostingId` may reference one.
+
+**RBAC reuse, not a new resource**: `createJobPosting`/`removeJobPosting`/`receiveInboundApplication`
+each call the same `assertJobAccess(context, job, "UPDATE")` shape `pipeline-stages.ts` already
+establishes for managing a job's own configuration — `JOB:UPDATE`, unscoped or owner-scoped to
+`Job.primaryRecruiterId`. No `JOB_POSTING` permission resource was introduced; managing a job's
+board postings is authorized as an extension of managing the job itself.
+
+**Source attribution — two signals, deliberately different scopes**:
+`Candidate.sourceId` (existing since Module 3, §9) answers "where did this person originally come
+from" and is set once at creation, never overwritten by a later event — a returning candidate who
+applies again via a *different* board keeps their original attribution. The new
+`Application.sourcedFromPostingId` answers a narrower question — "which specific posting drove
+*this* application" — and is populated only for applications created via
+`receiveInboundApplication`. It is threaded through as an internal-only third parameter to
+`createApplication(context, input, opts)`, not part of the public, Zod-validated
+`ApplicationCreateInput` — `POST /api/applications` cannot be made to claim a posting attribution
+it has no way to validate.
+
+**Inbound intake has no public entry point**: §7 scopes this app to have no public,
+unauthenticated career-site/apply page, so `receiveInboundApplication` is session-authenticated —
+a staff member records the name/phone/email/note a board notified them about, and the function
+decides the candidate (create, or reuse on a phone match per §9's hard-duplicate rule) and the
+application (via the same `createApplication` every other path uses, landing in the job's first
+active pipeline stage) rather than the recruiter typing either by hand. This is the "automatic"
+part of "inbound applications land directly in the correct pipeline with source tagged
+automatically" — the transport (staff intake vs. a live webhook) is a documented limitation
+(below), not a requirement gap; the entry point itself is the piece the PRD asks for, and a real
+board integration's webhook handler or polling adapter would call this exact function once
+credentials exist.
+
+**Referral capture, one combined step**: `createReferral` (`src/lib/services/referrals.ts`)
+creates the candidate and application together, resolving the `CANDIDATE_SOURCE` list's existing
+"Referral" value at call time rather than caching an id — the same create-or-reuse-by-phone
+logic `receiveInboundApplication` uses. Both `receiveInboundApplication` and `createReferral` are
+best-effort, not transactional, across their candidate-create-then-application-create pair — the
+same documented precedent `bulkTransitionApplications` already establishes: if the application
+create fails after the candidate was created, the candidate record still exists and the
+application can be created separately via the normal `/applications/new` flow.

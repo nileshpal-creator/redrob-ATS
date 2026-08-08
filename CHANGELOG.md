@@ -1,5 +1,64 @@
 # Changelog
 
+## Module 11 — Sourcing & Job Board Distribution (PRD §11.3)
+
+### Added
+
+- `JobPosting` + `JobPostingStatus` enum (`prisma/schema.prisma`): one row per (job, board),
+  status-toggled (`POSTED`/`REMOVED`/`FAILED`) rather than append-only — re-posting after a
+  removal updates the same row instead of creating a new one. `@@unique([jobId, sourceId])` is
+  the real guard against a double-post race, not a pre-check; a `P2002` on the create path is
+  caught and turned into a `ConflictError`. `JobPosting.sourceId` reuses the existing
+  `CANDIDATE_SOURCE` controlled list rather than introducing a parallel `JOB_BOARD` list.
+- `JobBoardProvider` abstraction (`src/lib/job-boards/`): `post`/`remove` interface, an env-driven
+  factory (`JOB_BOARD_PROVIDER`, default `"mock"`), and `MockJobBoardProvider` — the same
+  interface + factory shape as `StorageProvider`/`HrisProvider`/`MailProvider`. No real board API
+  connector exists yet (per-board partner credentials aren't available in this environment, §12).
+- `Application.sourcedFromPostingId` (optional FK → `JobPosting`): which specific posting drove
+  *this* application, distinct from `Candidate.sourceId`'s broader "where this person originally
+  came from." Threaded through as an internal-only third parameter to `createApplication`, not
+  part of the public `ApplicationCreateInput` schema, so the existing `POST /api/applications`
+  route can't be made to claim an attribution it has no way to validate.
+- `receiveInboundApplication` (`src/lib/services/job-postings.ts`): a staff-authenticated "record
+  what the board told you" entry point — this app has no public, unauthenticated career-site/
+  apply page (§7) to receive a live webhook on. Creates (or, on a phone match, reuses) the
+  candidate tagged with the posting's board as source, and an application via the same
+  `createApplication` every other path uses, landing in the job's first active pipeline stage.
+- `createReferral` (`src/lib/services/referrals.ts`): a combined candidate+application creation
+  step with source fixed to the `CANDIDATE_SOURCE` list's existing "Referral" value — §11.3's
+  "referral capture as a distinct source type."
+- `createJobPosting`/`removeJobPosting`/`listJobPostings` reuse `JOB:<action>` RBAC scoped to
+  `Job.primaryRecruiterId` (the same reuse `PipelineStage`'s own endpoints already establish) —
+  no new `JOB_POSTING` permission resource.
+- API routes: `GET`/`POST /api/jobs/[id]/postings`, `POST /api/job-postings/[id]/remove`,
+  `POST /api/job-postings/[id]/inbound`, `POST /api/referrals`.
+- Frontend: a "Job board postings" card on the Job detail page (post/status/remove/record
+  inbound application), a "Refer a candidate" dialog, and a "Source" column/field on the
+  Applications list and detail page.
+- Audit actions: `JOB_POSTING_CREATED`, `JOB_POSTING_REMOVED`,
+  `JOB_POSTING_INBOUND_APPLICATION_RECEIVED`, `CANDIDATE_REFERRED`.
+- Automated test coverage: `job-postings.service.test.ts` (21 tests — CRUD, RBAC, the DRAFT/OPEN
+  status guard, duplicate-posting rejection, re-post-after-removal row reuse, three concurrency
+  tests, the mock provider's deterministic FAILED path, inbound-intake candidate reuse without
+  overwriting an existing source), `referrals.service.test.ts` (5 tests), `job-posting.test.ts`
+  (9 validation-schema tests). Full regression suite: 524 tests passing project-wide.
+
+### Fixed
+
+- `job-postings-card.tsx`'s and `refer-candidate-dialog.tsx`'s `<Label>` elements had no
+  `htmlFor`/matching input `id`, unlike the codebase's established convention (e.g.
+  `candidate-form.tsx`'s `htmlFor="candidate-name"`/`id="candidate-name"` pairs) — a real
+  accessibility regression (screen readers and label-click-to-focus wouldn't associate the label
+  with its field), caught during Playwright browser verification when `getByLabel` couldn't find
+  the fields. Fixed by adding `htmlFor`/`id` pairs to every field in both components.
+- `createJobPosting`'s reactivate-an-existing-row branch (re-posting after a `REMOVED`/`FAILED`
+  posting) used a plain `update()` with no status precondition, unlike `removeJobPosting`'s
+  status-guarded `updateMany` — an independent adversarial review agent found that two concurrent
+  re-posts of the same board could silently clobber each other's `externalPostingId`/audit trail
+  instead of the second one being cleanly rejected. Fixed by making that branch a status-guarded
+  `updateMany` (`WHERE id AND status != 'POSTED'`), the same shape `removeJobPosting` already
+  uses, plus a new concurrency test.
+
 ## Module 10 — Workflow & Automation Builder (PRD §10.2)
 
 ### Added

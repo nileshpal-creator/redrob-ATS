@@ -249,6 +249,32 @@ All five requirements from §10.2 are implemented:
   save creates a new `WorkflowDefinitionVersion` row and re-points `activeVersionId`; rollback
   re-points it at an older, still-existing version. History is never mutated or deleted.
 
+### Module 11 — Sourcing & Job Board Distribution (PRD §11.3)
+
+All five requirements from §11.3 are implemented:
+
+- Post a job to major job boards from a requisition. ✅ (scoped) — `JobPosting`, one row per
+  (job, board), created via a `JobBoardProvider` abstraction (`src/lib/job-boards/`) rather than
+  a hard-coded single vendor. Only a `MockJobBoardProvider` exists — no real board API
+  credentials are available in this environment (§12); see Known limitations.
+- Source attribution per candidate. ✅ — reuses `Candidate.sourceId` (the existing
+  `CANDIDATE_SOURCE` controlled list), set once at creation and never overwritten by a later
+  event, per §9's "held once globally" rule. No new source concept was introduced.
+- Inbound applications automatically enter the appropriate pipeline. ✅ — `receiveInboundApplication`
+  calls the same `createApplication` every other application-creation path uses, which drops a
+  new application into the job's first active pipeline stage exactly as before.
+- Inbound applications are automatically tagged with their source. ✅ — the candidate is created
+  (or, on a phone match, reused) with `sourceId` set to the posting's own board, and the new
+  `Application.sourcedFromPostingId` records which specific posting drove this particular
+  application — a second, more granular signal alongside `Candidate.sourceId`.
+- Referral capture as a distinct source type. ✅ — a dedicated "Refer a candidate" flow
+  (`createReferral`) creates the candidate and application together with source fixed to the
+  `CANDIDATE_SOURCE` list's existing "Referral" value.
+
+There is no public, unauthenticated career-site/apply page in this codebase (§7's explicit scope
+boundary) — inbound applications are recorded by staff who already have a session, not received
+via an unauthenticated webhook from a real board.
+
 ## Completed phases (Module 2)
 
 1. **Requirements Analysis** — approved decisions: simple approval workflow (not the full
@@ -564,13 +590,81 @@ All five requirements from §10.2 are implemented:
    stale comments elsewhere in the codebase still said the Workflow Builder "is Module 8", a
    leftover from before Module 8 became the Communication Hub — corrected to Module 10.
 
+## Completed phases (Module 11)
+
+1. **Investigation** — re-read §11.3 and §7's scope table directly from the source PDF. Searched
+   the repository for any existing sourcing/job-board/referral/inbound-application abstraction
+   (none found) and inspected `Candidate.sourceId`/`CANDIDATE_SOURCE`, `Job`/`primaryRecruiterId`,
+   `createApplication`'s pipeline-entry logic, `PipelineStage`'s `assertJobAccess` RBAC-reuse
+   pattern, and the `StorageProvider`/`HrisProvider`/`MailProvider` provider-abstraction template.
+   Three ambiguities were surfaced and resolved by the user before writing any code: inbound
+   application transport (staff-recorded intake, not an unauthenticated webhook — this app has no
+   public apply page per §7), referral capture UI (one new combined candidate+application dialog,
+   not two separate existing forms), and whether `Application` needs its own posting-attribution
+   field distinct from `Candidate.sourceId` (yes — added `sourcedFromPostingId`).
+2. **Technical Design** — a `JobBoardProvider` interface (post/remove only — no inbound-fetch
+   method, since real boards vary wildly in how they deliver inbound applications back) with an
+   env-driven factory and a `MockJobBoardProvider`, the same shape as
+   `StorageProvider`/`HrisProvider`/`MailProvider`; `JobPosting` as a persistent, status-toggled
+   row per (job, board) rather than an append-only log, with `@@unique([jobId, sourceId])` as the
+   real guard against a double-post race; `JobPosting` reuses `JOB:<action>` RBAC scoped to
+   `primaryRecruiterId` rather than a new permission resource, the same reuse `PipelineStage`
+   already establishes; `Application.sourcedFromPostingId` added as an internal-only third
+   parameter to `createApplication` (not part of the public Zod-validated input) so the existing
+   `POST /api/applications` route can't be made to claim an attribution it can't validate.
+3. **Backend Implementation** — schema (`JobPosting` + `JobPostingStatus` enum,
+   `Application.sourcedFromPostingId`) and migration; `src/lib/job-boards/` (interface, mock
+   provider, factory); validations (`job-posting.ts`); `job-postings.ts`
+   (`createJobPosting`/`removeJobPosting`/`listJobPostings`/`receiveInboundApplication`) and
+   `referrals.ts` (`createReferral`); thin API routes; audit actions
+   (`JOB_POSTING_CREATED`/`JOB_POSTING_REMOVED`/`JOB_POSTING_INBOUND_APPLICATION_RECEIVED`/
+   `CANDIDATE_REFERRED`).
+4. **Frontend Implementation** — a "Job board postings" card on the Job detail page (post to a
+   board, see POSTED/REMOVED/FAILED status with the provider's own error message, remove a
+   posting, record an inbound application against it), a "Refer a candidate" dialog, and a
+   "Source" column/field surfaced on the Applications list and detail page (`candidate.source`
+   plus, where present, `sourcedFromPosting`) — all permission-gated on the same `JOB:UPDATE`/
+   `CANDIDATE:CREATE`/`APPLICATION:CREATE` grants their underlying services already enforce.
+5. **Testing** — `job-postings.service.test.ts` (20 tests: CRUD, RBAC, the DRAFT/OPEN status
+   guard, duplicate-posting rejection, re-post-after-removal reusing the same row, two concurrency
+   tests against the `@@unique` constraint and the status-guarded `removeJobPosting` update,
+   the mock provider's deterministic FAILED path, inbound-intake candidate reuse without
+   overwriting an existing source, plus a re-post concurrency test added during self code review
+   below), `referrals.service.test.ts` (5 tests: combined creation, existing-candidate reuse,
+   RBAC, the "no active Referral source configured" edge case), and `job-posting.test.ts` (9
+   validation-schema tests). Full regression suite: 524 tests passing project-wide — no existing
+   test needed modification despite `createApplication`'s new opts parameter and
+   `applicationListInclude`'s extended shape.
+6. **Browser verification** — a real Chromium walkthrough via Playwright against the dev
+   database: logged in, created and opened a job, posted it to a board (status POSTED, an
+   externalPostingId from the mock provider), recorded an inbound application (candidate + application
+   created, tagged with the board as source), captured a referral (candidate + application created,
+   tagged "Referral"), removed the posting (status REMOVED), and confirmed both the Applications
+   list's new Source column and the Application detail page's "Source: … (… posting)" line render
+   correctly for both new applications, with zero console/page errors throughout. Found and fixed
+   one real accessibility bug in the process (below). Test data cleaned up from the dev database
+   afterward.
+7. **Self code review** — two independent passes, each catching one genuine defect: (1) the
+   Playwright pass surfaced `job-postings-card.tsx`'s and `refer-candidate-dialog.tsx`'s
+   `<Label>` elements having no `htmlFor`/matching input `id`, unlike the codebase's established
+   convention (e.g. `candidate-form.tsx`'s `htmlFor="candidate-name"`/`id="candidate-name"`
+   pairs) — a real accessibility regression (screen readers and label-click-to-focus wouldn't
+   associate the label with its field), caught because Playwright's `getByLabel` locator relies
+   on the same association; fixed by adding `htmlFor`/`id` pairs to every field in both
+   components. (2) an independent adversarial review agent found that `createJobPosting`'s
+   reactivate-an-existing-row branch (re-posting after a `REMOVED`/`FAILED` posting) used a plain
+   `update()` with no status precondition, unlike `removeJobPosting`'s status-guarded `updateMany`
+   — two concurrent re-posts of the same board could silently clobber each other's
+   `externalPostingId`/audit trail instead of the second one being rejected. Fixed by making that
+   branch a status-guarded `updateMany` (`WHERE id AND status != 'POSTED'`), the same shape
+   `removeJobPosting` already uses, plus a new concurrency test.
+
 ## Remaining modules
 
 Per the PRD's §11 module breakdown and §14 roadmap, not yet started:
 
 | PRD § | Module | Roadmap phase |
 | --- | --- | --- |
-| 11.3 | Sourcing & Job Board Distribution | V1 — Core Parity |
 | 10.4 | Template Designer (email templates, offer letters, e-signature-ready) | *implicit* |
 | 11.8 | Client / Staffing Portal *(optional module)* | P2 — Extended Capability |
 | 11.9 | Contingent Workforce & Compliance Tools *(optional module)* | Deferred until a business need is confirmed / Future |
@@ -674,6 +768,17 @@ Per the PRD's §11 module breakdown and §14 roadmap, not yet started:
   yet — `HandoffDeliveryMethod.API_PUSH` is a recognized value nothing ever writes. Same
   intentional "infrastructure exists, only a later integration effort writes the other value"
   pattern as `EmailLogStatus`/`positionsFilledCount` before Module 6.
+- **The `JobBoardProvider` abstraction has exactly one implementation.** `src/lib/job-boards/`
+  mirrors `StorageProvider`/`HrisProvider`/`MailProvider`'s shape (interface + one real
+  implementation + env-driven factory, `JOB_BOARD_PROVIDER` defaulting to `"mock"`), but no real
+  board API connector (LinkedIn, Indeed, Naukri, etc.) exists yet — per-board partner credentials
+  are not available in this environment (§12). Same intentional "infrastructure exists, only a
+  later integration effort writes the other value" pattern as `HrisProvider`/`MailProvider`.
+- **Inbound applications are staff-recorded, not received via a live board webhook/API.** §7
+  explicitly scopes this app to have no public, unauthenticated career-site/apply page, so
+  `receiveInboundApplication` is a session-authenticated "record what the board told you" entry
+  point rather than an unauthenticated webhook receiver. A future real board integration's own
+  webhook handler or polling adapter would call this exact function once board credentials exist.
 - **Deactivating a `PipelineStage` doesn't check for active applications at the service layer.**
   `PUT /api/jobs/[id]/pipeline-stages` will happily deactivate a stage that still has `ACTIVE`
   applications sitting in it — their `stageId` is left pointing at the now-inactive stage

@@ -521,6 +521,37 @@ another evaluation. See
 for what `fingerprint` is per trigger type, and why it has to differ per trigger type for the
 guard to mean the right thing in each case.
 
+## New Module 11 tables
+
+| Table | Purpose |
+| --- | --- |
+| `JobPosting` | One row per (job, board) a job has ever been posted to (§11.3). Persistent and status-toggled (POSTED/REMOVED/FAILED), not append-only — re-posting after a removal updates the same row. See [architecture.md#module-11--sourcing--job-board-distribution-113](architecture.md#module-11--sourcing--job-board-distribution-113). |
+
+### `JobPosting` columns
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | `String` (cuid) | |
+| `jobId` | `String` | FK → `Job`, `onDelete: Cascade` |
+| `sourceId` | `String` | FK → `ControlledListValue` (the `CANDIDATE_SOURCE` list) — the board posted to, reusing the same list a candidate's own source is drawn from |
+| `status` | `JobPostingStatus` | `POSTED` (default) / `REMOVED` / `FAILED` — the row's current state, not a log of every past action |
+| `externalPostingId` | `String?` | the provider's own id for this listing, when `post()` succeeds |
+| `errorMessage` | `String?` | the provider's own error, when `post()` or `remove()` fails |
+| `postedById` | `String` | FK → `User` — whoever most recently posted (or re-posted) this row |
+| `postedAt` | `DateTime` | reset to now on every (re-)post |
+| `removedAt` | `DateTime?` | set on removal, cleared on re-post |
+
+`@@unique([jobId, sourceId])` is the real guard against a double-post race (two concurrent
+first-time posts to the same board) — not a pre-check; a `P2002` on the `create` branch is caught
+and turned into a `ConflictError`. Indexed on `jobId` (the Job detail page's postings list) and
+on `sourceId`. `JobPosting` rows are never hard-deleted, since `Application.sourcedFromPostingId`
+may reference one.
+
+`Application` gained one new column in this module: `sourcedFromPostingId String?` (FK →
+`JobPosting`, `onDelete: SetNull`, indexed) — which specific posting drove *this* application,
+distinct from `Candidate.sourceId`'s broader "where this person originally came from." Set only
+by `receiveInboundApplication`; every other application-creation path leaves it `null`.
+
 ## Relationships
 
 - **User self-relation (`UserManager`)**: `User.managerId → User.id`. Drives
@@ -577,6 +608,10 @@ guard to mean the right thing in each case.
   WorkflowDefinitionVersion** (`sourceVersionId`, optional, `onDelete: SetNull`).
 - **WorkflowExecution → WorkflowDefinitionVersion** (`onDelete: Cascade`), **→ Application**
   (`onDelete: Cascade`).
+- **JobPosting → Job** (`onDelete: Cascade`), **→ ControlledListValue** (`sourceId`, the board),
+  **→ User** (`postedById`). **Application → JobPosting** (`sourcedFromPostingId`, optional,
+  `onDelete: SetNull`) — which specific posting drove this application, separate from
+  `Candidate.sourceId`.
 
 ## Enums
 
@@ -601,6 +636,7 @@ guard to mean the right thing in each case.
 | `WorkflowActionType` | `SEND_EMAIL`, `CREATE_TASK`, `CHANGE_FIELD`, `REASSIGN_OWNER`, `REQUEST_APPROVAL` | not stored as a column — each action's `type` discriminator lives inside `WorkflowDefinitionVersion.actions`' JSON array (Module 10) |
 | `WorkflowTaskStatus` | `OPEN`, `DONE`, `APPROVED`, `REJECTED` | `WorkflowTask.status` (Module 10) |
 | `WorkflowExecutionStatus` | `SUCCESS`, `PARTIAL_FAILURE`, `FAILED` | `WorkflowExecution.status` (Module 10) |
+| `JobPostingStatus` | `POSTED`, `REMOVED`, `FAILED` | `JobPosting.status` (Module 11) |
 
 `APPROVE` was added to `PermissionAction` in Module 2 (Phase 1 decision: approval must be its
 own permission, not overloaded onto `UPDATE`). `ApplicationOutcome`, `ApplicationEventType`, and
@@ -624,7 +660,7 @@ via the admin UI.
 | Key | Seeded starter values | Consumed by |
 | --- | --- | --- |
 | `REJECTION_REASON` | `Skills mismatch`, `Compensation mismatch`, `Withdrew`, `Position on hold`, `Selected another candidate` | `Application.outcomeReasonId`, `ApplicationEvent.reasonId` |
-| `CANDIDATE_SOURCE` | `Referral`, `LinkedIn`, `Indeed`, `Naukri`, `Career Site`, `Agency`, `Direct Application` | `Candidate.sourceId` |
+| `CANDIDATE_SOURCE` | `Referral`, `LinkedIn`, `Indeed`, `Naukri`, `Career Site`, `Agency`, `Direct Application` | `Candidate.sourceId`, `JobPosting.sourceId` (Module 11 — the same list doubles as the job-board list) |
 | `DOCUMENT_TYPE` | `Resume`, `Cover Letter`, `Offer Letter`, `Signed Agreement`, `ID Proof`, `Other` | `CandidateDocument.documentTypeId` |
 | `LOCATION` | `Remote`, `Head Office` | `Job.locationId` |
 | `DEPARTMENT` | `Engineering`, `Sales`, `Marketing`, `Finance`, `Human Resources`, `Operations` | `Job.departmentId` |
@@ -679,3 +715,9 @@ development to create and apply a new migration after a schema change. After dep
 7 to an environment with jobs that predate it, also run `npx tsx
 prisma/backfill-pipeline-stages.ts` once to give those jobs a default pipeline (new jobs get one
 automatically going forward).
+
+*(This list is not kept exhaustively current for every module — migrations for Modules 5–10 are
+omitted above; the most recent is documented below since it's this pass's own change.)*
+
+- `20260808073741_module11_job_posting` — adds `JobPosting`, `JobPostingStatus`, and
+  `Application.sourcedFromPostingId` (§11.3).

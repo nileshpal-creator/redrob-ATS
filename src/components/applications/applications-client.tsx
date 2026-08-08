@@ -29,7 +29,7 @@ export type ApplicationRow = {
   outcome: "ACTIVE" | "REJECTED" | "WITHDRAWN";
   createdAt: string;
   stageEnteredAt: string;
-  candidate: { id: string; name: string; phone: string; email: string | null };
+  candidate: { id: string; name: string; phone: string; email: string | null; source: { label: string } | null };
   job: { id: string; title: string };
   stage: { id: string; name: string };
   owner: { id: string; name: string; email: string };
@@ -109,6 +109,10 @@ export function ApplicationsClient({
           {row.original.job.title}
         </Link>
       ),
+    },
+    {
+      header: "Source",
+      cell: ({ row }) => row.original.candidate.source?.label ?? "—",
     },
     { header: "Stage", cell: ({ row }) => row.original.stage.name },
     {

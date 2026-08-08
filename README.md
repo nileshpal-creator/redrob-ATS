@@ -286,6 +286,26 @@ file behind the same interface, not a change to any service code.
 - **Timeline integration**: the candidate timeline gains `task_created`/`task_completed`/
   `task_approved`/`task_rejected` item types.
 
+### Module 11 — Sourcing & Job Board Distribution (PRD §11.3)
+
+- **Post to a board, from a requisition**: `JobPosting` (one row per job+board) is created
+  through a `JobBoardProvider` abstraction (`src/lib/job-boards/`), the same interface + factory
+  shape as `StorageProvider`/`HrisProvider`/`MailProvider` — only a `MockJobBoardProvider` exists
+  today (no real board credentials in this environment); status is POSTED/REMOVED/FAILED, with a
+  provider's own error message surfaced on FAILED. `@@unique([jobId, sourceId])` is the real
+  guard against double-posting, not a pre-check.
+- **Source attribution reuses the existing model**: candidates and applications are tagged using
+  the same `Candidate.sourceId`/`CANDIDATE_SOURCE` controlled list every other module already
+  uses — no parallel source concept. `Application.sourcedFromPostingId` adds a second, more
+  specific "which posting" signal alongside it.
+- **Inbound applications, staff-recorded**: there is no public career-site/apply page in this
+  app (§7), so `receiveInboundApplication` is a session-authenticated "record what the board told
+  you" entry point — it creates (or, on a phone match, reuses) the candidate and drops a new
+  application straight into the job's pipeline exactly the way every other application-creation
+  path does.
+- **Referral capture, one combined step**: a "Refer a candidate" dialog creates the candidate and
+  application together with source fixed to the "Referral" `CANDIDATE_SOURCE` value.
+
 ## Local development
 
 ```bash

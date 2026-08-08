@@ -26,10 +26,16 @@ import type {
 const userSummarySelect = { id: true, name: true, email: true } as const;
 
 const applicationListInclude = {
-  candidate: { select: { id: true, name: true, phone: true, email: true } },
+  // §11.3 — "source attribution" surfaced where recruiters actually work
+  // the pipeline, not only on the candidate profile. candidate.source is
+  // the primary, universal signal (set once, at candidate creation);
+  // sourcedFromPosting is the more specific "which posting" signal, present
+  // only for applications that arrived via receiveInboundApplication.
+  candidate: { select: { id: true, name: true, phone: true, email: true, source: { select: { label: true } } } },
   job: { select: { id: true, title: true } },
   stage: true,
   owner: { select: userSummarySelect },
+  sourcedFromPosting: { select: { id: true, source: { select: { label: true } } } },
 } satisfies Prisma.ApplicationInclude;
 
 const applicationDetailInclude = {
@@ -193,7 +199,18 @@ export async function findDuplicateApplications(context: SessionContext, input: 
   return { priorApplications };
 }
 
-export async function createApplication(context: SessionContext, input: ApplicationCreateInput) {
+/**
+ * `sourcedFromPostingId` is deliberately not part of ApplicationCreateInput/
+ * applicationCreateSchema — it's an internal-only linkage set by
+ * job-postings.ts (§11.3), never accepted from the public POST /api/applications
+ * body. Exposing it there would let any caller claim an application came
+ * through a posting it didn't, with nothing to validate the claim against.
+ */
+export async function createApplication(
+  context: SessionContext,
+  input: ApplicationCreateInput,
+  opts: { sourcedFromPostingId?: string } = {},
+) {
   await requirePermission(context, ENTITY.APPLICATION, "CREATE");
 
   const [candidate, job] = await Promise.all([
@@ -245,6 +262,7 @@ export async function createApplication(context: SessionContext, input: Applicat
       ownerId,
       customFields: customFields as Prisma.InputJsonValue,
       createdById: context.userId,
+      sourcedFromPostingId: opts.sourcedFromPostingId,
     },
     include: applicationDetailInclude,
   });

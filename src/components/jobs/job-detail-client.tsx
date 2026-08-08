@@ -10,9 +10,12 @@ import { Separator } from "@/components/ui/separator";
 import { CustomFieldsFormSection } from "@/components/custom-fields/custom-fields-form-section";
 import { JobStatusActions } from "@/components/jobs/job-status-actions";
 import { JobRecruitersEditor } from "@/components/jobs/job-recruiters-editor";
+import { JobPostingsCard, type JobPostingRow } from "@/components/job-postings/job-postings-card";
+import { ReferCandidateDialog } from "@/components/job-postings/refer-candidate-dialog";
 
 type Person = { id: string; name: string; email: string };
 type ReasonOption = { id: string; label: string };
+type ListValue = { id: string; label: string };
 
 type JobDetail = {
   id: string;
@@ -67,12 +70,20 @@ export function JobDetailClient({
   canEdit,
   canManageRecruiters,
   reasonsByListKey,
+  sources,
+  postings,
+  canManagePostings,
+  canRefer,
 }: {
   job: JobDetail;
   availableTransitions: { action: string; to: string; reasonRequired: boolean; reasonListKey?: string }[];
   canEdit: boolean;
   canManageRecruiters: boolean;
   reasonsByListKey: Record<string, ReasonOption[]>;
+  sources: ListValue[];
+  postings: JobPostingRow[];
+  canManagePostings: boolean;
+  canRefer: boolean;
 }) {
   return (
     <div className="max-w-4xl space-y-6">
@@ -88,6 +99,7 @@ export function JobDetailClient({
           </p>
         </div>
         <div className="flex gap-2">
+          {canRefer ? <ReferCandidateDialog jobId={job.id} /> : null}
           <Button variant="outline" asChild>
             <Link href={`/jobs/${job.id}/pipeline`}>
               <KanbanSquare /> Pipeline
@@ -144,6 +156,21 @@ export function JobDetailClient({
               {recruiter.isPrimary ? " (primary)" : ""}
             </Badge>
           ))}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Job board postings</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <JobPostingsCard
+            jobId={job.id}
+            jobStatus={job.status}
+            postings={postings}
+            sources={sources}
+            canManage={canManagePostings}
+          />
         </CardContent>
       </Card>
 

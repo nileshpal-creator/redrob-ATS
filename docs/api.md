@@ -889,6 +889,75 @@ Resolves an `OPEN` task to `DONE`.
   assignee nor able to manage the owning application · `404` unknown id · `409` already resolved
   by a concurrent request.
 
+## Job Postings & Referrals (§11.3, Module 11)
+
+Posting a job to a board, recording an inbound application against a posting, and capturing a
+referral. Access to a posting is authorized as `JOB:<action>` on the parent job (unscoped or
+scoped to `Job.primaryRecruiterId`) — the same reuse `PipelineStage`'s own endpoints already
+establish; there is no separate `JOB_POSTING` permission resource.
+
+### `GET /api/jobs/[id]/postings`
+
+Lists every board this job has ever been posted to (including `REMOVED`/`FAILED` rows), newest
+first.
+
+- **Status codes**: `200` success · `403` caller lacks `JOB:READ` over this job · `404` unknown
+  job id.
+
+### `POST /api/jobs/[id]/postings`
+
+Posts (or re-posts, after a removal) this job to a board via the configured `JobBoardProvider`.
+
+- **Request body** (`jobPostingCreateSchema`): `{ "sourceId": string }` — a `CANDIDATE_SOURCE`
+  controlled-list value id.
+- A provider failure (e.g. the mock provider's "no description" rejection) does not itself return
+  an error — the posting is recorded with `status: "FAILED"` and the provider's own
+  `errorMessage`, so `200` is still returned; the caller reads `status` to know whether it
+  actually succeeded.
+- **Status codes**: `200` success (including a recorded `FAILED` posting) · `400` the job isn't
+  `OPEN`, or already `POSTED` to this board, or `sourceId` isn't a valid/active
+  `CANDIDATE_SOURCE` value · `403` caller lacks `JOB:UPDATE` over this job · `404` unknown job id
+  · `409` a concurrent request already claimed the first post to this exact `(job, board)` pair
+  (the `@@unique([jobId, sourceId])` constraint is the real guard, not a pre-check).
+
+### `POST /api/job-postings/[id]/remove`
+
+Removes an active posting from its board.
+
+- **Status codes**: `200` success · `400` the posting is not currently `POSTED`, or the provider
+  itself reported a removal failure · `403` caller lacks `JOB:UPDATE` over the parent job · `404`
+  unknown posting id · `409` the posting was already changed by a concurrent request
+  (status-guarded `updateMany`, the same shape `WorkflowTask`'s resolution endpoints use).
+
+### `POST /api/job-postings/[id]/inbound`
+
+Records what a board notified staff about — creates (or, on a phone match, reuses) the candidate,
+tagged with this posting's board as `Candidate.sourceId`, and creates an application for the
+posting's job, tagged with this specific posting via `Application.sourcedFromPostingId`. There is
+no public, unauthenticated apply page in this app (§7); this is the staff-authenticated entry
+point a future real board integration's webhook handler or polling adapter would call once
+credentials exist.
+
+- **Request body** (`inboundApplicationSchema`): `{ "name": string, "phone": string, "email"?:
+  string, "note"?: string }`.
+- `note`, when given, is stored as a `CandidateNote` on the resulting candidate, not on the
+  application — `Application.customFields` has no matching field to hold it, and the note is
+  about the *person*, not this one application.
+- **Status codes**: `200` success · `400` the posting is not currently `POSTED` · `403` caller
+  lacks `JOB:UPDATE` over the parent job · `404` unknown posting id.
+
+### `POST /api/referrals`
+
+Captures a referral — creates (or, on a phone match, reuses) the candidate with `sourceId` fixed
+to the `CANDIDATE_SOURCE` list's "Referral" value, and creates an application for the named job,
+in one combined step.
+
+- **Request body** (`referralCreateSchema`): `{ "jobId": string, "name": string, "phone": string,
+  "email"?: string, "note"?: string }`.
+- **Status codes**: `200` success · `400` no active "Referral" value exists in the
+  `CANDIDATE_SOURCE` controlled list · `403` caller lacks `CANDIDATE:CREATE` or
+  `APPLICATION:CREATE` · `404` unknown `jobId`.
+
 ## Roles & Permissions
 
 ### `GET /api/roles`
