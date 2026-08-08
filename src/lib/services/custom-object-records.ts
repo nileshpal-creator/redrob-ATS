@@ -1,7 +1,7 @@
 import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
 import { ENTITY } from "@/lib/entity-registry";
-import { getFieldAccess, requirePermission } from "@/lib/authz/authorize";
+import { can, getFieldAccess, requirePermission, ForbiddenError } from "@/lib/authz/authorize";
 import type { FieldAccessMap } from "@/lib/authz/authorize";
 import { assertWritableFields, sanitizeForRead } from "@/lib/authz/field-sanitizer";
 import type { SessionContext } from "@/lib/authz/session-context";
@@ -23,23 +23,58 @@ import type {
  * separate, narrower table than assertKnownEntityType in custom-fields.ts,
  * which also accepts a CustomObjectDefinition's own apiKey — inappropriate
  * here since relations don't link records to other records.
+ *
+ * Resolves each target's own ownership field so linking can be gated by
+ * that entity's *own* RBAC scope (e.g. Candidate:READ at TEAM/OWN), not
+ * just CUSTOM_OBJECT_DEFINITION — otherwise a caller with only
+ * CUSTOM_OBJECT_DEFINITION:UPDATE could link, and later see the id of, a
+ * Candidate/Job/etc. entirely outside their own scope for that resource.
+ * Field names mirror each service's own assert*Access ownership check
+ * exactly (assertJobAccess/assertCandidateAccess/assertApplicationAccess/
+ * assertManageAccess/assertOfferAccess/assertHandoffAccess).
  */
-const ENTITY_EXISTENCE_CHECKS: Record<string, (id: string) => Promise<boolean>> = {
-  [ENTITY.JOB]: async (id) => (await prisma.job.count({ where: { id } })) > 0,
-  [ENTITY.CANDIDATE]: async (id) => (await prisma.candidate.count({ where: { id } })) > 0,
-  [ENTITY.APPLICATION]: async (id) => (await prisma.application.count({ where: { id } })) > 0,
-  [ENTITY.INTERVIEW]: async (id) => (await prisma.interview.count({ where: { id } })) > 0,
-  [ENTITY.OFFER]: async (id) => (await prisma.offer.count({ where: { id } })) > 0,
-  [ENTITY.HANDOFF]: async (id) => (await prisma.handoffRecord.count({ where: { id } })) > 0,
+const ENTITY_OWNERSHIP_LOOKUPS: Record<string, (id: string) => Promise<{ ownerId: string | null } | null>> = {
+  [ENTITY.JOB]: (id) =>
+    prisma.job.findUnique({ where: { id }, select: { primaryRecruiterId: true } }).then((row) =>
+      row ? { ownerId: row.primaryRecruiterId } : null,
+    ),
+  [ENTITY.CANDIDATE]: (id) =>
+    prisma.candidate.findUnique({ where: { id }, select: { createdById: true } }).then((row) =>
+      row ? { ownerId: row.createdById } : null,
+    ),
+  [ENTITY.APPLICATION]: (id) =>
+    prisma.application.findUnique({ where: { id }, select: { ownerId: true } }).then((row) =>
+      row ? { ownerId: row.ownerId } : null,
+    ),
+  [ENTITY.INTERVIEW]: (id) =>
+    prisma.interview.findUnique({ where: { id }, select: { scheduledById: true } }).then((row) =>
+      row ? { ownerId: row.scheduledById } : null,
+    ),
+  [ENTITY.OFFER]: (id) =>
+    prisma.offer.findUnique({ where: { id }, select: { createdById: true } }).then((row) =>
+      row ? { ownerId: row.createdById } : null,
+    ),
+  [ENTITY.HANDOFF]: (id) =>
+    prisma.handoffRecord.findUnique({ where: { id }, select: { initiatedById: true } }).then((row) =>
+      row ? { ownerId: row.initiatedById } : null,
+    ),
 };
 
-async function assertRelatedEntityExists(relatedEntityType: string, relatedEntityId: string) {
-  const check = ENTITY_EXISTENCE_CHECKS[relatedEntityType];
-  if (!check) {
+async function assertCanLinkRelatedEntity(
+  context: SessionContext,
+  relatedEntityType: string,
+  relatedEntityId: string,
+) {
+  const lookup = ENTITY_OWNERSHIP_LOOKUPS[relatedEntityType];
+  if (!lookup) {
     throw new ValidationError(`"${relatedEntityType}" is not a linkable entity type.`);
   }
-  if (!(await check(relatedEntityId))) {
+  const entity = await lookup(relatedEntityId);
+  if (!entity) {
     throw new NotFoundError(`${relatedEntityType} not found.`);
+  }
+  if (!(await can(context, relatedEntityType, "READ", { ownerId: entity.ownerId }))) {
+    throw new ForbiddenError();
   }
 }
 
@@ -264,7 +299,7 @@ export async function createCustomObjectRelation(
     throw new NotFoundError("Custom object record not found.");
   }
 
-  await assertRelatedEntityExists(input.relatedEntityType, input.relatedEntityId);
+  await assertCanLinkRelatedEntity(context, input.relatedEntityType, input.relatedEntityId);
 
   // No unique constraint on the (recordId, relatedEntityType,
   // relatedEntityId) triple in the schema (see CustomObjectRelation's own

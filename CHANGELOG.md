@@ -1,5 +1,60 @@
 # Changelog
 
+## Post-launch — Priority-A audit gap closure
+
+A PRD-audit pass after Module 12 confirmed 13 gaps as Priority A. All 13 are closed; see
+[project-status.md](docs/project-status.md#post-launch-priority-a-audit-gap-closure) for the
+full PRD mapping and [architecture.md](docs/architecture.md#post-launch-priority-a-audit-gap-closure)
+for the design rationale behind the three largest pieces.
+
+### Added
+
+- **Field-level permission enforcement**, actually applied. `src/lib/authz/field-sanitizer.ts`
+  (`sanitizeForRead`/`sanitizeManyForRead`/`assertWritableFields`) is now called from Candidate,
+  Job, and Offer's own read/write paths — `getFieldAccess` previously resolved a role's per-field
+  map but nothing consumed it.
+- **Configurable multi-step approval chains** for Job and Offer. New shared module
+  `src/lib/services/approvals.ts`; `ApprovalStepConfig` CRUD at `/admin/approval-chains`
+  (`PUT /api/approval-steps/[entityType]`, gated at ALL scope specifically); chains snapshotted
+  onto `JobApproval`/`OfferApproval` at submit time so a later config edit never rewrites an
+  in-progress chain.
+- **Offer `LAPSED` status + automatic expiry.** `src/lib/services/offer-expiry.ts`
+  (`runDueOfferExpirations`) added as a 4th consumer to the existing Module 12 scheduler
+  orchestrator (`runScheduledWork`).
+- **Offer `designation`/`location` fields** on create/update and the detail UI.
+- **Org-configurable Offer SLA/TAT threshold.** `Organization.offerTatThresholdDays`, editable at
+  `/admin/offer-settings`; a report run/export can still override it per-request.
+- **Interview calendar view** (`/interviews`), reusing the existing `GET /api/interviews` list
+  endpoint with added `jobId`/`recruiterId`/`dateFrom`/`dateTo` filters.
+- **Interview reschedule/cancel email notifications**, via the existing
+  `MailProvider`/`CommunicationTemplate` infrastructure.
+- **Interview panel double-booking protection** and a new **`NO_SHOW`** interview status.
+- **Custom object record/relation CRUD.** `src/lib/services/custom-object-records.ts` +
+  `/api/custom-object-records/*` + a new "Records" tab on the existing Custom Fields & Objects
+  admin page — `CustomObjectRecord`/`CustomObjectRelation` existed in the schema since Module 1
+  but had no service, API, or UI until now.
+
+### Fixed
+
+- **Candidate phone duplicate race.** Two concurrent creates with the same phone could both pass
+  the pre-check `findFirst` and both insert; now caught via the actual insert's unique-constraint
+  violation (P2002), not just the prior check.
+- **Post-handoff read-only enforcement gaps.** Closed the remaining gaps in
+  `assertApplicationNotHandedOff`'s coverage across the services that mutate a post-handoff
+  Application.
+
+### Security
+
+- **Custom object relations were gated only by `CUSTOM_OBJECT_DEFINITION`, not by the *target*
+  entity's own RBAC scope.** Caught by an independent security review before this work was
+  considered done. `createCustomObjectRelation` previously only checked that the target Job/
+  Candidate/Application/Interview/Offer/Handoff *existed*, not that the caller could actually
+  `READ` that specific record in their own scope — meaning a caller with only
+  `CUSTOM_OBJECT_DEFINITION:UPDATE` at ALL scope could link to, and enumerate the existence of,
+  entities entirely outside their own access. Fixed by resolving each target's own ownership
+  field and running the same `can(context, relatedEntityType, "READ", { ownerId })` check every
+  direct-access route in this app already runs, before a relation can be created.
+
 ## Module 12 — Scheduler Infrastructure (§11.5 reminders / §11.12 scheduled reports / §10.2 TIME_IN_STAGE)
 
 ### Added

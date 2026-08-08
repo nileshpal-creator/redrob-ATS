@@ -35,10 +35,12 @@ describe("CustomObjectRecordsService", () => {
   let fullRoleId: string;
   let hiddenFieldRoleId: string;
   let noAccessRoleId: string;
+  let noCandidateAccessRoleId: string;
 
   let fullUser: SessionContext;
   let hiddenFieldUser: SessionContext;
   let noAccessUser: SessionContext;
+  let noCandidateAccessUser: SessionContext;
 
   let vendorDefinitionId: string;
   let vendorApiKey: string;
@@ -70,12 +72,38 @@ describe("CustomObjectRecordsService", () => {
               { resource: "CUSTOM_OBJECT_DEFINITION", action: "READ", scope: "ALL" },
               { resource: "CUSTOM_OBJECT_DEFINITION", action: "UPDATE", scope: "ALL" },
               { resource: "CUSTOM_OBJECT_DEFINITION", action: "DELETE", scope: "ALL" },
+              // Linking to a Candidate additionally requires CANDIDATE:READ
+              // in a scope that covers that specific candidate (see
+              // assertCanLinkRelatedEntity in custom-object-records.ts) —
+              // this role holds ALL scope so the "happy path" relation
+              // tests below exercise linking to any candidate.
+              { resource: "CANDIDATE", action: "READ", scope: "ALL" },
             ],
           },
         },
       },
     });
     fullRoleId = fullRole.id;
+
+    // Holds CUSTOM_OBJECT_DEFINITION grants only, deliberately no CANDIDATE
+    // grant at all — proves linking a relation is also gated by the
+    // *target* entity's own RBAC scope, not just CUSTOM_OBJECT_DEFINITION.
+    const noCandidateAccessRole = await prisma.role.create({
+      data: {
+        name: "Test CO Records No Candidate Access",
+        rolePermissions: {
+          createMany: {
+            data: [
+              { resource: "CUSTOM_OBJECT_DEFINITION", action: "CREATE", scope: "ALL" },
+              { resource: "CUSTOM_OBJECT_DEFINITION", action: "READ", scope: "ALL" },
+              { resource: "CUSTOM_OBJECT_DEFINITION", action: "UPDATE", scope: "ALL" },
+              { resource: "CUSTOM_OBJECT_DEFINITION", action: "DELETE", scope: "ALL" },
+            ],
+          },
+        },
+      },
+    });
+    noCandidateAccessRoleId = noCandidateAccessRole.id;
 
     const hiddenFieldRole = await prisma.role.create({
       data: {
@@ -102,10 +130,11 @@ describe("CustomObjectRecordsService", () => {
     const noAccessRole = await prisma.role.create({ data: { name: "Test CO Records No Access" } });
     noAccessRoleId = noAccessRole.id;
 
-    const [fullUserRow, hiddenFieldUserRow, noAccessUserRow] = await Promise.all([
+    const [fullUserRow, hiddenFieldUserRow, noAccessUserRow, noCandidateAccessUserRow] = await Promise.all([
       prisma.user.create({ data: { name: "CO Records Full", email: "co-records-full@test.local", passwordHash } }),
       prisma.user.create({ data: { name: "CO Records Hidden", email: "co-records-hidden@test.local", passwordHash } }),
       prisma.user.create({ data: { name: "CO Records NoAccess", email: "co-records-noaccess@test.local", passwordHash } }),
+      prisma.user.create({ data: { name: "CO Records NoCandidateAccess", email: "co-records-nocandidate@test.local", passwordHash } }),
     ]);
 
     await prisma.userRole.createMany({
@@ -113,6 +142,7 @@ describe("CustomObjectRecordsService", () => {
         { userId: fullUserRow.id, roleId: fullRoleId },
         { userId: hiddenFieldUserRow.id, roleId: hiddenFieldRoleId },
         { userId: noAccessUserRow.id, roleId: noAccessRoleId },
+        { userId: noCandidateAccessUserRow.id, roleId: noCandidateAccessRoleId },
       ],
     });
 
@@ -124,6 +154,10 @@ describe("CustomObjectRecordsService", () => {
     noAccessUser = contextFor({
       ...noAccessUserRow,
       roles: [{ id: noAccessRoleId, name: "Test CO Records No Access", isSuperAdmin: false }],
+    });
+    noCandidateAccessUser = contextFor({
+      ...noCandidateAccessUserRow,
+      roles: [{ id: noCandidateAccessRoleId, name: "Test CO Records No Candidate Access", isSuperAdmin: false }],
     });
 
     const candidate = await prisma.candidate.create({
@@ -147,11 +181,24 @@ describe("CustomObjectRecordsService", () => {
     await prisma.candidate.deleteMany({ where: { id: candidateId } });
     await prisma.customFieldDefinition.deleteMany({ where: { entityType: vendorApiKey } });
     await prisma.customObjectDefinition.deleteMany({ where: { id: vendorDefinitionId } });
-    await prisma.userRole.deleteMany({ where: { roleId: { in: [fullRoleId, hiddenFieldRoleId, noAccessRoleId] } } });
-    await prisma.user.deleteMany({
-      where: { email: { in: ["co-records-full@test.local", "co-records-hidden@test.local", "co-records-noaccess@test.local"] } },
+    await prisma.userRole.deleteMany({
+      where: { roleId: { in: [fullRoleId, hiddenFieldRoleId, noAccessRoleId, noCandidateAccessRoleId] } },
     });
-    await prisma.role.deleteMany({ where: { id: { in: [fullRoleId, hiddenFieldRoleId, noAccessRoleId] } } });
+    await prisma.user.deleteMany({
+      where: {
+        email: {
+          in: [
+            "co-records-full@test.local",
+            "co-records-hidden@test.local",
+            "co-records-noaccess@test.local",
+            "co-records-nocandidate@test.local",
+          ],
+        },
+      },
+    });
+    await prisma.role.deleteMany({
+      where: { id: { in: [fullRoleId, hiddenFieldRoleId, noAccessRoleId, noCandidateAccessRoleId] } },
+    });
   });
 
   describe("createCustomObjectRecord", () => {
@@ -337,6 +384,21 @@ describe("CustomObjectRecordsService", () => {
           relatedEntityId: "nonexistent-candidate",
         }),
       ).rejects.toBeInstanceOf(NotFoundError);
+    });
+
+    it("throws ForbiddenError when the caller has no read access to the target entity itself, even with full CUSTOM_OBJECT_DEFINITION grants", async () => {
+      const record = await createCustomObjectRecord(fullUser, { definitionId: vendorDefinitionId, data: { name: "A" } });
+
+      await expect(
+        createCustomObjectRelation(noCandidateAccessUser, {
+          recordId: record.id,
+          relatedEntityType: "CANDIDATE",
+          relatedEntityId: candidateId,
+        }),
+      ).rejects.toBeInstanceOf(ForbiddenError);
+
+      // The rejected link attempt must not have partially applied.
+      expect(await prisma.customObjectRelation.count({ where: { recordId: record.id } })).toBe(0);
     });
 
     it("returns the existing relation instead of creating a duplicate for the same triple", async () => {

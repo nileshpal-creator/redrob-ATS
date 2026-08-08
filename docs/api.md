@@ -1250,6 +1250,108 @@ Delete a custom object definition.
 - **Status codes**: `200` success · `403` no `CUSTOM_OBJECT_DEFINITION:DELETE` grant · `404`
   definition not found.
 
+## Custom Object Records (post-launch, §10.1 audit gap)
+
+`CustomObjectRecord`/`CustomObjectRelation` existed in the schema since Module 1 but had no
+service, API, or UI — a Custom Object could be *defined* but never actually hold data. All
+routes below are gated by the same `CUSTOM_OBJECT_DEFINITION` permission as the definitions
+themselves (no per-object-type RBAC resource). See
+[architecture.md](architecture.md#post-launch-priority-a-audit-gap-closure) for the field-
+permission and relation-scoping design.
+
+### `GET /api/custom-object-records`
+
+List records, optionally filtered.
+
+- **Query params** (`customObjectRecordQuerySchema`): `definitionId?`, `relatedEntityType?`,
+  `relatedEntityId?` (the latter two together filter to records linked to that specific core
+  entity), `page` (default `1`), `pageSize` (default `25`, max `100`).
+- **Response**: `{ "records": CustomObjectRecord[], "total": number, "page": number, "pageSize": number }`.
+  Each record's `data` is sanitized per the caller's `FieldPermission` rows for that record's own
+  `CustomObjectDefinition.apiKey` (a HIDDEN `customFields.<key>` rule masks `data.<key>`).
+- **Permissions**: `CUSTOM_OBJECT_DEFINITION:READ`.
+- **Status codes**: `200` success · `403` no `CUSTOM_OBJECT_DEFINITION:READ` grant.
+
+### `POST /api/custom-object-records`
+
+Create a record against a Custom Object.
+
+- **Request body** (`customObjectRecordCreateSchema`):
+  ```json
+  {
+    "definitionId": "string, required",
+    "data": "object, defaults to {} — validated against definitionId's own active CustomFieldDefinition rows"
+  }
+  ```
+- **Response**: the created `CustomObjectRecord`.
+- **Permissions**: `CUSTOM_OBJECT_DEFINITION:CREATE`.
+- **Status codes**: `200` created · `400` `data` fails validation against the object's active
+  field definitions · `403` no `CUSTOM_OBJECT_DEFINITION:CREATE` grant, or `data` sets a field the
+  caller only has HIDDEN/READ access to · `404` `definitionId` not found.
+
+### `GET /api/custom-object-records/[id]`
+
+Fetch one record.
+
+- **Response**: the `CustomObjectRecord`, `data` field-permission-sanitized as above.
+- **Permissions**: `CUSTOM_OBJECT_DEFINITION:READ`.
+- **Status codes**: `200` success · `403` no grant · `404` record not found.
+
+### `PATCH /api/custom-object-records/[id]`
+
+Replace a record's `data`.
+
+- **Request body** (`customObjectRecordUpdateSchema`): `{ "data": "object, required" }` — a full
+  replace, not a partial merge, mirroring how every core entity's own `customFields` update
+  already works (see `updateJob`).
+- **Response**: the updated `CustomObjectRecord`.
+- **Permissions**: `CUSTOM_OBJECT_DEFINITION:UPDATE`.
+- **Status codes**: `200` success · `400` validation failure · `403` no grant, or a HIDDEN/READ
+  field was set · `404` record not found.
+
+### `DELETE /api/custom-object-records/[id]`
+
+Delete a record. Cascade-deletes its own `CustomObjectRelation` rows.
+
+- **Response**: `{ "ok": true }`.
+- **Permissions**: `CUSTOM_OBJECT_DEFINITION:DELETE`.
+- **Status codes**: `200` success · `403` no grant · `404` record not found.
+
+### `GET /api/custom-object-records/[id]/relations`
+
+List a record's links to core entities.
+
+- **Response**: `CustomObjectRelation[]`.
+- **Permissions**: `CUSTOM_OBJECT_DEFINITION:READ`.
+- **Status codes**: `200` success · `403` no grant · `404` record not found.
+
+### `POST /api/custom-object-records/[id]/relations`
+
+Link a record to a core entity (Job, Candidate, Application, Interview, Offer, or Handoff — the
+same `CUSTOM_FIELD_CAPABLE_ENTITIES` set custom fields already target).
+
+- **Request body** (`customObjectRelationCreateSchema`, with `recordId` taken from the path):
+  `{ "relatedEntityType": "string, required", "relatedEntityId": "string, required" }`.
+- **Response**: the `CustomObjectRelation` (an existing relation for the same
+  record/type/id triple is returned as-is rather than duplicated — the schema has no unique
+  constraint on that triple, so this is an application-level dedup, not a DB-level one).
+- **Permissions**: `CUSTOM_OBJECT_DEFINITION:UPDATE`, **and** `<relatedEntityType>:READ` in a
+  scope that covers that specific target entity (e.g. linking to a Candidate you can't otherwise
+  read is rejected even with full `CUSTOM_OBJECT_DEFINITION` grants) — closes an enumeration/
+  cross-scope-linking gap a security review caught on this new surface.
+- **Status codes**: `200` created (or existing relation returned) · `400` `relatedEntityType`
+  isn't one of the linkable core entities · `403` no `CUSTOM_OBJECT_DEFINITION:UPDATE` grant, or
+  no read access to the target entity in its own scope · `404` record, or the target entity
+  itself, not found.
+
+### `DELETE /api/custom-object-records/[id]/relations/[relationId]`
+
+Unlink a record from a core entity.
+
+- **Response**: `{ "ok": true }`.
+- **Permissions**: `CUSTOM_OBJECT_DEFINITION:UPDATE`.
+- **Status codes**: `200` success · `403` no grant · `404` relation not found.
+
 ## Audit Log
 
 ### `GET /api/audit-log`

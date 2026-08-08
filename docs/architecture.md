@@ -1013,7 +1013,7 @@ application can be created separately via the normal `/applications/new` flow.
 
 ## Module 12 — Scheduler Infrastructure (§11.5 / §11.12 / §10.2)
 
-**Architecture chosen: a lightweight orchestrator over three consumers, not a generic job-queue
+**Architecture chosen: a lightweight orchestrator over consumers, not a generic job-queue
 table.** Three real, PRD-committed capabilities need periodic evaluation with no single
 triggering write to hang off of: interview reminders (§11.5), scheduled report delivery (§11.12,
 Module 9), and `TIME_IN_STAGE` workflow triggers (§10.2, Module 10). The last two already had
@@ -1024,12 +1024,22 @@ to be reshaped around, `src/lib/scheduler/run.ts#runScheduledWork()` is a thin o
 calls all three existing (or, for reminders, newly-built) due-runners, isolates each one's
 failure from the others, and reports per-consumer stats. This was evaluated against the three
 options the module's own design brief posed — (A) a lightweight coordinator, (B) a persistent
-scheduled-job table, (C) an external-trigger abstraction — and (A) was chosen because the three
+scheduled-job table, (C) an external-trigger abstraction — and (A) was chosen because the
 consumers' due-detection logic genuinely differs (a fixed lead time before an absolute instant,
 a daily/weekly cadence against a last-run timestamp, a stage-age threshold against `stageEnteredAt`)
 in ways a shared table would only paraphrase, not simplify; each consumer already owns its own
 idempotency/batching/retry logic well, and the real remaining gap was *invocation* — one place
 external infrastructure can call, not a new persistence model.
+
+**Extended to a fourth consumer: Offer auto-expiry (§11.6 audit gap, post-launch).**
+`runDueOfferExpirations` (`src/lib/services/offer-expiry.ts`) transitions any `EXTENDED` offer
+whose `respondByDate` has passed to `LAPSED`, via the same version-guarded `updateMany` idiom
+every other consumer uses for its own idempotency — re-running the sweep is always safe, since a
+row already moved to `LAPSED` no longer matches the `WHERE status = 'EXTENDED'` filter. It was
+added to `runScheduledWork()` alongside the original three rather than given its own orchestrator
+or `run-due` endpoint, for the same reason the original three were unified: one more consumer
+with its own due-detection shape (a per-offer absolute deadline) doesn't change the
+coordinator's job, which stays invocation, isolation, and reporting.
 
 **No cron/queue infrastructure inside this app, still.** `runScheduledWork()` is real, tested
 business logic; nothing calls it periodically from inside the Next.js process — no
@@ -1160,3 +1170,79 @@ once per recipient — up to `MAX_REMINDERS_PER_RUN` (500) separate queries per 
 what are really only two distinct template names. Fixed by resolving both templates once per
 `runDueInterviewReminders` call into a small `Map`, threaded through to each send instead of
 re-queried.
+
+## Post-launch: Priority-A audit gap closure
+
+A PRD-audit pass after Module 12 confirmed 13 gaps as real, in-scope, worth fixing (see
+[project-status.md](project-status.md#post-launch-priority-a-audit-gap-closure) for the full
+list mapped to specific PRD items). This section covers the architectural decisions behind the
+three largest pieces of that work — the rest were narrower, single-file fixes documented inline
+at their own call sites.
+
+**Field-level permission enforcement: one shared choke point, not per-service masking.**
+`getFieldAccess` (Module 1, `src/lib/authz/authorize.ts`) always correctly *resolved* a role's
+per-field HIDDEN/READ/WRITE map; the gap was that nothing *applied* it. Rather than adding
+ad-hoc `delete obj.field` calls scattered across every service, `src/lib/authz/field-sanitizer.ts`
+exports two functions — `sanitizeForRead`/`sanitizeManyForRead` (strip HIDDEN fields from a
+response) and `assertWritableFields` (reject a create/update payload that sets a field the
+caller only has HIDDEN/READ access to) — and every service that exposes a
+`FieldPermission`-capable resource calls both at its own read/write boundary. A restricted custom
+field is addressed as `"customFields.<key>"` in `FieldPermission.field`, so one map covers core
+columns and admin-defined custom fields without a second mechanism. Custom Object records (gap
+12 below) reuse this exact module via a local `{ ...record, customFields: record.data }` alias
+around the call, rather than teaching the shared module a second field name — `data` on
+`CustomObjectRecord` plays the same role `customFields` plays on every core entity.
+
+**Configurable multi-step approval chains: admin-configured order, snapshotted at submit time.**
+Job and Offer each had a fixed, single-decision approval step. `src/lib/services/approvals.ts`
+is a new shared module (used by both `jobs.ts` and `offers.ts`, not duplicated) with:
+- `ApprovalStepConfig` CRUD (`listApprovalStepConfigs`/`replaceApprovalStepConfigs`, full-set
+  delete+recreate matching `replaceRolePermissions`'s own convention) — gated at `JOB:UPDATE`/
+  `OFFER:UPDATE` **ALL scope specifically** (`assertAllScopeUpdate`), not just any UPDATE grant,
+  since an ordinary recruiter's OWN-scope `JOB:UPDATE` (for editing their own jobs) must not
+  extend to reconfiguring the org-wide chain. No seeded role holds that ALL-scope grant — the
+  same "super-admin only in practice" shape Organization settings already established.
+- `buildApprovalStepSnapshots(tx, entityType)` — read once, at SUBMIT time, into the entity's own
+  `JobApproval`/`OfferApproval` rows (full copies of `stepOrder`/`name`/`requiredRoleId`/
+  `requiredRoleName`, not a live foreign key to the config). A later admin edit to
+  `ApprovalStepConfig` therefore never rewrites an in-progress or historical chain — verified by
+  a dedicated test that clears the config mid-flight and confirms an already-submitted Job still
+  requires its original two snapshotted steps, in order.
+- `selectCurrentPendingStep`/`assertCanDecideStep`/`isChainComplete` — generic helpers `jobs.ts`/
+  `offers.ts` call from their own `decideJobApprovalStep`/`decideOfferApprovalStep`. Deciding a
+  step is gated by **two independent checks**: the entity's existing scope-based
+  `assertJobAccess`/`assertOfferAccess` (unchanged, still the front door), and — only when the
+  current step has a configured `requiredRoleId` — that the actor actually holds that specific
+  role. A step with `requiredRoleId: null` (the legacy no-chain row) needs no second check,
+  preserving today's single-step behavior byte-for-byte for any Job/Offer with no chain
+  configured. The step row's own `PENDING`-guarded `updateMany` (inside a `$transaction` that
+  also flips the entity's overall status once the chain completes) is the concurrency guard — a
+  losing concurrent decision gets `count === 0` and a `ConflictError`, independent of the
+  entity's own optimistic-lock `version` field.
+
+**Custom Object record/relation CRUD, and a relation-scoping fix a security review caught.**
+`CustomObjectRecord`/`CustomObjectRelation` existed in the schema since Module 1 but were never
+exposed — `src/lib/services/custom-object-records.ts` is the first service to use them. Records
+are gated by the same `CUSTOM_OBJECT_DEFINITION` permission as the definitions themselves (no new
+RBAC resource per object type); `data` is validated against that object's own active
+`CustomFieldDefinition` rows via the same `buildCustomFieldValueSchema` dynamic-schema builder
+every core entity's `customFields` blob already goes through. A relation may only point at a core
+entity (`CUSTOM_FIELD_CAPABLE_ENTITIES` — Job/Candidate/Application/Interview/Offer/Handoff), per
+the model's own schema comment, not at another Custom Object record.
+
+An independent security review of this new surface (run as part of closing out this audit pass)
+found that the initial implementation checked only that the target entity *existed*
+(`prisma.job.count(...)`, etc.) before linking — it never checked that the *caller* actually had
+`READ` access to that specific entity in their own RBAC scope. That meant a user holding only
+`CUSTOM_OBJECT_DEFINITION:UPDATE` at ALL scope (a plausible standalone "custom-objects admin"
+role with no broad Job/Candidate/etc. access) could link, and later see the id of, a record
+entirely outside their own scope for that resource — and could probe arbitrary ids for existence
+via the `NotFoundError`-vs-success distinction. Fixed by resolving each target's own ownership
+field (mirroring `assertJobAccess`/`assertCandidateAccess`/`assertApplicationAccess`/
+`assertManageAccess`/`assertOfferAccess`/`assertHandoffAccess`'s own ownership fields exactly —
+`primaryRecruiterId`, `createdById`, `ownerId`, `scheduledById`, `createdById`, `initiatedById`
+respectively) and running the same `can(context, relatedEntityType, "READ", { ownerId })` check
+every direct-access route already runs, before a relation can be created. This brings the new
+surface to parity with how the rest of the app already treats "does this id exist" vs. "can this
+caller see it" — not a new leak class, just this one new code path missing a check the rest of
+the app already has everywhere else.

@@ -29,7 +29,8 @@ All `M`-priority requirements from §11.1 are implemented:
   approval → open) — built as a **simple, fixed** state machine per Phase 1's explicit scope
   decision, not rewired onto the PRD's separate Workflow & Automation Builder (§10.2, Module 10)
   once that shipped — Module 10's builder reacts to Application-level events, not Job's own
-  status transitions. ✅ (scoped)
+  status transitions. ✅ (scoped; later extended to an admin-configurable multi-step chain — see
+  [Post-launch: Priority-A audit gap closure](#post-launch-priority-a-audit-gap-closure) below)
 - Assign one or more recruiters, with a primary owner. ✅
 - Status: open, on hold, closed, cancelled — reason required on hold/close/cancel. ✅
 - Attach job description and structured must-have/good-to-have criteria (stored as string
@@ -133,10 +134,12 @@ All `M`-priority requirements from §11.6 are implemented:
   service-layer check. ✅
 - A fixed table-driven status machine — `DRAFT → PENDING_APPROVAL → APPROVED → EXTENDED →
   ACCEPTED/DECLINED`, plus `REVOKE` from any non-terminal status — mirroring Job's own approval
-  workflow shape. ✅
+  workflow shape. ✅ (later extended with a `LAPSED` terminal status and automatic expiry — see
+  [Post-launch: Priority-A audit gap closure](#post-launch-priority-a-audit-gap-closure) below)
 - Approval step with its own append-only `OfferApproval` history (one row per submit/resubmit
   cycle), decided by whoever holds `OFFER:APPROVE` (Hiring Manager, ALL scope), independent of
-  who drafted the offer. ✅
+  who drafted the offer. ✅ (later extended to an admin-configurable multi-step chain, same as
+  Job's — see below)
 - Decline/Revoke require a Controlled List reason (`OFFER_OUTCOME_REASON`). ✅
 - Accepting an offer increments the parent Job's `positionsFilledCount` — the first module to
   actually drive that counter (see Module 2's note above and
@@ -790,10 +793,10 @@ Per the PRD's §11 module breakdown and §14 roadmap, not yet started:
   matrix could grey out, e.g., `APPROVE` for resources where it doesn't apply — it is not yet
   consumed by the matrix component, which still renders the four Module 1 CRUD columns
   unconditionally for every resource, including `JOB`.
-- **`FieldPermission` is not yet exercised by the Job module.** The field-level visibility
-  engine from Module 1 works, but no Job field is currently field-permission-gated; this only
-  becomes relevant once a Job field is sensitive enough to warrant it (e.g. a future
-  compensation field on Candidate/Offer).
+- ~~`FieldPermission` is not yet exercised by the Job module.~~ **Resolved post-launch** — see
+  [Post-launch: Priority-A audit gap closure](#post-launch-priority-a-audit-gap-closure) below;
+  `getFieldAccess`/`sanitizeForRead`/`assertWritableFields` are now actually enforced on
+  Candidate, Job, and Offer reads/writes, not just resolved and left unapplied.
 - **A discrepancy between malformed and well-formed unauthorized requests.** An unauthenticated
   or under-permissioned `POST`/`PATCH`/`PUT` with an empty or malformed body returns `400`
   (Zod validation runs before the service's permission check) rather than `403`; a
@@ -876,9 +879,11 @@ Per the PRD's §11 module breakdown and §14 roadmap, not yet started:
   EventBridge, etc.) has actually been wired up and exercised end-to-end in this environment;
   only the endpoint's own auth/idempotency/batching was verified directly (via curl-equivalent
   fetch calls in Playwright), not a real external cron provider's delivery.
-- **The offer/TAT compliance threshold is a report parameter, not a stored org policy.** The PRD
-  names no fixed SLA number for §11.12's compliance reporting, so `tatThresholdDays` is supplied
-  per report-run/export rather than configured once at the organization level.
+- ~~The offer/TAT compliance threshold is a report parameter, not a stored org policy.~~
+  **Resolved post-launch** — `Organization.offerTatThresholdDays` now holds an org-wide default
+  (admin-configurable at `/admin/offer-settings`); a report-run/export can still pass its own
+  `tatThresholdDays` to override it for that one run. See
+  [Post-launch: Priority-A audit gap closure](#post-launch-priority-a-audit-gap-closure) below.
 - **The report PDF export is a plain text table, not a laid-out grid.** `pdf-lib` is a low-level
   PDF-writing library with no table-layout engine of its own; building one was out of scope for
   satisfying "export to PDF" on a report already viewable on-screen and exportable as XLSX/CSV.
@@ -911,6 +916,68 @@ Per the PRD's §11 module breakdown and §14 roadmap, not yet started:
   with more than 100 applications will not show the rest on that page (the global `/applications`
   list, which paginates properly, is unaffected). Not encountered in practice at this scale, but
   worth fixing before a very high-volume job's pipeline is used as the primary view for it.
+
+## Post-launch: Priority-A audit gap closure
+
+After Module 12 shipped, a PRD-audit pass re-checked every completed module against the PRD text
+and confirmed 13 gaps as Priority A (real, in-scope, worth fixing before calling V1 done — not
+the P2/Future items already tracked above). All 13 are closed, reusing each module's own existing
+services/schema/conventions rather than parallel infrastructure:
+
+1. **Field-level permission enforcement.** `getFieldAccess` (Module 1) resolved a role's
+   per-field HIDDEN/READ/WRITE map but nothing applied it. `src/lib/authz/field-sanitizer.ts`
+   (`sanitizeForRead`, `sanitizeManyForRead`, `assertWritableFields`) is now the one enforcement
+   choke point, called from Candidate, Job, and Offer's own read/write paths (and, as of gap 12,
+   Custom Object records via a local `customFields`/`data` alias).
+2. **Candidate phone duplicate race.** Two concurrent creates with the same phone could both pass
+   the pre-check and both insert; now caught via the DB's own unique-constraint violation (P2002)
+   on the actual insert, not just a prior `findFirst`.
+3. **Configurable multi-step Job approval.** Job's fixed single-decision approval (Module 2) is
+   now an admin-configurable ordered chain of role-gated steps, snapshotted onto the Job at submit
+   time so a later config edit never rewrites an in-progress or historical chain. Configuring the
+   chain itself requires `JOB:UPDATE` at ALL scope specifically (`/admin/approval-chains`), not
+   just any UPDATE grant — an ordinary recruiter's OWN-scope `JOB:UPDATE` (for editing their own
+   jobs) does not extend to reconfiguring the org-wide chain.
+4. **Configurable multi-step Offer approval.** Same chain engine as gap 3
+   (`src/lib/services/approvals.ts`, shared by both entity types), applied to Offer's own
+   single-row `OfferApproval` history.
+5. **Offer designation/location fields.** Added to the Offer create/update schema and detail UI.
+6. **Offer `LAPSED` status + automatic expiry.** A new terminal status plus
+   `runDueOfferExpirations` (a 4th consumer wired into the existing Module 12 scheduler
+   orchestrator — see [architecture.md](architecture.md#module-12--scheduler-infrastructure-1112--11112--10112)) transitions any `EXTENDED` offer past its
+   `respondByDate` automatically.
+7. **Organization-configurable Offer SLA/TAT threshold.** `Organization.offerTatThresholdDays`
+   is now an admin-settable org default (`/admin/offer-settings`); a report run/export can still
+   pass its own `tatThresholdDays` to override it for that one run.
+8. **Interview calendar view.** A `/interviews` week-grid page, reusing the existing
+   `GET /api/interviews` list endpoint with added `jobId`/`recruiterId`/`dateFrom`/`dateTo`
+   filters layered on top of the same RBAC-scoped query every other list view already uses.
+9. **Interview reschedule/cancel notifications.** Wired into the existing
+   `MailProvider`/`CommunicationTemplate` infrastructure, following `updateInterview`/
+   `cancelInterview`'s own version-guarded transaction commit — no new claim-state machine needed.
+10. **Interview panel double-booking protection.** A panelist already booked into another
+    non-cancelled interview in an overlapping window is rejected at schedule/reschedule time.
+11. **Interview `NO_SHOW` status.** A new terminal status distinct from `CANCELLED`/`COMPLETED`.
+12. **Custom object record/relation CRUD.** `CustomObjectRecord`/`CustomObjectRelation` existed
+    in the schema from Module 1 but had no service, API, or UI — a Custom Object could be defined
+    but never actually hold data. `src/lib/services/custom-object-records.ts` adds full CRUD for
+    records (data validated against the object's own active `CustomFieldDefinition` rows, same
+    dynamic schema builder every core entity's `customFields` blob uses) and their relations to
+    core entities (restricted to `CUSTOM_FIELD_CAPABLE_ENTITIES`, existence-checked before
+    linking), gated by the same `CUSTOM_OBJECT_DEFINITION` permission as the definitions
+    themselves. Reachable from a new "Records" tab on the existing Custom Fields & Objects admin
+    page.
+13. **Full post-handoff read-only enforcement.** Closed the remaining gaps in
+    `assertApplicationNotHandedOff`'s coverage across the services that mutate a
+    post-handoff Application.
+
+**Verification.** Each gap above was implemented against the existing architecture (no parallel
+services, no new scheduler, no schema drift beyond what each specific gap genuinely needed — 12
+required no migration at all, since its models already existed) and covered by new automated
+tests alongside the existing suite (709 tests total, all passing) plus a `tsc`/lint/production
+`build` pass and a real browser smoke test per gap against the dev database, cleaned up
+afterward. See the git history on `claude/enterprise-ats-dev-w2jx1o` for the three commits this
+work shipped in.
 
 ## Future roadmap (from the PRD, §14)
 
