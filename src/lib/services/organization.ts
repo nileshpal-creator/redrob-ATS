@@ -35,7 +35,12 @@ export async function updateOrganizationSettings(context: SessionContext, input:
 
   const updated = await prisma.organization.update({
     where: { id: organization.id },
-    data: { interviewReminderLeadMinutes: input.interviewReminderLeadMinutes },
+    data: {
+      ...(input.interviewReminderLeadMinutes !== undefined && {
+        interviewReminderLeadMinutes: input.interviewReminderLeadMinutes,
+      }),
+      ...(input.offerTatThresholdDays !== undefined && { offerTatThresholdDays: input.offerTatThresholdDays }),
+    },
   });
 
   await recordAudit({
@@ -44,8 +49,14 @@ export async function updateOrganizationSettings(context: SessionContext, input:
     entityType: ENTITY.ORGANIZATION,
     entityId: updated.id,
     changes: {
-      before: { interviewReminderLeadMinutes: organization.interviewReminderLeadMinutes },
-      after: { interviewReminderLeadMinutes: updated.interviewReminderLeadMinutes },
+      before: {
+        interviewReminderLeadMinutes: organization.interviewReminderLeadMinutes,
+        offerTatThresholdDays: organization.offerTatThresholdDays,
+      },
+      after: {
+        interviewReminderLeadMinutes: updated.interviewReminderLeadMinutes,
+        offerTatThresholdDays: updated.offerTatThresholdDays,
+      },
     },
   });
 

@@ -1,7 +1,15 @@
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@/generated/prisma/client";
 import { ENTITY } from "@/lib/entity-registry";
-import { can, ForbiddenError, getEffectiveScope, getTeamMemberIds, requirePermission } from "@/lib/authz/authorize";
+import {
+  can,
+  ForbiddenError,
+  getEffectiveScope,
+  getFieldAccess,
+  getTeamMemberIds,
+  requirePermission,
+} from "@/lib/authz/authorize";
+import { assertWritableFields, sanitizeForRead, sanitizeManyForRead } from "@/lib/authz/field-sanitizer";
 import type { SessionContext } from "@/lib/authz/session-context";
 import type { PermissionAction } from "@/generated/prisma/enums";
 import { ConflictError, NotFoundError, ValidationError } from "@/lib/errors";
@@ -14,10 +22,12 @@ import type {
   InterviewCreateInput,
   InterviewFeedbackCreateInput,
   InterviewFeedbackUpdateInput,
+  InterviewNoShowInput,
   InterviewQuery,
   InterviewUpdateInput,
 } from "@/lib/validations/interview";
 import { assertApplicationNotHandedOff } from "@/lib/services/handoffs";
+import { notifyInterviewCancelled, notifyInterviewRescheduled } from "@/lib/services/interview-notifications";
 
 const userSummarySelect = { id: true, name: true, email: true } as const;
 
@@ -64,6 +74,82 @@ async function assertActiveUsers(userIds: string[], fieldLabel: string) {
     throw new ValidationError(`${fieldLabel} must all be active users.`);
   }
   return uniqueIds;
+}
+
+// Matches interviewCreateSchema/interviewUpdateSchema's own durationMinutes
+// cap (src/lib/validations/interview.ts) — bounds how far back an existing
+// interview's start time could be and still possibly still be running by
+// the time a new one starts, so the DB query below can narrow candidates
+// with a plain range filter (no raw SQL / generated "start + duration"
+// arithmetic needed) instead of scanning every SCHEDULED interview a
+// panelist has ever had.
+const MAX_INTERVIEW_DURATION_MINUTES = 480;
+const MINUTE_MS = 60_000;
+
+/**
+ * §11.5: "Panel-availability check within the system to prevent
+ * double-booking." Checked server-side on every schedule/reschedule — never
+ * only in the client — against every assigned panelist, considering each
+ * interview's actual duration (not just its start instant), and excluding
+ * the interview being rescheduled from its own conflict set.
+ *
+ * This is a real-time pre-flight query, not backed by a database
+ * constraint: unlike Candidate.phone or Offer's one-active-per-application
+ * index, "no two SCHEDULED interviews for the same panelist may overlap in
+ * time" has no natural expression as a unique index (it's a range overlap,
+ * not an equality), so — same class of limitation this codebase already
+ * accepts for findDuplicateApplications/checkCandidateDuplicates — two
+ * genuinely simultaneous schedule requests for the same panelist could each
+ * pass this check before either commits. This is a real, disclosed
+ * limitation, not a silent gap: closing it fully would need either
+ * SERIALIZABLE isolation or an explicit advisory lock keyed by panelist,
+ * which this pass does not add.
+ */
+async function assertNoDoubleBooking(
+  panelistIds: string[],
+  scheduledAt: Date,
+  durationMinutes: number,
+  excludeInterviewId?: string,
+) {
+  const start = scheduledAt;
+  const end = new Date(start.getTime() + durationMinutes * MINUTE_MS);
+  const earliestPossibleOverlap = new Date(start.getTime() - MAX_INTERVIEW_DURATION_MINUTES * MINUTE_MS);
+
+  const candidates = await prisma.interview.findMany({
+    where: {
+      status: "SCHEDULED",
+      ...(excludeInterviewId ? { id: { not: excludeInterviewId } } : {}),
+      panelists: { some: { userId: { in: panelistIds } } },
+      scheduledAt: { gte: earliestPossibleOverlap, lt: end },
+    },
+    select: {
+      scheduledAt: true,
+      durationMinutes: true,
+      roundName: true,
+      panelists: { select: { userId: true, user: { select: { name: true } } } },
+    },
+  });
+
+  const conflictingNames = new Set<string>();
+  for (const candidate of candidates) {
+    const candidateEnd = new Date(candidate.scheduledAt.getTime() + candidate.durationMinutes * MINUTE_MS);
+    // Exact overlap test — the query above only narrows by start time; this
+    // is what actually accounts for each candidate's own duration.
+    if (candidate.scheduledAt < end && start < candidateEnd) {
+      for (const panelist of candidate.panelists) {
+        if (panelistIds.includes(panelist.userId)) {
+          conflictingNames.add(panelist.user.name);
+        }
+      }
+    }
+  }
+
+  if (conflictingNames.size > 0) {
+    const names = Array.from(conflictingNames).join(", ");
+    throw new ValidationError(
+      `Scheduling conflict: ${names} already ${conflictingNames.size === 1 ? "has" : "have"} an overlapping interview at this time.`,
+    );
+  }
 }
 
 async function validateInterviewCustomFields(customFields: Record<string, unknown> | undefined) {
@@ -120,7 +206,10 @@ async function assertReadOrFeedbackAccess(
 
 async function buildScopedWhere(
   context: SessionContext,
-  query: Pick<InterviewQuery, "applicationId" | "panelistUserId" | "status">,
+  query: Pick<
+    InterviewQuery,
+    "applicationId" | "panelistUserId" | "status" | "jobId" | "recruiterId" | "dateFrom" | "dateTo"
+  >,
 ): Promise<Prisma.InterviewWhereInput> {
   const scope = await getEffectiveScope(context, ENTITY.INTERVIEW, "READ");
   if (!scope) {
@@ -143,6 +232,14 @@ async function buildScopedWhere(
     applicationId: query.applicationId,
     status: query.status,
     ...(query.panelistUserId ? { panelists: { some: { userId: query.panelistUserId } } } : {}),
+    // jobId/recruiterId narrow further within whatever the caller's scope
+    // already permits — the same "plain AND filter layered on top of the
+    // scope filter" convention listJobs uses for its own recruiterId param.
+    ...(query.jobId ? { application: { jobId: query.jobId } } : {}),
+    ...(query.recruiterId ? { scheduledById: query.recruiterId } : {}),
+    ...(query.dateFrom || query.dateTo
+      ? { scheduledAt: { ...(query.dateFrom ? { gte: query.dateFrom } : {}), ...(query.dateTo ? { lte: query.dateTo } : {}) } }
+      : {}),
     ...ownerFilter,
   };
 }
@@ -150,7 +247,7 @@ async function buildScopedWhere(
 export async function listInterviews(context: SessionContext, query: InterviewQuery) {
   const where = await buildScopedWhere(context, query);
 
-  const [interviews, total] = await Promise.all([
+  const [interviews, total, fieldAccess] = await Promise.all([
     prisma.interview.findMany({
       where,
       include: interviewDetailInclude,
@@ -159,9 +256,15 @@ export async function listInterviews(context: SessionContext, query: InterviewQu
       take: query.pageSize,
     }),
     prisma.interview.count({ where }),
+    getFieldAccess(context, ENTITY.INTERVIEW),
   ]);
 
-  return { interviews, total, page: query.page, pageSize: query.pageSize };
+  return {
+    interviews: sanitizeManyForRead(interviews, fieldAccess),
+    total,
+    page: query.page,
+    pageSize: query.pageSize,
+  };
 }
 
 export async function getInterview(context: SessionContext, id: string) {
@@ -170,7 +273,8 @@ export async function getInterview(context: SessionContext, id: string) {
     throw new NotFoundError("Interview not found.");
   }
   await assertReadOrFeedbackAccess(context, interview, "READ");
-  return interview;
+  const fieldAccess = await getFieldAccess(context, ENTITY.INTERVIEW);
+  return sanitizeForRead(interview, fieldAccess);
 }
 
 export async function scheduleInterview(context: SessionContext, input: InterviewCreateInput) {
@@ -191,7 +295,11 @@ export async function scheduleInterview(context: SessionContext, input: Intervie
   await assertApplicationNotHandedOff(input.applicationId);
 
   const panelistIds = await assertActiveUsers(input.panelistUserIds, "Interviewer");
+  await assertNoDoubleBooking(panelistIds, input.scheduledAt, input.durationMinutes ?? 60);
   const customFields = await validateInterviewCustomFields(input.customFields);
+
+  const fieldAccess = await getFieldAccess(context, ENTITY.INTERVIEW);
+  assertWritableFields({ ...input, customFields }, fieldAccess);
 
   const created = await prisma.$transaction(async (tx) => {
     const interview = await tx.interview.create({
@@ -220,7 +328,7 @@ export async function scheduleInterview(context: SessionContext, input: Intervie
     changes: { after: { applicationId: input.applicationId, roundName: input.roundName, scheduledAt: input.scheduledAt } },
   });
 
-  return created;
+  return sanitizeForRead(created, fieldAccess);
 }
 
 function assertScheduled(interview: { status: string }, actionLabel: string) {
@@ -242,8 +350,23 @@ export async function updateInterview(context: SessionContext, id: string, input
   const panelistIds = input.panelistUserIds
     ? await assertActiveUsers(input.panelistUserIds, "Interviewer")
     : undefined;
+
+  // Re-check availability whenever the resulting schedule could change —
+  // the effective post-update time/duration/panel, excluding this same
+  // interview from its own conflict set (a plain reschedule of an
+  // unchanged panel must never flag itself as a conflict).
+  if (input.scheduledAt !== undefined || input.durationMinutes !== undefined || panelistIds !== undefined) {
+    const effectivePanelistIds = panelistIds ?? existing.panelists.map((panelist) => panelist.userId);
+    const effectiveScheduledAt = input.scheduledAt ?? existing.scheduledAt;
+    const effectiveDurationMinutes = input.durationMinutes ?? existing.durationMinutes;
+    await assertNoDoubleBooking(effectivePanelistIds, effectiveScheduledAt, effectiveDurationMinutes, id);
+  }
+
   const customFields =
     input.customFields !== undefined ? await validateInterviewCustomFields(input.customFields) : undefined;
+
+  const fieldAccess = await getFieldAccess(context, ENTITY.INTERVIEW);
+  assertWritableFields({ ...input, ...(customFields !== undefined && { customFields }) }, fieldAccess);
 
   const data: Prisma.InterviewUncheckedUpdateManyInput = {
     ...(input.roundName !== undefined && { roundName: input.roundName }),
@@ -280,7 +403,18 @@ export async function updateInterview(context: SessionContext, id: string, input
     changes: { before: existing, after: data },
   });
 
-  return updated;
+  // §11.5: "all parties notified" — only for an actual reschedule (a plain
+  // notes/roundName edit with no schedule change isn't what candidates and
+  // panelists need an email about). Fired after the transaction has
+  // committed, same "audit after commit" convention; a send failure must
+  // never fail the reschedule response that already succeeded.
+  if (input.scheduledAt !== undefined || input.durationMinutes !== undefined || input.mode !== undefined) {
+    await notifyInterviewRescheduled(id, context).catch((error: unknown) => {
+      console.error("Interview reschedule notification failed:", error);
+    });
+  }
+
+  return sanitizeForRead(updated, fieldAccess);
 }
 
 export async function cancelInterview(context: SessionContext, id: string, input: InterviewCancelInput) {
@@ -311,7 +445,17 @@ export async function cancelInterview(context: SessionContext, id: string, input
     changes: { before: { status: existing.status }, after: { status: "CANCELLED", reasonId: input.reasonId, note: input.note } },
   });
 
-  return updated;
+  // §11.5: "all parties notified" — fired after the transaction has
+  // committed; a send failure must never fail the cancellation response
+  // that already succeeded.
+  await notifyInterviewCancelled(id, context, updated.cancellationReason?.label ?? "Not specified").catch(
+    (error: unknown) => {
+      console.error("Interview cancellation notification failed:", error);
+    },
+  );
+
+  const fieldAccess = await getFieldAccess(context, ENTITY.INTERVIEW);
+  return sanitizeForRead(updated, fieldAccess);
 }
 
 export async function completeInterview(context: SessionContext, id: string, input: InterviewCompleteInput) {
@@ -341,7 +485,47 @@ export async function completeInterview(context: SessionContext, id: string, inp
     changes: { before: { status: existing.status }, after: { status: "COMPLETED", note: input.note } },
   });
 
-  return updated;
+  const fieldAccess = await getFieldAccess(context, ENTITY.INTERVIEW);
+  return sanitizeForRead(updated, fieldAccess);
+}
+
+/**
+ * §11.5: "Interview status: scheduled, completed, cancelled, no-show,
+ * tracked as its own metric." A dedicated action mirroring
+ * completeInterview/cancelInterview's own shape — never silently folded
+ * into COMPLETED, which is exactly the distinction the PRD asks to
+ * preserve. Terminal, same as COMPLETED/CANCELLED: assertScheduled blocks
+ * any further action once status leaves SCHEDULED.
+ */
+export async function markInterviewNoShow(context: SessionContext, id: string, input: InterviewNoShowInput) {
+  const existing = await prisma.interview.findUnique({ where: { id }, include: { panelists: true } });
+  if (!existing) {
+    throw new NotFoundError("Interview not found.");
+  }
+  await assertManageAccess(context, existing, "UPDATE");
+  assertScheduled(existing, "marked no-show");
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const result = await tx.interview.updateMany({
+      where: { id, version: input.version },
+      data: { status: "NO_SHOW", version: { increment: 1 } },
+    });
+    if (result.count === 0) {
+      throw new ConflictError("This interview was changed by someone else. Reload and try again.");
+    }
+    return tx.interview.findUniqueOrThrow({ where: { id }, include: interviewDetailInclude });
+  });
+
+  await recordAudit({
+    actorId: context.userId,
+    action: AUDIT_ACTIONS.INTERVIEW_NO_SHOW,
+    entityType: ENTITY.INTERVIEW,
+    entityId: id,
+    changes: { before: { status: existing.status }, after: { status: "NO_SHOW", note: input.note } },
+  });
+
+  const fieldAccess = await getFieldAccess(context, ENTITY.INTERVIEW);
+  return sanitizeForRead(updated, fieldAccess);
 }
 
 /**
@@ -369,8 +553,8 @@ export async function submitInterviewFeedback(
   await assertReadOrFeedbackAccess(context, interview, "UPDATE");
   assertIsPanelist(interview, context);
 
-  if (interview.status === "CANCELLED") {
-    throw new ValidationError("Cannot submit feedback for a cancelled interview.");
+  if (interview.status === "CANCELLED" || interview.status === "NO_SHOW") {
+    throw new ValidationError(`Cannot submit feedback for a ${interview.status === "CANCELLED" ? "cancelled" : "no-show"} interview.`);
   }
 
   const existing = await prisma.interviewFeedback.findUnique({

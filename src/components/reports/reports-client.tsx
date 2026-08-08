@@ -17,6 +17,7 @@ export function ReportsClient({
   locations,
   recruiters,
   sources,
+  defaultTatThresholdDays,
 }: {
   canViewJobReports: boolean;
   canViewOfferReports: boolean;
@@ -25,6 +26,7 @@ export function ReportsClient({
   locations: Option[];
   recruiters: Option[];
   sources: Option[];
+  defaultTatThresholdDays: number;
 }) {
   const defaultTab = canViewJobReports ? "pipeline-funnel" : "offer-tat-compliance";
 
@@ -55,7 +57,7 @@ export function ReportsClient({
       ) : null}
       {canViewOfferReports ? (
         <TabsContent value="offer-tat-compliance">
-          <OfferTatComplianceTab recruiters={recruiters} />
+          <OfferTatComplianceTab recruiters={recruiters} defaultThresholdDays={defaultTatThresholdDays} />
         </TabsContent>
       ) : null}
       <TabsContent value="saved-reports">

@@ -317,12 +317,17 @@ export async function getRecruiterProductivityReport(context: SessionContext, qu
  * reported on the submission-to-approval leg only, which stays accurate
  * for every offer regardless of what happened to it afterward.
  *
- * `tatThresholdDays` is a report parameter, not a stored org policy — the
- * PRD names no fixed SLA number (see validations/report.ts).
+ * `tatThresholdDays` is an optional per-request override of
+ * Organization.offerTatThresholdDays (§11.6: "configurable per
+ * organization"). A caller who omits it gets the org-wide default; one who
+ * supplies it gets exactly that value for this one report run, without
+ * touching the stored setting.
  */
 export async function getOfferTatComplianceReport(context: SessionContext, query: OfferTatComplianceQuery) {
   const ownerFilter = await resolveOfferOwnerFilter(context);
   const createdAtFilter = dateRangeFilter(query.dateFrom, query.dateTo);
+  const tatThresholdDays =
+    query.tatThresholdDays ?? (await prisma.organization.findFirst())?.offerTatThresholdDays ?? 3;
 
   const offers = await prisma.offer.findMany({
     where: {
@@ -349,13 +354,13 @@ export async function getOfferTatComplianceReport(context: SessionContext, query
       continue;
     }
     const tatDays = businessDaysBetween(offer.createdAt, decidedAt, calendar);
-    measured.push({ offerId: offer.id, recruiter: offer.createdBy, tatDays, compliant: tatDays <= query.tatThresholdDays });
+    measured.push({ offerId: offer.id, recruiter: offer.createdBy, tatDays, compliant: tatDays <= tatThresholdDays });
   }
 
   const compliantCount = measured.filter((row) => row.compliant).length;
 
   return {
-    tatThresholdDays: query.tatThresholdDays,
+    tatThresholdDays,
     measuredCount: measured.length,
     pendingApprovalCount,
     compliantCount,

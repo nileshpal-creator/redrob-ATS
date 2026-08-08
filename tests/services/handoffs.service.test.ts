@@ -7,9 +7,15 @@ import { ForbiddenError } from "@/lib/authz/authorize";
 import { ConflictError, NotFoundError, ValidationError } from "@/lib/errors";
 import { acknowledgeHandoff, getHandoff, listHandoffs, retryHandoff } from "@/lib/services/handoffs";
 import { createOffer, transitionOffer } from "@/lib/services/offers";
-import { createApplication, transitionApplication } from "@/lib/services/applications";
+import { createApplication, transitionApplication, updateApplication } from "@/lib/services/applications";
 import { scheduleInterview } from "@/lib/services/interviews";
-import { createCandidate, getCandidateTimeline, updateCandidate } from "@/lib/services/candidates";
+import {
+  addCandidateDocument,
+  createCandidate,
+  getCandidateTimeline,
+  mergeCandidates,
+  updateCandidate,
+} from "@/lib/services/candidates";
 import { createJob } from "@/lib/services/jobs";
 import type { JobCreateInput } from "@/lib/validations/job";
 import type { CandidateCreateInput, CandidateUpdateInput } from "@/lib/validations/candidate";
@@ -110,6 +116,7 @@ describe("HandoffService", () => {
               { resource: "CANDIDATE", action: "CREATE", scope: "ALL" },
               { resource: "CANDIDATE", action: "READ", scope: "ALL" },
               { resource: "CANDIDATE", action: "UPDATE", scope: "ALL" },
+              { resource: "CANDIDATE", action: "DELETE", scope: "ALL" },
               { resource: "APPLICATION", action: "CREATE", scope: "ALL" },
               { resource: "APPLICATION", action: "UPDATE", scope: "ALL" },
               { resource: "INTERVIEW", action: "CREATE", scope: "ALL" },
@@ -536,6 +543,94 @@ describe("HandoffService", () => {
 
       await prisma.controlledListValue.deleteMany({ where: { listId: reasonList.id } });
       await prisma.controlledList.delete({ where: { id: reasonList.id } });
+    });
+
+    it("blocks updateApplication's owner/customFields path once a handoff is ACCEPTED", async () => {
+      const candidate = await candidateWithEmail("+1 555-0946-a");
+      const application = await createApplication(recruiter, { candidateId: candidate.id, jobId });
+      const { handoff } = await acceptOfferFor(application.id);
+      await acknowledgeHandoff(hrOnboarding, handoff.id, { version: handoff.version, outcome: "ACCEPTED" });
+
+      // This path (bare PATCH, not the transition endpoint) was the
+      // confirmed audit gap — assertApplicationNotHandedOff was called from
+      // transitionApplication/scheduleInterview/createOffer but not here.
+      await expect(
+        updateApplication(recruiter, application.id, { version: 0, ownerId: recruiter.userId }),
+      ).rejects.toBeInstanceOf(ValidationError);
+    });
+
+    it("blocks updateCandidate once every application for that candidate is handed off", async () => {
+      const candidate = await candidateWithEmail("+1 555-0946-b");
+      const application = await createApplication(recruiter, { candidateId: candidate.id, jobId });
+      const { handoff } = await acceptOfferFor(application.id);
+      await acknowledgeHandoff(hrOnboarding, handoff.id, { version: handoff.version, outcome: "ACCEPTED" });
+
+      await expect(
+        updateCandidate(recruiter, candidate.id, {
+          version: candidate.version,
+          location: "Should be blocked",
+        } as CandidateUpdateInput),
+      ).rejects.toBeInstanceOf(ValidationError);
+    });
+
+    it("does NOT block updateCandidate while the candidate still has a different, still-active application", async () => {
+      const candidate = await candidateWithEmail("+1 555-0946-c");
+
+      const secondJob = await createJob(recruiter, jobInput({ title: "Frontend Engineer" }));
+      // A second, unrelated application for the same (global) candidate —
+      // must stay editable even after the first application's handoff
+      // completes, since the candidate is legitimately still in flight
+      // elsewhere.
+      await createApplication(recruiter, { candidateId: candidate.id, jobId: secondJob.id });
+
+      const application = await createApplication(recruiter, { candidateId: candidate.id, jobId });
+      const { handoff } = await acceptOfferFor(application.id);
+      await acknowledgeHandoff(hrOnboarding, handoff.id, { version: handoff.version, outcome: "ACCEPTED" });
+
+      const updated = await updateCandidate(recruiter, candidate.id, {
+        version: candidate.version,
+        location: "Still editable",
+      } as CandidateUpdateInput);
+      expect(updated.location).toBe("Still editable");
+    });
+
+    it("blocks adding a new candidate document once every application is handed off", async () => {
+      const candidate = await candidateWithEmail("+1 555-0946-d");
+      const application = await createApplication(recruiter, { candidateId: candidate.id, jobId });
+      const { handoff } = await acceptOfferFor(application.id);
+      await acknowledgeHandoff(hrOnboarding, handoff.id, { version: handoff.version, outcome: "ACCEPTED" });
+
+      const docTypeList = await prisma.controlledList.create({
+        data: { key: "DOCUMENT_TYPE", label: "Document Types", values: { create: { value: "resume", label: "Resume" } } },
+      });
+      const documentTypeId = (await prisma.controlledListValue.findFirstOrThrow({ where: { listId: docTypeList.id } })).id;
+
+      try {
+        await expect(
+          addCandidateDocument(recruiter, candidate.id, {
+            documentTypeId,
+            fileName: "resume.pdf",
+            mimeType: "application/pdf",
+            buffer: Buffer.from("test"),
+          }),
+        ).rejects.toBeInstanceOf(ValidationError);
+      } finally {
+        await prisma.controlledListValue.deleteMany({ where: { listId: docTypeList.id } });
+        await prisma.controlledList.delete({ where: { id: docTypeList.id } });
+      }
+    });
+
+    it("blocks merging another candidate into a fully handed-off target", async () => {
+      const target = await candidateWithEmail("+1 555-0946-e");
+      const application = await createApplication(recruiter, { candidateId: target.id, jobId });
+      const { handoff } = await acceptOfferFor(application.id);
+      await acknowledgeHandoff(hrOnboarding, handoff.id, { version: handoff.version, outcome: "ACCEPTED" });
+
+      const source = await candidateWithEmail("+1 555-0946-f");
+
+      await expect(
+        mergeCandidates(recruiter, target.id, { sourceCandidateId: source.id, version: target.version }),
+      ).rejects.toBeInstanceOf(ValidationError);
     });
 
     it("does not block those actions while the handoff is merely DELIVERED (not yet ACCEPTED)", async () => {

@@ -7,6 +7,7 @@ import { ForbiddenError } from "@/lib/authz/authorize";
 import { listJobs } from "@/lib/services/jobs";
 import { listUsers } from "@/lib/services/users";
 import { getControlledListValues } from "@/lib/services/controlled-lists";
+import { prisma } from "@/lib/prisma";
 import { jobQuerySchema } from "@/lib/validations/job";
 import { ReportsClient } from "@/components/reports/reports-client";
 
@@ -30,12 +31,17 @@ export default async function ReportsPage() {
     throw error;
   });
 
-  const [jobsResult, recruiters, sources, departments, locations] = await Promise.all([
+  const [jobsResult, recruiters, sources, departments, locations, organization] = await Promise.all([
     canViewJobReports ? listJobs(context, jobQuerySchema.parse({ pageSize: 100 })) : Promise.resolve({ jobs: [] }),
     listUsersOrEmpty(),
     getControlledListValues("CANDIDATE_SOURCE"),
     getControlledListValues("DEPARTMENT"),
     getControlledListValues("LOCATION"),
+    // A direct read, not getOrganizationSettings(context) — ORGANIZATION:READ
+    // is in practice super-admin-only (see organization.ts's own comment),
+    // but every role that can reach this page needs this one non-sensitive
+    // default to pre-fill the TAT threshold input.
+    prisma.organization.findFirst(),
   ]);
 
   const jobOptions = jobsResult.jobs.map((job) => ({ id: job.id, label: job.title }));
@@ -61,6 +67,7 @@ export default async function ReportsPage() {
         locations={locationOptions}
         recruiters={recruiterOptions}
         sources={sourceOptions}
+        defaultTatThresholdDays={organization?.offerTatThresholdDays ?? 3}
       />
     </div>
   );

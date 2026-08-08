@@ -465,6 +465,68 @@ async function main() {
     },
   });
   console.log("Seeded interview reminder email templates");
+
+  // Module 13 (§11.5): "reschedule/cancel... all parties notified" —
+  // resolved by exact name from notifyInterviewChange
+  // (src/lib/services/interview-notifications.ts), same lookup convention
+  // as the two reminder templates above.
+  await prisma.communicationTemplate.upsert({
+    where: { name: "Interview Rescheduled — Candidate" },
+    update: {},
+    create: {
+      name: "Interview Rescheduled — Candidate",
+      channel: "EMAIL",
+      subject: "Your {{interview.roundName}} interview for {{job.title}} has been rescheduled",
+      body:
+        "Hi {{candidate.name}},\n\nYour {{interview.roundName}} interview for {{job.title}} has been " +
+        "rescheduled to {{interview.scheduledAt}} ({{interview.durationMinutes}} minutes, {{interview.mode}}).\n\n" +
+        "If you have any questions, please reach out to your recruiter.",
+      createdById: adminUser.id,
+    },
+  });
+  await prisma.communicationTemplate.upsert({
+    where: { name: "Interview Rescheduled — Panelist" },
+    update: {},
+    create: {
+      name: "Interview Rescheduled — Panelist",
+      channel: "EMAIL",
+      subject: "{{interview.roundName}} interview for {{job.title}} has been rescheduled",
+      body:
+        "Hi {{panelist.name}},\n\nThe {{interview.roundName}} interview for {{job.title}} with " +
+        "{{candidate.name}} has been rescheduled to {{interview.scheduledAt}} " +
+        "({{interview.durationMinutes}} minutes, {{interview.mode}}).",
+      createdById: adminUser.id,
+    },
+  });
+  await prisma.communicationTemplate.upsert({
+    where: { name: "Interview Cancelled — Candidate" },
+    update: {},
+    create: {
+      name: "Interview Cancelled — Candidate",
+      channel: "EMAIL",
+      subject: "Your {{interview.roundName}} interview for {{job.title}} has been cancelled",
+      body:
+        "Hi {{candidate.name}},\n\nYour {{interview.roundName}} interview for {{job.title}}, previously " +
+        "scheduled for {{interview.scheduledAt}}, has been cancelled. Reason: {{interview.cancellationReason}}.\n\n" +
+        "Your recruiter will be in touch about next steps.",
+      createdById: adminUser.id,
+    },
+  });
+  await prisma.communicationTemplate.upsert({
+    where: { name: "Interview Cancelled — Panelist" },
+    update: {},
+    create: {
+      name: "Interview Cancelled — Panelist",
+      channel: "EMAIL",
+      subject: "{{interview.roundName}} interview for {{job.title}} has been cancelled",
+      body:
+        "Hi {{panelist.name}},\n\nThe {{interview.roundName}} interview for {{job.title}} with " +
+        "{{candidate.name}}, previously scheduled for {{interview.scheduledAt}}, has been cancelled. " +
+        "Reason: {{interview.cancellationReason}}.",
+      createdById: adminUser.id,
+    },
+  });
+  console.log("Seeded interview reschedule/cancellation email templates");
 }
 
 main()

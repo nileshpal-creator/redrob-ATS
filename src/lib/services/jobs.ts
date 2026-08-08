@@ -2,7 +2,15 @@ import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@/generated/prisma/client";
 import type { PermissionAction } from "@/generated/prisma/enums";
 import { ENTITY } from "@/lib/entity-registry";
-import { can, ForbiddenError, getEffectiveScope, getTeamMemberIds, requirePermission } from "@/lib/authz/authorize";
+import {
+  can,
+  ForbiddenError,
+  getEffectiveScope,
+  getFieldAccess,
+  getTeamMemberIds,
+  requirePermission,
+} from "@/lib/authz/authorize";
+import { assertWritableFields, sanitizeForRead, sanitizeManyForRead } from "@/lib/authz/field-sanitizer";
 import type { SessionContext } from "@/lib/authz/session-context";
 import { ConflictError, NotFoundError, ValidationError } from "@/lib/errors";
 import { recordAudit } from "@/lib/audit/log";
@@ -10,6 +18,12 @@ import { AUDIT_ACTIONS } from "@/lib/audit/actions";
 import { buildCustomFieldValueSchema } from "@/lib/custom-fields/dynamic-schema";
 import { findTransition, getLegalActions, type JobTransition } from "@/lib/jobs/status-machine";
 import { seedDefaultPipelineStages } from "@/lib/services/pipeline-stages";
+import {
+  assertCanDecideStep,
+  buildApprovalStepSnapshots,
+  isChainComplete,
+  selectCurrentPendingStep,
+} from "@/lib/services/approvals";
 import type { JobStatus } from "@/generated/prisma/enums";
 import type {
   JobCreateInput,
@@ -36,6 +50,10 @@ const jobDetailInclude = {
   statusChanges: {
     orderBy: { createdAt: "desc" },
     include: { actor: { select: userSummarySelect }, reason: true },
+  },
+  approvals: {
+    orderBy: { stepOrder: "asc" },
+    include: { approver: { select: userSummarySelect } },
   },
 } satisfies Prisma.JobInclude;
 
@@ -109,7 +127,7 @@ export async function listJobs(context: SessionContext, query: JobQuery) {
     ...(query.q ? { title: { contains: query.q, mode: "insensitive" } } : {}),
   };
 
-  const [jobs, total] = await Promise.all([
+  const [jobs, total, fieldAccess] = await Promise.all([
     prisma.job.findMany({
       where,
       include: jobListInclude,
@@ -118,9 +136,10 @@ export async function listJobs(context: SessionContext, query: JobQuery) {
       take: query.pageSize,
     }),
     prisma.job.count({ where }),
+    getFieldAccess(context, ENTITY.JOB),
   ]);
 
-  return { jobs, total, page: query.page, pageSize: query.pageSize };
+  return { jobs: sanitizeManyForRead(jobs, fieldAccess), total, page: query.page, pageSize: query.pageSize };
 }
 
 export async function getJobById(context: SessionContext, id: string) {
@@ -129,7 +148,8 @@ export async function getJobById(context: SessionContext, id: string) {
     throw new NotFoundError("Job not found.");
   }
   await assertJobAccess(context, job, "READ");
-  return job;
+  const fieldAccess = await getFieldAccess(context, ENTITY.JOB);
+  return sanitizeForRead(job, fieldAccess);
 }
 
 /** Which status-change buttons a detail page should offer this viewer, right now. */
@@ -167,6 +187,9 @@ export async function createJob(context: SessionContext, input: JobCreateInput) 
   }
 
   const customFields = await validateCustomFields(input.customFields);
+
+  const fieldAccess = await getFieldAccess(context, ENTITY.JOB);
+  assertWritableFields({ ...input, customFields }, fieldAccess);
 
   // Application.stageId is required and Module 4 gives every job a starter
   // pipeline at creation time, editable/reorderable afterward via
@@ -213,7 +236,7 @@ export async function createJob(context: SessionContext, input: JobCreateInput) 
     changes: { after: { title: created.title, status: created.status } },
   });
 
-  return created;
+  return sanitizeForRead(created, fieldAccess);
 }
 
 export async function updateJob(context: SessionContext, id: string, input: JobUpdateInput) {
@@ -237,6 +260,9 @@ export async function updateJob(context: SessionContext, id: string, input: JobU
 
   const customFields =
     input.customFields !== undefined ? await validateCustomFields(input.customFields) : undefined;
+
+  const fieldAccess = await getFieldAccess(context, ENTITY.JOB);
+  assertWritableFields({ ...input, ...(customFields !== undefined && { customFields }) }, fieldAccess);
 
   const data: Prisma.JobUpdateManyMutationInput = {
     ...(input.title !== undefined && { title: input.title }),
@@ -269,7 +295,7 @@ export async function updateJob(context: SessionContext, id: string, input: JobU
     changes: { before: existing, after: data },
   });
 
-  return updated;
+  return sanitizeForRead(updated, fieldAccess);
 }
 
 export async function updateJobRecruiters(
@@ -318,7 +344,8 @@ export async function updateJobRecruiters(
     changes: { after: { assignments: input.assignments } },
   });
 
-  return updated;
+  const fieldAccess = await getFieldAccess(context, ENTITY.JOB);
+  return sanitizeForRead(updated, fieldAccess);
 }
 
 export async function transitionJobStatus(
@@ -345,6 +372,10 @@ export async function transitionJobStatus(
     await assertControlledListValue(transition.reasonListKey!, input.reasonId, "reason");
   }
 
+  if (input.action === "APPROVE" || input.action === "REJECT") {
+    return decideJobApprovalStep(context, id, existing, input, transition);
+  }
+
   const updated = await prisma.$transaction(async (tx) => {
     const result = await tx.job.updateMany({
       where: { id, version: input.version },
@@ -365,6 +396,15 @@ export async function transitionJobStatus(
       },
     });
 
+    // §11.1: "Configurable approval steps." The chain is snapshotted onto
+    // JobApproval at the moment a Job is actually submitted — see
+    // buildApprovalStepSnapshots's own comment for why this must be a
+    // snapshot, not a live reference to ApprovalStepConfig.
+    if (input.action === "SUBMIT") {
+      const steps = await buildApprovalStepSnapshots(tx, "JOB");
+      await tx.jobApproval.createMany({ data: steps.map((step) => ({ jobId: id, ...step })) });
+    }
+
     return tx.job.findUniqueOrThrow({ where: { id }, include: jobDetailInclude });
   });
 
@@ -376,5 +416,97 @@ export async function transitionJobStatus(
     changes: { before: { status: existing.status }, after: { status: transition.to, action: input.action } },
   });
 
-  return updated;
+  const fieldAccess = await getFieldAccess(context, ENTITY.JOB);
+  return sanitizeForRead(updated, fieldAccess);
+}
+
+/**
+ * APPROVE/REJECT act on the single current step (lowest stepOrder among
+ * PENDING rows), not directly on Job.status. REJECT always fails the whole
+ * chain immediately (existing single-step semantics preserved) and marks
+ * every other still-PENDING row SKIPPED. APPROVE only flips Job.status to
+ * the transition table's `to` once no PENDING rows remain — an
+ * intermediate approval (more steps still pending) records the decision
+ * but leaves Job.status at PENDING_APPROVAL for the next approver.
+ *
+ * The JobApproval row's own PENDING-guarded `updateMany` is this
+ * function's optimistic lock — a second decider racing for the same step
+ * simply finds `result.count === 0` and gets a ConflictError, the same
+ * shape `input.version` already guards the Job row itself with.
+ */
+async function decideJobApprovalStep(
+  context: SessionContext,
+  id: string,
+  existing: { status: JobStatus },
+  input: JobStatusActionInput,
+  transition: JobTransition,
+) {
+  const steps = await prisma.jobApproval.findMany({ where: { jobId: id } });
+  const currentStep = selectCurrentPendingStep(steps);
+  if (!currentStep) {
+    throw new ValidationError("No pending approval step found for this job.");
+  }
+  assertCanDecideStep(context, currentStep);
+
+  const decision = input.action === "APPROVE" ? "APPROVED" : "REJECTED";
+  const chainWillComplete = input.action === "REJECT" || isChainComplete(steps, currentStep.id);
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const decided = await tx.jobApproval.updateMany({
+      where: { id: currentStep.id, status: "PENDING" },
+      data: { status: decision, approverId: context.userId, comments: input.note, decidedAt: new Date() },
+    });
+    if (decided.count === 0) {
+      throw new ConflictError("This approval step was already decided by someone else. Reload and try again.");
+    }
+
+    if (input.action === "REJECT") {
+      await tx.jobApproval.updateMany({
+        where: { jobId: id, status: "PENDING", id: { not: currentStep.id } },
+        data: { status: "SKIPPED" },
+      });
+    }
+
+    if (chainWillComplete) {
+      const result = await tx.job.updateMany({
+        where: { id, version: input.version },
+        data: { status: transition.to, version: { increment: 1 } },
+      });
+      if (result.count === 0) {
+        throw new ConflictError("This job was changed by someone else. Reload and try again.");
+      }
+      await tx.jobStatusChange.create({
+        data: {
+          jobId: id,
+          fromStatus: existing.status,
+          toStatus: transition.to,
+          note: input.note,
+          actorId: context.userId,
+        },
+      });
+    }
+
+    return tx.job.findUniqueOrThrow({ where: { id }, include: jobDetailInclude });
+  });
+
+  await recordAudit({
+    actorId: context.userId,
+    action: AUDIT_ACTIONS.JOB_APPROVAL_STEP_DECIDED,
+    entityType: ENTITY.JOB,
+    entityId: id,
+    changes: { after: { stepOrder: currentStep.stepOrder, decision, chainComplete: chainWillComplete } },
+  });
+
+  if (chainWillComplete) {
+    await recordAudit({
+      actorId: context.userId,
+      action: AUDIT_ACTIONS.JOB_STATUS_CHANGED,
+      entityType: ENTITY.JOB,
+      entityId: id,
+      changes: { before: { status: existing.status }, after: { status: transition.to, action: input.action } },
+    });
+  }
+
+  const fieldAccess = await getFieldAccess(context, ENTITY.JOB);
+  return sanitizeForRead(updated, fieldAccess);
 }

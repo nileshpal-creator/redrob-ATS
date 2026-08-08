@@ -49,6 +49,7 @@ model User {
   jobsAsPrimaryRecruiter  Job[]                    @relation("JobPrimaryRecruiter")
   jobRecruiterAssignments JobRecruiterAssignment[]
   jobStatusChangesActed   JobStatusChange[]
+  jobApprovalsAs          JobApproval[]            @relation("JobApprovalApprover")
 
   candidatesCreated          Candidate[]         @relation("CandidateCreatedBy")
   candidateDocumentsUploaded CandidateDocument[] @relation("CandidateDocumentUploadedBy")
@@ -100,9 +101,10 @@ model Role {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  users            UserRole[]
-  rolePermissions  RolePermission[]
-  fieldPermissions FieldPermission[]
+  users               UserRole[]
+  rolePermissions     RolePermission[]
+  fieldPermissions    FieldPermission[]
+  approvalStepConfigs ApprovalStepConfig[]
 
   @@index([isSuperAdmin])
 }
@@ -194,6 +196,14 @@ model Organization {
   // existing global-settings singleton (workingDays/workingHours/timezone).
   // Empty means no automatic reminders are sent.
   interviewReminderLeadMinutes Int[]    @default([1440, 60])
+  // §11.6: "Step-level SLA/turnaround-time tracking, configurable per
+  // organization" — the org-level default threshold (business days) for
+  // getOfferTatComplianceReport's compliance calculation. A caller-supplied
+  // `tatThresholdDays` report parameter still overrides this per request
+  // (unchanged); this only replaces the previous hardcoded default of 3,
+  // so a deployment that never touches this setting sees identical report
+  // output to before.
+  offerTatThresholdDays        Int      @default(3)
   createdAt                    DateTime @default(now())
   updatedAt                    DateTime @updatedAt
 
@@ -446,6 +456,7 @@ model Job {
   location      ControlledListValue      @relation("JobLocation", fields: [locationId], references: [id])
   recruiters    JobRecruiterAssignment[]
   statusChanges JobStatusChange[]
+  approvals     JobApproval[]
 
   pipelineStages      PipelineStage[]
   applications        Application[]
@@ -498,6 +509,48 @@ model JobStatusChange {
   actor  User                 @relation(fields: [actorId], references: [id])
 
   @@index([jobId, createdAt])
+}
+
+enum JobApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  SKIPPED
+}
+
+// Mirrors OfferApproval exactly (§11.1: "configurable approval workflow" —
+// same configurable-chain requirement as Offer's, reusing the same
+// ApprovalStepConfig admin config and the same shared decideApprovalStep
+// helper in src/lib/services/approvals.ts). Kept as its own model rather
+// than a polymorphic ApprovalRecord shared with Offer — the two entities'
+// own FK column differs (jobId vs offerId) and Prisma has no clean
+// polymorphic-relation syntax; a genuinely shared table would need a
+// discriminator plus two nullable FKs, which paraphrases this pair of small
+// models rather than simplifying them. A separate JobApprovalStatus enum
+// (identical values to OfferApprovalStatus) avoids renaming or overloading
+// the existing enum other Offer code already references by name.
+model JobApproval {
+  id    String @id @default(cuid())
+  jobId String
+
+  stepOrder        Int     @default(1)
+  stepName         String?
+  requiredRoleId   String?
+  requiredRoleName String?
+
+  status JobApprovalStatus @default(PENDING)
+
+  approverId String?
+  approver   User?     @relation("JobApprovalApprover", fields: [approverId], references: [id])
+  comments   String?
+  decidedAt  DateTime?
+
+  createdAt DateTime @default(now())
+
+  job Job @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId])
+  @@index([jobId, stepOrder])
 }
 
 // ---------------------------------------------------------------------------
@@ -909,6 +962,13 @@ enum InterviewStatus {
   SCHEDULED
   COMPLETED
   CANCELLED
+  // §11.5: "scheduled, completed, cancelled, no-show, tracked as its own
+  // metric" — terminal, same as COMPLETED/CANCELLED (assertScheduled blocks
+  // any further action once status leaves SCHEDULED). Never auto-assigned:
+  // an interviewer/recruiter marks it explicitly via markInterviewNoShow,
+  // mirroring cancelInterview/completeInterview's own dedicated-action shape
+  // rather than folding it into a generic status PATCH.
+  NO_SHOW
 }
 
 enum InterviewRecommendation {
@@ -1107,12 +1167,66 @@ enum OfferStatus {
   ACCEPTED
   DECLINED
   REVOKED
+  // §11.6: "in progress, extended, accepted, declined, lapsed, revoked."
+  // Automatic-only (see runDueOfferExpirations in
+  // src/lib/services/offer-expiry.ts) — reachable only from EXTENDED, once
+  // Offer.respondByDate has passed with no candidate decision recorded.
+  // There is deliberately no manual "mark lapsed" action: the PRD names
+  // this as an automatic-expiry status, not an actor-triggered transition
+  // like DECLINE/REVOKE, so it has no entry in OFFER_TRANSITIONS.
+  LAPSED
 }
 
 enum OfferApprovalStatus {
   PENDING
   APPROVED
   REJECTED
+  // A later step's row when an earlier step REJECTs — the whole chain is
+  // rejected on the first REJECT (existing single-step semantics preserved),
+  // so any step that never got reached is closed out instead of sitting
+  // PENDING forever. Also used defensively on any stray PENDING row from a
+  // superseded submission cycle when a fresh SUBMIT creates a new set of
+  // step rows (see createOfferApprovalSteps).
+  SKIPPED
+}
+
+// Shared by both Job and Offer's configurable approval chains (§11.1/§11.6)
+// — one admin-defined, ordered sequence of steps per entity type, each step
+// requiring a specific Role to decide it. Reuses the existing Role model
+// directly rather than inventing a new approver-assignment concept, per
+// "approval steps must have meaningful approver semantics consistent with
+// existing RBAC." Configuring this is itself gated as JOB:UPDATE / OFFER:
+// UPDATE at ALL scope (see src/lib/services/approvals.ts) — a new
+// PermissionAction/resource was deliberately not introduced for it.
+//
+// Editing the chain is a full-set replace (delete all rows for that
+// entityType, recreate), the same "replace, don't patch" convention
+// replacePipelineStages/replaceRolePermissions already use — there is no
+// per-step id a client edits in place. This is deliberately NOT itself the
+// audit trail: JobApproval/OfferApproval snapshot each step's
+// name/requiredRoleId/requiredRoleName at SUBMIT time, so a later edit here
+// never rewrites the history of an approval already in progress or decided
+// (see "handle configuration changes safely for jobs already in progress").
+enum ApprovalEntityType {
+  JOB
+  OFFER
+}
+
+model ApprovalStepConfig {
+  id         String             @id @default(cuid())
+  entityType ApprovalEntityType
+
+  stepOrder Int
+  name      String
+
+  requiredRoleId String
+  requiredRole   Role   @relation(fields: [requiredRoleId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([entityType, stepOrder])
+  @@index([entityType])
 }
 
 // One offer against one Application — same anchoring choice as Interview,
@@ -1147,6 +1261,19 @@ model Offer {
   // expectedCompensation) use this exact type — same convention, not a new one.
   compensation        Decimal   @db.Decimal(12, 2)
   expectedJoiningDate DateTime?
+
+  // §11.6: "Offer record with compensation, joining date, designation,
+  // location... tied to the application" — first-class fields, not folded
+  // into customFields, since the PRD names them as core Offer attributes.
+  designation String?
+  location    String?
+
+  // Optional response deadline, set (or changed) only on the EXTEND
+  // transition — an Offer with no deadline simply never auto-lapses,
+  // preserving today's behavior for every offer that doesn't opt in. Once
+  // past, runDueOfferExpirations (src/lib/services/offer-expiry.ts) is what
+  // actually moves EXTENDED -> LAPSED; see OfferStatus.LAPSED's own comment.
+  respondByDate DateTime?
 
   notes String?
 
@@ -1197,6 +1324,20 @@ model OfferApproval {
   id      String @id @default(cuid())
   offerId String
 
+  // §11.6: "configurable approval steps before an offer is issued." One row
+  // per configured ApprovalStepConfig step is created at SUBMIT time
+  // (stepOrder/name/requiredRoleId snapshotted then, per the
+  // ApprovalStepConfig model's own comment on why this must be a snapshot,
+  // not a live reference) — or exactly one legacy row (stepOrder 1, no
+  // snapshot) when no chain is configured, preserving the original
+  // single-step behavior byte-for-byte. requiredRoleName is denormalized
+  // alongside requiredRoleId so display/audit never needs a live join and
+  // is immune to a later role rename or deletion.
+  stepOrder        Int     @default(1)
+  stepName         String?
+  requiredRoleId   String?
+  requiredRoleName String?
+
   status OfferApprovalStatus @default(PENDING)
 
   approverId String?
@@ -1209,6 +1350,7 @@ model OfferApproval {
   offer Offer @relation(fields: [offerId], references: [id], onDelete: Cascade)
 
   @@index([offerId])
+  @@index([offerId, stepOrder])
 }
 
 enum HandoffStatus {

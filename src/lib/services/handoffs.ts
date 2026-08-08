@@ -2,7 +2,8 @@ import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@/generated/prisma/client";
 import type { HandoffStatus, PermissionAction } from "@/generated/prisma/enums";
 import { ENTITY } from "@/lib/entity-registry";
-import { can, ForbiddenError, getEffectiveScope, getTeamMemberIds } from "@/lib/authz/authorize";
+import { can, ForbiddenError, getEffectiveScope, getFieldAccess, getTeamMemberIds } from "@/lib/authz/authorize";
+import { sanitizeForRead, sanitizeManyForRead } from "@/lib/authz/field-sanitizer";
 import type { SessionContext } from "@/lib/authz/session-context";
 import { ConflictError, NotFoundError, ValidationError } from "@/lib/errors";
 import { recordAudit } from "@/lib/audit/log";
@@ -71,6 +72,51 @@ export async function assertApplicationNotHandedOff(applicationId: string) {
   if (acceptedHandoff) {
     throw new ValidationError("This application has completed onboarding handoff and is now read-only.");
   }
+}
+
+/**
+ * Candidate is a shared, global record (§9: "held once globally") that can
+ * legitimately be in more than one pipeline at once, unlike Application —
+ * so this cannot simply mirror assertApplicationNotHandedOff by locking the
+ * whole Candidate the instant *any one* of their applications is handed
+ * off; that would incorrectly freeze a candidate's profile while a
+ * recruiter is still actively working a *different* open application for
+ * the same person. The read-only rule instead applies only once there is no
+ * legitimate reason left to edit the profile: every application this
+ * candidate has is either terminal (REJECTED/WITHDRAWN) or itself already
+ * handed off, and at least one of those handed-off applications has
+ * actually completed (status ACCEPTED, not merely DELIVERED/pending
+ * acknowledgement). A candidate with zero applications, or with at least
+ * one still-ACTIVE application that isn't handed off, is never locked here.
+ */
+export async function assertCandidateNotHandedOff(candidateId: string) {
+  const applications = await prisma.application.findMany({
+    where: { candidateId },
+    select: { id: true, outcome: true },
+  });
+  if (applications.length === 0) {
+    return;
+  }
+
+  const acceptedHandoffs = await prisma.handoffRecord.findMany({
+    where: { applicationId: { in: applications.map((application) => application.id) }, status: "ACCEPTED" },
+    select: { applicationId: true },
+  });
+  if (acceptedHandoffs.length === 0) {
+    return;
+  }
+  const handedOffApplicationIds = new Set(acceptedHandoffs.map((handoff) => handoff.applicationId));
+
+  const hasOpenApplicationElsewhere = applications.some(
+    (application) => application.outcome === "ACTIVE" && !handedOffApplicationIds.has(application.id),
+  );
+  if (hasOpenApplicationElsewhere) {
+    return;
+  }
+
+  throw new ValidationError(
+    "This candidate has completed onboarding handoff for every active application and is now read-only.",
+  );
 }
 
 /**
@@ -192,7 +238,7 @@ export async function listHandoffs(context: SessionContext, query: HandoffQuery)
     status: query.status,
   };
 
-  const [handoffs, total] = await Promise.all([
+  const [handoffs, total, fieldAccess] = await Promise.all([
     prisma.handoffRecord.findMany({
       where,
       include: handoffDetailInclude,
@@ -201,9 +247,15 @@ export async function listHandoffs(context: SessionContext, query: HandoffQuery)
       take: query.pageSize,
     }),
     prisma.handoffRecord.count({ where }),
+    getFieldAccess(context, ENTITY.HANDOFF),
   ]);
 
-  return { handoffs, total, page: query.page, pageSize: query.pageSize };
+  return {
+    handoffs: sanitizeManyForRead(handoffs, fieldAccess),
+    total,
+    page: query.page,
+    pageSize: query.pageSize,
+  };
 }
 
 export async function getHandoff(context: SessionContext, id: string) {
@@ -212,7 +264,8 @@ export async function getHandoff(context: SessionContext, id: string) {
     throw new NotFoundError("Handoff not found.");
   }
   await assertHandoffAccess(context, handoff, "READ");
-  return handoff;
+  const fieldAccess = await getFieldAccess(context, ENTITY.HANDOFF);
+  return sanitizeForRead(handoff, fieldAccess);
 }
 
 /**
@@ -271,7 +324,8 @@ export async function retryHandoff(context: SessionContext, id: string, input: H
     changes: { before: { status: existing.status }, after: { status: nextStatus } },
   });
 
-  return updated;
+  const fieldAccess = await getFieldAccess(context, ENTITY.HANDOFF);
+  return sanitizeForRead(updated, fieldAccess);
 }
 
 /**
@@ -318,5 +372,6 @@ export async function acknowledgeHandoff(context: SessionContext, id: string, in
     changes: { before: { status: existing.status }, after: { status: input.outcome } },
   });
 
-  return updated;
+  const fieldAccess = await getFieldAccess(context, ENTITY.HANDOFF);
+  return sanitizeForRead(updated, fieldAccess);
 }

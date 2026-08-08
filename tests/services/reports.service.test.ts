@@ -408,5 +408,33 @@ describe("reports service", () => {
     it("throws ForbiddenError for a role with no OFFER grant", async () => {
       await expect(getOfferTatComplianceReport(noAccessUser, { tatThresholdDays: 3 })).rejects.toBeInstanceOf(ForbiddenError);
     });
+
+    it("falls back to Organization.offerTatThresholdDays when the caller omits tatThresholdDays", async () => {
+      // The test DB is migration-only (no prisma/seed.ts run — see
+      // tests/setup/global-setup.ts), so there is normally no Organization
+      // row at all here; create/restore around this one test rather than
+      // assuming either state.
+      const existing = await prisma.organization.findFirst();
+      const orgId = existing?.id ?? (await prisma.organization.create({ data: { name: "Test Org" } })).id;
+      const originalThreshold = existing?.offerTatThresholdDays ?? 3;
+
+      try {
+        await prisma.organization.update({ where: { id: orgId }, data: { offerTatThresholdDays: 0 } });
+        const report = await getOfferTatComplianceReport(ownerUser, {});
+        expect(report.tatThresholdDays).toBe(0);
+        expect(report.rows[0].compliant).toBe(false);
+
+        // An explicit request-level override still wins over the org default.
+        const overridden = await getOfferTatComplianceReport(ownerUser, { tatThresholdDays: 30 });
+        expect(overridden.tatThresholdDays).toBe(30);
+        expect(overridden.rows[0].compliant).toBe(true);
+      } finally {
+        if (existing) {
+          await prisma.organization.update({ where: { id: orgId }, data: { offerTatThresholdDays: originalThreshold } });
+        } else {
+          await prisma.organization.delete({ where: { id: orgId } });
+        }
+      }
+    });
   });
 });

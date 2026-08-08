@@ -52,6 +52,12 @@ export const interviewCompleteSchema = z.object({
 });
 export type InterviewCompleteInput = z.infer<typeof interviewCompleteSchema>;
 
+export const interviewNoShowSchema = z.object({
+  version: z.number().int(),
+  note: noteField,
+});
+export type InterviewNoShowInput = z.infer<typeof interviewNoShowSchema>;
+
 const recommendationField = z.enum(["STRONG_YES", "YES", "NO", "STRONG_NO"]);
 
 export const interviewFeedbackCreateSchema = z.object({
@@ -72,7 +78,15 @@ export type InterviewFeedbackUpdateInput = z.infer<typeof interviewFeedbackUpdat
 export const interviewQuerySchema = z.object({
   applicationId: z.string().optional(),
   panelistUserId: z.string().optional(),
-  status: z.enum(["SCHEDULED", "COMPLETED", "CANCELLED"]).optional(),
+  // jobId/recruiterId/dateFrom/dateTo back the calendar view (§11.6): "filterable
+  // by recruiter, team and job." Team has no separate selector — it falls out of
+  // the caller's own TEAM-scoped RBAC grant, the same way it already does for
+  // Jobs/Applications/Offers list views.
+  jobId: z.string().optional(),
+  recruiterId: z.string().optional(),
+  dateFrom: z.coerce.date().optional(),
+  dateTo: z.coerce.date().optional(),
+  status: z.enum(["SCHEDULED", "COMPLETED", "CANCELLED", "NO_SHOW"]).optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(25),
 });

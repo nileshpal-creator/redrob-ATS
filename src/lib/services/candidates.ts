@@ -2,13 +2,22 @@ import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@/generated/prisma/client";
 import type { PermissionAction } from "@/generated/prisma/enums";
 import { ENTITY } from "@/lib/entity-registry";
-import { can, ForbiddenError, getEffectiveScope, getTeamMemberIds, requirePermission } from "@/lib/authz/authorize";
+import {
+  can,
+  ForbiddenError,
+  getEffectiveScope,
+  getFieldAccess,
+  getTeamMemberIds,
+  requirePermission,
+} from "@/lib/authz/authorize";
+import { assertWritableFields, sanitizeForRead, sanitizeManyForRead } from "@/lib/authz/field-sanitizer";
 import type { SessionContext } from "@/lib/authz/session-context";
 import { ConflictError, DuplicateCandidateError, NotFoundError, ValidationError } from "@/lib/errors";
 import { recordAudit } from "@/lib/audit/log";
 import { AUDIT_ACTIONS } from "@/lib/audit/actions";
 import { buildCustomFieldValueSchema } from "@/lib/custom-fields/dynamic-schema";
 import { getStorageProvider } from "@/lib/storage";
+import { assertCandidateNotHandedOff } from "@/lib/services/handoffs";
 import type {
   CandidateCreateInput,
   CandidateDuplicateCheckInput,
@@ -132,7 +141,7 @@ async function buildScopedWhere(
 export async function listCandidates(context: SessionContext, query: CandidateQuery) {
   const where = await buildScopedWhere(context, query);
 
-  const [candidates, total] = await Promise.all([
+  const [candidates, total, fieldAccess] = await Promise.all([
     prisma.candidate.findMany({
       where,
       include: candidateListInclude,
@@ -141,9 +150,15 @@ export async function listCandidates(context: SessionContext, query: CandidateQu
       take: query.pageSize,
     }),
     prisma.candidate.count({ where }),
+    getFieldAccess(context, ENTITY.CANDIDATE),
   ]);
 
-  return { candidates, total, page: query.page, pageSize: query.pageSize };
+  return {
+    candidates: sanitizeManyForRead(candidates, fieldAccess),
+    total,
+    page: query.page,
+    pageSize: query.pageSize,
+  };
 }
 
 export async function getCandidateById(context: SessionContext, id: string) {
@@ -152,7 +167,8 @@ export async function getCandidateById(context: SessionContext, id: string) {
     throw new NotFoundError("Candidate not found.");
   }
   await assertCandidateAccess(context, candidate, "READ");
-  return candidate;
+  const fieldAccess = await getFieldAccess(context, ENTITY.CANDIDATE);
+  return sanitizeForRead(candidate, fieldAccess);
 }
 
 /**
@@ -189,6 +205,9 @@ export async function createCandidate(context: SessionContext, input: CandidateC
 
   const customFields = await validateCandidateCustomFields(input.customFields);
 
+  const fieldAccess = await getFieldAccess(context, ENTITY.CANDIDATE);
+  assertWritableFields({ ...input, customFields }, fieldAccess);
+
   // Phone is the PRD's stated unique key (§9) — a hard match always blocks
   // creation in favor of merge/link (§11.2, BR1).
   const hardMatch = await prisma.candidate.findUnique({ where: { phone: input.phone } });
@@ -199,28 +218,42 @@ export async function createCandidate(context: SessionContext, input: CandidateC
   // Email is only a secondary signal (BR2) — never blocks, just surfaced below.
   const softMatch = input.email ? await prisma.candidate.findFirst({ where: { email: input.email } }) : null;
 
-  const created = await prisma.candidate.create({
-    data: {
-      name: input.name,
-      phone: input.phone,
-      email: input.email,
-      location: input.location,
-      currentCompensation: input.currentCompensation,
-      expectedCompensation: input.expectedCompensation,
-      noticePeriodDays: input.noticePeriodDays,
-      earliestAvailability: input.earliestAvailability,
-      totalExperienceYears: input.totalExperienceYears,
-      skills: input.skills,
-      tags: input.tags,
-      experienceHistory: (input.experienceHistory as Prisma.InputJsonValue | undefined) ?? undefined,
-      educationHistory: (input.educationHistory as Prisma.InputJsonValue | undefined) ?? undefined,
-      consentGivenAt: input.consentGivenAt,
-      customFields: customFields as Prisma.InputJsonValue,
-      sourceId: input.sourceId,
-      createdById: context.userId,
-    },
-    include: candidateDetailInclude,
-  });
+  // The findUnique precheck above is a courtesy for a clean error message —
+  // it can't prevent two concurrent creates for the same phone from both
+  // passing it, so the Candidate.phone unique constraint is the real guard.
+  // Without this catch, a race loses to an unhandled 500 instead of the same
+  // DuplicateCandidateError the precheck above was written to produce (same
+  // pattern as createOffer/submitInterviewFeedback's own P2002 catches).
+  const created = await prisma.candidate
+    .create({
+      data: {
+        name: input.name,
+        phone: input.phone,
+        email: input.email,
+        location: input.location,
+        currentCompensation: input.currentCompensation,
+        expectedCompensation: input.expectedCompensation,
+        noticePeriodDays: input.noticePeriodDays,
+        earliestAvailability: input.earliestAvailability,
+        totalExperienceYears: input.totalExperienceYears,
+        skills: input.skills,
+        tags: input.tags,
+        experienceHistory: (input.experienceHistory as Prisma.InputJsonValue | undefined) ?? undefined,
+        educationHistory: (input.educationHistory as Prisma.InputJsonValue | undefined) ?? undefined,
+        consentGivenAt: input.consentGivenAt,
+        customFields: customFields as Prisma.InputJsonValue,
+        sourceId: input.sourceId,
+        createdById: context.userId,
+      },
+      include: candidateDetailInclude,
+    })
+    .catch(async (error: unknown) => {
+      if (error && typeof error === "object" && "code" in error && error.code === "P2002") {
+        const owner = await prisma.candidate.findUniqueOrThrow({ where: { phone: input.phone } });
+        throw new DuplicateCandidateError("A candidate with this phone number already exists.", owner.id);
+      }
+      throw error;
+    });
 
   await recordAudit({
     actorId: context.userId,
@@ -230,7 +263,7 @@ export async function createCandidate(context: SessionContext, input: CandidateC
     changes: { after: { name: created.name, phone: created.phone } },
   });
 
-  return { ...created, possibleDuplicateOf: softMatch?.id ?? null };
+  return { ...sanitizeForRead(created, fieldAccess), possibleDuplicateOf: softMatch?.id ?? null };
 }
 
 export async function updateCandidate(
@@ -243,6 +276,7 @@ export async function updateCandidate(
     throw new NotFoundError("Candidate not found.");
   }
   await assertCandidateAccess(context, existing, "UPDATE");
+  await assertCandidateNotHandedOff(id);
 
   if (input.sourceId) {
     await assertControlledListValue("CANDIDATE_SOURCE", input.sourceId, "source");
@@ -260,6 +294,9 @@ export async function updateCandidate(
 
   const customFields =
     input.customFields !== undefined ? await validateCandidateCustomFields(input.customFields) : undefined;
+
+  const fieldAccess = await getFieldAccess(context, ENTITY.CANDIDATE);
+  assertWritableFields({ ...input, ...(customFields !== undefined && { customFields }) }, fieldAccess);
 
   const data: Prisma.CandidateUpdateManyMutationInput = {
     ...(input.name !== undefined && { name: input.name }),
@@ -284,7 +321,19 @@ export async function updateCandidate(
     version: { increment: 1 },
   };
 
-  const result = await prisma.candidate.updateMany({ where: { id, version: input.version }, data });
+  // The findUnique precheck above (for a changed phone) is the same
+  // courtesy-only guard createCandidate's has — the unique constraint, not
+  // this precheck, is what a concurrent duplicate-phone update actually
+  // races against, so the update itself needs the matching P2002 catch.
+  const result = await prisma.candidate
+    .updateMany({ where: { id, version: input.version }, data })
+    .catch(async (error: unknown) => {
+      if (error && typeof error === "object" && "code" in error && error.code === "P2002") {
+        const owner = await prisma.candidate.findUniqueOrThrow({ where: { phone: input.phone! } });
+        throw new DuplicateCandidateError("A candidate with this phone number already exists.", owner.id);
+      }
+      throw error;
+    });
   if (result.count === 0) {
     throw new ConflictError("This candidate was changed by someone else. Reload and try again.");
   }
@@ -299,7 +348,7 @@ export async function updateCandidate(
     changes: { before: existing, after: data },
   });
 
-  return updated;
+  return sanitizeForRead(updated, fieldAccess);
 }
 
 export async function deleteCandidate(context: SessionContext, id: string) {
@@ -361,6 +410,7 @@ export async function mergeCandidates(context: SessionContext, targetId: string,
 
   await assertCandidateAccess(context, target, "UPDATE");
   await assertCandidateAccess(context, source, "DELETE");
+  await assertCandidateNotHandedOff(targetId);
 
   const fillIfEmpty = <T>(targetValue: T | null | undefined, sourceValue: T | null | undefined) =>
     targetValue === null || targetValue === undefined ? sourceValue ?? undefined : undefined;
@@ -419,7 +469,8 @@ export async function mergeCandidates(context: SessionContext, targetId: string,
     changes: { after: { mergedCandidateId: source.id } },
   });
 
-  return updated;
+  const fieldAccess = await getFieldAccess(context, ENTITY.CANDIDATE);
+  return sanitizeForRead(updated, fieldAccess);
 }
 
 const MAX_DOCUMENT_SIZE_BYTES = 10 * 1024 * 1024;
@@ -441,6 +492,7 @@ export async function addCandidateDocument(
     throw new NotFoundError("Candidate not found.");
   }
   await assertCandidateAccess(context, candidate, "UPDATE");
+  await assertCandidateNotHandedOff(candidateId);
   await assertControlledListValue("DOCUMENT_TYPE", input.documentTypeId, "document type");
 
   if (input.buffer.byteLength > MAX_DOCUMENT_SIZE_BYTES) {
@@ -514,6 +566,7 @@ export async function deleteCandidateDocument(
     throw new NotFoundError("Candidate not found.");
   }
   await assertCandidateAccess(context, candidate, "UPDATE");
+  await assertCandidateNotHandedOff(candidateId);
 
   const document = await prisma.candidateDocument.findUnique({ where: { id: documentId } });
   if (!document || document.candidateId !== candidateId) {
@@ -700,9 +753,11 @@ export async function getCandidateTimeline(context: SessionContext, candidateId:
   const interviewStatusItems = interviews
     .filter((interview) => interview.status !== "SCHEDULED")
     .map((interview) => ({
-      type: (interview.status === "COMPLETED" ? "interview_completed" : "interview_cancelled") as
-        | "interview_completed"
-        | "interview_cancelled",
+      type: (interview.status === "COMPLETED"
+        ? "interview_completed"
+        : interview.status === "NO_SHOW"
+          ? "interview_no_show"
+          : "interview_cancelled") as "interview_completed" | "interview_no_show" | "interview_cancelled",
       id: `${interview.id}:${interview.status.toLowerCase()}`,
       jobId: interview.application.jobId,
       jobTitle: interview.application.job.title,
@@ -728,12 +783,18 @@ export async function getCandidateTimeline(context: SessionContext, candidateId:
   // timestamp proxy" choice as Interview above, except the one transition
   // rich enough to need its own record — the approval decision — has one:
   // OfferApproval. Its rows are already filtered to non-PENDING above.
+  //
+  // §10.1's field-level rules apply per-resource: a role with
+  // OFFER.compensation set to HIDDEN must not see it leak in here either,
+  // even though this whole read is gated on CANDIDATE access, not OFFER
+  // access — the timeline is explicitly named as a leak vector.
+  const offerFieldAccess = await getFieldAccess(context, ENTITY.OFFER);
   const offerCreatedItems = offers.map((offer) => ({
     type: "offer_created" as const,
     id: `${offer.id}:created`,
     jobId: offer.application.jobId,
     jobTitle: offer.application.job.title,
-    compensation: offer.compensation.toString(),
+    compensation: offerFieldAccess.compensation === "HIDDEN" ? null : offer.compensation.toString(),
     createdAt: offer.createdAt,
   }));
 

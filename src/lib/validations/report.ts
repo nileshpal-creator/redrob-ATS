@@ -34,10 +34,12 @@ export type RecruiterProductivityQuery = z.infer<typeof recruiterProductivityQue
 
 export const offerTatComplianceQuerySchema = z.object({
   recruiterId: z.string().optional(),
-  // Viewer-supplied compliance threshold, not a stored org policy — the PRD
-  // names no fixed SLA number, so this stays a report parameter rather than
-  // an invented Organization-level setting.
-  tatThresholdDays: z.coerce.number().int().positive().default(3),
+  // Optional per-request override of Organization.offerTatThresholdDays
+  // (§11.6: "configurable per organization"). Left undefined here — not
+  // defaulted to 3 — so getOfferTatComplianceReport can tell "the caller
+  // didn't pass one" apart from "the caller explicitly asked for 3" and
+  // fall back to the org-wide setting only in the former case.
+  tatThresholdDays: z.coerce.number().int().positive().optional(),
   ...dateRangeFields,
 });
 export type OfferTatComplianceQuery = z.infer<typeof offerTatComplianceQuerySchema>;

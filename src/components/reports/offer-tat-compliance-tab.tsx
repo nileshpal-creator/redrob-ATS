@@ -25,9 +25,15 @@ type Result = {
   rows: OfferRow[];
 };
 
-export function OfferTatComplianceTab({ recruiters }: { recruiters: Option[] }) {
+export function OfferTatComplianceTab({
+  recruiters,
+  defaultThresholdDays,
+}: {
+  recruiters: Option[];
+  defaultThresholdDays: number;
+}) {
   const [recruiterId, setRecruiterId] = useState("ANY");
-  const [tatThresholdDays, setTatThresholdDays] = useState("3");
+  const [tatThresholdDays, setTatThresholdDays] = useState(String(defaultThresholdDays));
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [result, setResult] = useState<Result | null>(null);
@@ -73,7 +79,8 @@ export function OfferTatComplianceTab({ recruiters }: { recruiters: Option[] }) 
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
         Measures Offer submission to approval decision, in business days (using the org&apos;s working-day calendar).
-        The threshold below is a report parameter, not a stored org policy.
+        The threshold below defaults to the org-wide setting (Admin &rarr; Offer Settings) and can be overridden for
+        this run only.
       </p>
       <div className="flex flex-wrap items-end gap-3">
         <div className="space-y-1">

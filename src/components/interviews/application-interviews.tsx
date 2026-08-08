@@ -33,7 +33,7 @@ type Person = { id: string; name: string; email: string };
 type ReasonOption = { id: string; label: string };
 
 type InterviewMode = "ONSITE" | "VIRTUAL" | "PHONE";
-type InterviewStatus = "SCHEDULED" | "COMPLETED" | "CANCELLED";
+type InterviewStatus = "SCHEDULED" | "COMPLETED" | "CANCELLED" | "NO_SHOW";
 type Recommendation = "STRONG_YES" | "YES" | "NO" | "STRONG_NO";
 
 type InterviewFeedbackItem = {
@@ -70,6 +70,7 @@ const STATUS_BADGE_VARIANT: Record<InterviewStatus, "default" | "secondary" | "d
   SCHEDULED: "default",
   COMPLETED: "secondary",
   CANCELLED: "destructive",
+  NO_SHOW: "destructive",
 };
 const RECOMMENDATION_LABEL: Record<Recommendation, string> = {
   STRONG_YES: "Strong yes",
@@ -506,6 +507,7 @@ export function ApplicationInterviews({
   const router = useRouter();
   const [dialog, setDialog] = useState<ActiveDialog>(null);
   const [completingId, setCompletingId] = useState<string | null>(null);
+  const [markingNoShowId, setMarkingNoShowId] = useState<string | null>(null);
 
   function refresh() {
     router.refresh();
@@ -524,6 +526,22 @@ export function ApplicationInterviews({
       toast.error(error instanceof Error ? error.message : "Failed to complete interview");
     } finally {
       setCompletingId(null);
+    }
+  }
+
+  async function handleMarkNoShow(interview: Interview) {
+    setMarkingNoShowId(interview.id);
+    try {
+      await requestJson(`/api/interviews/${interview.id}/no-show`, {
+        method: "POST",
+        body: JSON.stringify({ version: interview.version }),
+      });
+      toast.success("Interview marked as no-show.");
+      refresh();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to mark interview as no-show");
+    } finally {
+      setMarkingNoShowId(null);
     }
   }
 
@@ -608,9 +626,18 @@ export function ApplicationInterviews({
                         {completingId === interview.id ? <Loader2 className="animate-spin" /> : null}
                         Mark complete
                       </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={markingNoShowId === interview.id}
+                        onClick={() => handleMarkNoShow(interview)}
+                      >
+                        {markingNoShowId === interview.id ? <Loader2 className="animate-spin" /> : null}
+                        Mark no-show
+                      </Button>
                     </>
                   ) : null}
-                  {interview.status !== "CANCELLED" && isPanelist ? (
+                  {interview.status !== "CANCELLED" && interview.status !== "NO_SHOW" && isPanelist ? (
                     <Button size="sm" variant="outline" onClick={() => setDialog({ type: "FEEDBACK", interview })}>
                       {myFeedback ? "Edit feedback" : "Submit feedback"}
                     </Button>

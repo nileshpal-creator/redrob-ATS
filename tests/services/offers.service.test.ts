@@ -12,6 +12,7 @@ import {
   transitionOffer,
   updateOffer,
 } from "@/lib/services/offers";
+import { runDueOfferExpirations } from "@/lib/services/offer-expiry";
 import { createApplication, transitionApplication } from "@/lib/services/applications";
 import { createCandidate, getCandidateTimeline } from "@/lib/services/candidates";
 import { createJob } from "@/lib/services/jobs";
@@ -78,6 +79,20 @@ describe("OfferService", () => {
       compensation: 95000,
       ...overrides,
     }) as OfferCreateInput;
+
+  // Walks a fresh DRAFT offer to EXTENDED — the only status LAPSED is ever
+  // reachable from — reusing the exact SUBMIT -> APPROVE -> EXTEND sequence
+  // the lifecycle test above already exercises.
+  async function extendOffer(respondByDate?: Date) {
+    const offer = await createOffer(recruiter, offerInput());
+    const submitted = await transitionOffer(recruiter, offer.id, { action: "SUBMIT", version: 0 });
+    const approved = await transitionOffer(hiringManager, offer.id, { action: "APPROVE", version: submitted.version });
+    return transitionOffer(recruiter, offer.id, {
+      action: "EXTEND",
+      version: approved.version,
+      ...(respondByDate && { respondByDate }),
+    });
+  }
 
   beforeAll(async () => {
     const passwordHash = await bcrypt.hash("Test123!Test123!", 4);
@@ -283,6 +298,30 @@ describe("OfferService", () => {
       expect(offer.createdBy.id).toBe(recruiter.userId);
       expect(offer.version).toBe(0);
       expect(offer.approvals).toHaveLength(0);
+
+      await prisma.offer.delete({ where: { id: offer.id } });
+    });
+
+    it("accepts designation and location, and lets them be edited while still DRAFT", async () => {
+      const offer = await createOffer(recruiter, offerInput({ designation: "Senior Engineer", location: "Remote" }));
+      expect(offer.designation).toBe("Senior Engineer");
+      expect(offer.location).toBe("Remote");
+
+      const updated = await updateOffer(recruiter, offer.id, {
+        version: offer.version,
+        designation: "Staff Engineer",
+        location: "Bengaluru, India",
+      });
+      expect(updated.designation).toBe("Staff Engineer");
+      expect(updated.location).toBe("Bengaluru, India");
+
+      await prisma.offer.delete({ where: { id: offer.id } });
+    });
+
+    it("leaves designation/location null when omitted", async () => {
+      const offer = await createOffer(recruiter, offerInput());
+      expect(offer.designation).toBeNull();
+      expect(offer.location).toBeNull();
 
       await prisma.offer.delete({ where: { id: offer.id } });
     });
@@ -587,6 +626,133 @@ describe("OfferService", () => {
       ).rejects.toBeInstanceOf(ForbiddenError);
 
       await prisma.offer.delete({ where: { id: offer.id } });
+    });
+
+    it("EXTEND accepts an optional respondByDate", async () => {
+      const respondByDate = new Date("2026-12-01T00:00:00Z");
+      const extended = await extendOffer(respondByDate);
+      expect(extended.respondByDate?.toISOString()).toBe(respondByDate.toISOString());
+
+      await prisma.offer.delete({ where: { id: extended.id } });
+    });
+
+    it("EXTEND without a respondByDate leaves it null — the offer never auto-lapses", async () => {
+      const extended = await extendOffer();
+      expect(extended.respondByDate).toBeNull();
+
+      await prisma.offer.delete({ where: { id: extended.id } });
+    });
+
+    it("ignores a respondByDate passed on a non-EXTEND action (rejected upstream by offerTransitionSchema — see tests/validations/offer.test.ts)", async () => {
+      const offer = await createOffer(recruiter, offerInput());
+
+      const submitted = await transitionOffer(recruiter, offer.id, {
+        action: "SUBMIT",
+        version: 0,
+        respondByDate: new Date("2026-12-01T00:00:00Z"),
+      });
+      expect(submitted.respondByDate).toBeNull();
+
+      await prisma.offer.delete({ where: { id: offer.id } });
+    });
+  });
+
+  describe("runDueOfferExpirations (auto-expiry)", () => {
+    it("lapses an EXTENDED offer once its respondByDate has passed", async () => {
+      const past = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const extended = await extendOffer(past);
+
+      const result = await runDueOfferExpirations(new Date());
+      expect(result.lapsedCount).toBeGreaterThanOrEqual(1);
+
+      const offer = await getOffer(recruiter, extended.id);
+      expect(offer.status).toBe("LAPSED");
+      expect(offer.version).toBe(extended.version + 1);
+
+      const auditEntry = await prisma.auditLog.findFirst({
+        where: { entityType: "OFFER", entityId: extended.id, action: "offer.lapsed" },
+      });
+      expect(auditEntry).not.toBeNull();
+      expect(auditEntry?.actorId).toBeNull();
+
+      await prisma.offer.delete({ where: { id: extended.id } });
+    });
+
+    it("does not lapse an EXTENDED offer whose respondByDate is still in the future", async () => {
+      const future = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      const extended = await extendOffer(future);
+
+      await runDueOfferExpirations(new Date());
+
+      const offer = await getOffer(recruiter, extended.id);
+      expect(offer.status).toBe("EXTENDED");
+
+      await prisma.offer.delete({ where: { id: extended.id } });
+    });
+
+    it("never lapses an EXTENDED offer with no respondByDate set", async () => {
+      const extended = await extendOffer();
+
+      await runDueOfferExpirations(new Date());
+
+      const offer = await getOffer(recruiter, extended.id);
+      expect(offer.status).toBe("EXTENDED");
+
+      await prisma.offer.delete({ where: { id: extended.id } });
+    });
+
+    it("does not touch a non-EXTENDED offer, even one with a past respondByDate lingering from a prior EXTEND", async () => {
+      const past = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const extended = await extendOffer(past);
+      const accepted = await transitionOffer(recruiter, extended.id, { action: "ACCEPT", version: extended.version });
+
+      await runDueOfferExpirations(new Date());
+
+      const offer = await getOffer(recruiter, accepted.id);
+      expect(offer.status).toBe("ACCEPTED");
+
+      const handoff = await prisma.handoffRecord.findUnique({ where: { offerId: accepted.id } });
+      await prisma.handoffDeliveryAttempt.deleteMany({ where: { handoffRecordId: handoff!.id } });
+      await prisma.handoffRecord.delete({ where: { id: handoff!.id } });
+      await prisma.offer.delete({ where: { id: accepted.id } });
+    });
+
+    it("is idempotent under concurrent/overlapping runs — only one lapses each due offer, via the version-guarded updateMany", async () => {
+      const past = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const extended = await extendOffer(past);
+
+      const [first, second] = await Promise.all([
+        runDueOfferExpirations(new Date()),
+        runDueOfferExpirations(new Date()),
+      ]);
+      // Exactly one of the two overlapping runs claims this offer — the total
+      // across both calls is 1, not 2, and never 0.
+      expect(first.lapsedCount + second.lapsedCount).toBe(1);
+
+      const offer = await getOffer(recruiter, extended.id);
+      expect(offer.status).toBe("LAPSED");
+      expect(offer.version).toBe(extended.version + 1);
+
+      const auditEntries = await prisma.auditLog.findMany({
+        where: { entityType: "OFFER", entityId: extended.id, action: "offer.lapsed" },
+      });
+      expect(auditEntries).toHaveLength(1);
+
+      await prisma.offer.delete({ where: { id: extended.id } });
+    });
+
+    it("a LAPSED offer has no legal further transitions", async () => {
+      const past = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const extended = await extendOffer(past);
+      await runDueOfferExpirations(new Date());
+      const lapsed = await getOffer(recruiter, extended.id);
+      expect(lapsed.status).toBe("LAPSED");
+
+      await expect(
+        transitionOffer(recruiter, extended.id, { action: "REVOKE", version: lapsed.version, reasonId: outcomeReasonId }),
+      ).rejects.toBeInstanceOf(ValidationError);
+
+      await prisma.offer.delete({ where: { id: extended.id } });
     });
   });
 

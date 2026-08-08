@@ -10,14 +10,19 @@ const OFFER_STATUSES = [
   "ACCEPTED",
   "DECLINED",
   "REVOKED",
+  "LAPSED",
 ] as const;
 
 const notesField = z.string().trim().max(2000).optional();
+const designationField = z.string().trim().min(1).max(200).optional();
+const locationField = z.string().trim().min(1).max(200).optional();
 
 export const offerCreateSchema = z.object({
   applicationId: z.string().min(1, "Application is required"),
   compensation: z.number().positive("Compensation must be greater than 0"),
   expectedJoiningDate: z.coerce.date().optional(),
+  designation: designationField,
+  location: locationField,
   notes: notesField,
   customFields: z.record(z.string(), z.unknown()).optional(),
 });
@@ -35,6 +40,8 @@ export const offerUpdateSchema = z.object({
   version: z.number().int(),
   compensation: z.number().positive().optional(),
   expectedJoiningDate: z.coerce.date().optional().nullable(),
+  designation: designationField.nullable(),
+  location: locationField.nullable(),
   notes: notesField.nullable(),
   customFields: z.record(z.string(), z.unknown()).optional(),
 });
@@ -49,10 +56,17 @@ export const offerTransitionSchema = z
     // OfferApproval row — not a reason from a Controlled List, since it's
     // free-form context from the approver rather than a fixed vocabulary.
     comments: z.string().trim().max(2000).optional(),
+    // §11.6 auto-expiry: an optional response deadline, settable only on
+    // EXTEND (see OfferStatus.LAPSED's schema comment) — omitted means this
+    // offer never auto-lapses, preserving today's behavior.
+    respondByDate: z.coerce.date().optional(),
   })
   .superRefine((val, ctx) => {
     if (["DECLINE", "REVOKE"].includes(val.action) && !val.reasonId) {
       ctx.addIssue({ code: "custom", path: ["reasonId"], message: "A reason is required for this transition" });
+    }
+    if (val.respondByDate && val.action !== "EXTEND") {
+      ctx.addIssue({ code: "custom", path: ["respondByDate"], message: "respondByDate only applies to the EXTEND action" });
     }
   });
 export type OfferTransitionInput = z.infer<typeof offerTransitionSchema>;

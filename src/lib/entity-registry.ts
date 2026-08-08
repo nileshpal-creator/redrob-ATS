@@ -27,6 +27,11 @@ export const ENTITY = {
   COMMUNICATION_TEMPLATE: "COMMUNICATION_TEMPLATE",
   SAVED_REPORT: "SAVED_REPORT",
   WORKFLOW_DEFINITION: "WORKFLOW_DEFINITION",
+  // Not itself RBAC-gated (configuring the chain is gated as JOB:UPDATE /
+  // OFFER:UPDATE at ALL scope — see src/lib/services/approvals.ts) —
+  // registered only so its own audit-log entries get a real, distinct
+  // entity type rather than borrowing JOB's or OFFER's.
+  APPROVAL_STEP_CONFIG: "APPROVAL_STEP_CONFIG",
   // Not RBAC-gated (POST /api/scheduler/run authenticates via
   // SCHEDULER_SECRET, not a session/role) — registered only so its own
   // audit-log entries (actorId: null, entityType: SCHEDULER) get a real,
@@ -55,6 +60,7 @@ export const ENTITY_LABELS: Record<string, string> = {
   [ENTITY.SAVED_REPORT]: "Saved Reports",
   [ENTITY.WORKFLOW_DEFINITION]: "Workflow Automations",
   [ENTITY.SCHEDULER]: "Scheduler",
+  [ENTITY.APPROVAL_STEP_CONFIG]: "Approval Chains",
 };
 
 /** Entities core modules may attach admin-defined custom fields to (§10.1). */

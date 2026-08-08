@@ -2,7 +2,15 @@ import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@/generated/prisma/client";
 import type { ApplicationEventType, PermissionAction } from "@/generated/prisma/enums";
 import { ENTITY } from "@/lib/entity-registry";
-import { can, ForbiddenError, getEffectiveScope, getTeamMemberIds, requirePermission } from "@/lib/authz/authorize";
+import {
+  can,
+  ForbiddenError,
+  getEffectiveScope,
+  getFieldAccess,
+  getTeamMemberIds,
+  requirePermission,
+} from "@/lib/authz/authorize";
+import { assertWritableFields, sanitizeForRead, sanitizeManyForRead } from "@/lib/authz/field-sanitizer";
 import type { SessionContext } from "@/lib/authz/session-context";
 import { ConflictError, NotFoundError, ValidationError } from "@/lib/errors";
 import { recordAudit } from "@/lib/audit/log";
@@ -154,7 +162,7 @@ async function buildScopedWhere(
 export async function listApplications(context: SessionContext, query: ApplicationQuery) {
   const where = await buildScopedWhere(context, query);
 
-  const [applications, total] = await Promise.all([
+  const [applications, total, fieldAccess] = await Promise.all([
     prisma.application.findMany({
       where,
       include: applicationListInclude,
@@ -163,9 +171,15 @@ export async function listApplications(context: SessionContext, query: Applicati
       take: query.pageSize,
     }),
     prisma.application.count({ where }),
+    getFieldAccess(context, ENTITY.APPLICATION),
   ]);
 
-  return { applications, total, page: query.page, pageSize: query.pageSize };
+  return {
+    applications: sanitizeManyForRead(applications, fieldAccess),
+    total,
+    page: query.page,
+    pageSize: query.pageSize,
+  };
 }
 
 export async function getApplication(context: SessionContext, id: string) {
@@ -174,7 +188,8 @@ export async function getApplication(context: SessionContext, id: string) {
     throw new NotFoundError("Application not found.");
   }
   await assertApplicationAccess(context, application, "READ");
-  return application;
+  const fieldAccess = await getFieldAccess(context, ENTITY.APPLICATION);
+  return sanitizeForRead(application, fieldAccess);
 }
 
 /**
@@ -247,6 +262,9 @@ export async function createApplication(
 
   const customFields = await validateApplicationCustomFields(input.customFields);
 
+  const fieldAccess = await getFieldAccess(context, ENTITY.APPLICATION);
+  assertWritableFields({ ...input, customFields }, fieldAccess);
+
   // Warn, never block (§11.4) — captured on the response, not thrown.
   const priorApplications = await prisma.application.findMany({
     where: { candidateId: input.candidateId, jobId: input.jobId },
@@ -280,7 +298,7 @@ export async function createApplication(
   // id is a one-time fingerprint (this application is only ever created once).
   await fireWorkflowsInBackground(context, created.id, "FORM_SUBMISSION", () => true, created.id);
 
-  return { ...created, priorApplications };
+  return { ...sanitizeForRead(created, fieldAccess), priorApplications };
 }
 
 export async function updateApplication(context: SessionContext, id: string, input: ApplicationUpdateInput) {
@@ -289,6 +307,7 @@ export async function updateApplication(context: SessionContext, id: string, inp
     throw new NotFoundError("Application not found.");
   }
   await assertApplicationAccess(context, existing, "UPDATE");
+  await assertApplicationNotHandedOff(id);
 
   if (input.ownerId) {
     await assertActiveUser(input.ownerId, "Owner");
@@ -296,6 +315,9 @@ export async function updateApplication(context: SessionContext, id: string, inp
 
   const customFields =
     input.customFields !== undefined ? await validateApplicationCustomFields(input.customFields) : undefined;
+
+  const fieldAccess = await getFieldAccess(context, ENTITY.APPLICATION);
+  assertWritableFields({ ...input, ...(customFields !== undefined && { customFields }) }, fieldAccess);
 
   const data: Prisma.ApplicationUpdateManyMutationInput = {
     ...(input.ownerId !== undefined && { ownerId: input.ownerId }),
@@ -338,7 +360,7 @@ export async function updateApplication(context: SessionContext, id: string, inp
     }
   }
 
-  return updated;
+  return sanitizeForRead(updated, fieldAccess);
 }
 
 /**
@@ -432,7 +454,8 @@ export async function transitionApplication(
     );
   }
 
-  return updated;
+  const fieldAccess = await getFieldAccess(context, ENTITY.APPLICATION);
+  return sanitizeForRead(updated, fieldAccess);
 }
 
 type BulkResult<T> = { succeeded: T[]; failed: { id: string; reason: string }[] };

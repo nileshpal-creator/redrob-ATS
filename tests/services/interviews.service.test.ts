@@ -10,6 +10,7 @@ import {
   completeInterview,
   getInterview,
   listInterviews,
+  markInterviewNoShow,
   scheduleInterview,
   submitInterviewFeedback,
   updateInterview,
@@ -362,6 +363,82 @@ describe("InterviewService", () => {
 
       await prisma.interview.deleteMany({ where: { id: { in: [mine.id, notMine.id] } } });
     });
+
+    it("filters listInterviews by jobId and a scheduledAt date range — the calendar view's own query params", async () => {
+      const otherJob = await createJob(recruiter, jobInput({ title: "Other Calendar Job" }));
+      const otherApplication = await createApplication(recruiter, { candidateId, jobId: otherJob.id });
+
+      const inRange = await scheduleInterview(
+        recruiter,
+        interviewInput({ scheduledAt: new Date("2026-10-01T09:00:00Z") }),
+      );
+      const outOfRange = await scheduleInterview(
+        recruiter,
+        interviewInput({ scheduledAt: new Date("2026-11-01T09:00:00Z") }),
+      );
+      const otherJobInterview = await scheduleInterview(
+        recruiter,
+        interviewInput({
+          applicationId: otherApplication.id,
+          scheduledAt: new Date("2026-10-02T09:00:00Z"),
+          panelistUserIds: [interviewer2.userId],
+        }),
+      );
+
+      const byJob = await listInterviews(hiringManager, { jobId: jobId, page: 1, pageSize: 25 });
+      const byJobIds = byJob.interviews.map((interview) => interview.id);
+      expect(byJobIds).toContain(inRange.id);
+      expect(byJobIds).toContain(outOfRange.id);
+      expect(byJobIds).not.toContain(otherJobInterview.id);
+
+      const byRange = await listInterviews(hiringManager, {
+        dateFrom: new Date("2026-10-01T00:00:00Z"),
+        dateTo: new Date("2026-10-31T23:59:59Z"),
+        page: 1,
+        pageSize: 25,
+      });
+      const byRangeIds = byRange.interviews.map((interview) => interview.id);
+      expect(byRangeIds).toContain(inRange.id);
+      expect(byRangeIds).toContain(otherJobInterview.id);
+      expect(byRangeIds).not.toContain(outOfRange.id);
+
+      await prisma.interview.deleteMany({ where: { id: { in: [inRange.id, outOfRange.id, otherJobInterview.id] } } });
+      await prisma.application.delete({ where: { id: otherApplication.id } });
+      await prisma.job.delete({ where: { id: otherJob.id } });
+    });
+
+    it("filters listInterviews by recruiterId (scheduledById), and an OWN-scoped caller's filter never widens past their own visible set", async () => {
+      const byRecruiterUser = await scheduleInterview(recruiter, interviewInput({ panelistUserIds: [interviewer1.userId] }));
+      // Distinct scheduledById inserted directly — the test fixture set has
+      // only one INTERVIEW:CREATE-capable role, so this mirrors the
+      // "insert the exact row shape directly" precedent used above for the
+      // inactive-panelist notification test rather than widening a shared
+      // role fixture just for this one assertion.
+      const byOtherUser = await prisma.interview.create({
+        data: {
+          applicationId,
+          roundName: "Direct Insert Round",
+          mode: "VIRTUAL",
+          scheduledAt: new Date("2026-10-03T09:00:00Z"),
+          scheduledById: hiringManager.userId,
+          panelists: { create: { userId: interviewer2.userId } },
+        },
+      });
+
+      const byRecruiter = await listInterviews(hiringManager, { recruiterId: recruiter.userId, page: 1, pageSize: 25 });
+      const byRecruiterIds = byRecruiter.interviews.map((interview) => interview.id);
+      expect(byRecruiterIds).toContain(byRecruiterUser.id);
+      expect(byRecruiterIds).not.toContain(byOtherUser.id);
+
+      // interviewer1 has OWN scope; asking for recruiterId=recruiter (who scheduled
+      // byRecruiterUser) must not leak byOtherUser, which interviewer1 is not on the panel of.
+      const asOwnScoped = await listInterviews(interviewer1, { recruiterId: recruiter.userId, page: 1, pageSize: 25 });
+      const ownScopedIds = asOwnScoped.interviews.map((interview) => interview.id);
+      expect(ownScopedIds).toContain(byRecruiterUser.id);
+      expect(ownScopedIds).not.toContain(byOtherUser.id);
+
+      await prisma.interview.deleteMany({ where: { id: { in: [byRecruiterUser.id, byOtherUser.id] } } });
+    });
   });
 
   describe("updateInterview (reschedule/edit)", () => {
@@ -483,6 +560,183 @@ describe("InterviewService", () => {
       await expect(completeInterview(recruiter, interview.id, { version: 1 })).rejects.toBeInstanceOf(ValidationError);
 
       await prisma.interview.delete({ where: { id: interview.id } });
+    });
+  });
+
+  describe("markInterviewNoShow", () => {
+    it("marks a scheduled interview as NO_SHOW, distinct from CANCELLED/COMPLETED", async () => {
+      const interview = await scheduleInterview(recruiter, interviewInput());
+
+      const marked = await markInterviewNoShow(recruiter, interview.id, { version: 0 });
+      expect(marked.status).toBe("NO_SHOW");
+
+      await prisma.interview.delete({ where: { id: interview.id } });
+    });
+
+    it("is terminal — no further action is accepted once marked NO_SHOW", async () => {
+      const interview = await scheduleInterview(recruiter, interviewInput());
+      await markInterviewNoShow(recruiter, interview.id, { version: 0 });
+
+      await expect(completeInterview(recruiter, interview.id, { version: 1 })).rejects.toBeInstanceOf(ValidationError);
+      await expect(
+        markInterviewNoShow(recruiter, interview.id, { version: 1 }),
+      ).rejects.toBeInstanceOf(ValidationError);
+
+      await prisma.interview.delete({ where: { id: interview.id } });
+    });
+
+    it("blocks feedback submission for a NO_SHOW interview", async () => {
+      const interview = await scheduleInterview(recruiter, interviewInput());
+      await markInterviewNoShow(recruiter, interview.id, { version: 0 });
+
+      await expect(
+        submitInterviewFeedback(interviewer1, interview.id, { recommendation: "YES" }),
+      ).rejects.toBeInstanceOf(ValidationError);
+
+      await prisma.interview.delete({ where: { id: interview.id } });
+    });
+
+    it("rejects a stale version with ConflictError", async () => {
+      const interview = await scheduleInterview(recruiter, interviewInput());
+      await updateInterview(recruiter, interview.id, { version: 0, notes: "bump version" });
+
+      await expect(markInterviewNoShow(recruiter, interview.id, { version: 0 })).rejects.toBeInstanceOf(ConflictError);
+
+      await prisma.interview.delete({ where: { id: interview.id } });
+    });
+
+    it("rejects a caller without manage access", async () => {
+      const interview = await scheduleInterview(recruiter, interviewInput());
+
+      await expect(
+        markInterviewNoShow(interviewer1, interview.id, { version: 0 }),
+      ).rejects.toBeInstanceOf(ForbiddenError);
+
+      await prisma.interview.delete({ where: { id: interview.id } });
+    });
+  });
+
+  describe("panel double-booking protection", () => {
+    it("rejects an exact-overlap time slot for a shared panelist", async () => {
+      const first = await scheduleInterview(
+        recruiter,
+        interviewInput({ scheduledAt: new Date("2026-10-01T09:00:00Z"), durationMinutes: 60 }),
+      );
+
+      await expect(
+        scheduleInterview(
+          recruiter,
+          interviewInput({ scheduledAt: new Date("2026-10-01T09:00:00Z"), durationMinutes: 60 }),
+        ),
+      ).rejects.toBeInstanceOf(ValidationError);
+
+      await prisma.interview.delete({ where: { id: first.id } });
+    });
+
+    it("rejects a partial overlap (new interview starts mid-way through an existing one)", async () => {
+      const first = await scheduleInterview(
+        recruiter,
+        interviewInput({ scheduledAt: new Date("2026-10-02T09:00:00Z"), durationMinutes: 60 }),
+      );
+
+      // 09:30-10:30 overlaps the first interview's 09:00-10:00 window.
+      await expect(
+        scheduleInterview(
+          recruiter,
+          interviewInput({ scheduledAt: new Date("2026-10-02T09:30:00Z"), durationMinutes: 60 }),
+        ),
+      ).rejects.toBeInstanceOf(ValidationError);
+
+      await prisma.interview.delete({ where: { id: first.id } });
+    });
+
+    it("allows an adjacent, non-overlapping time slot immediately after an existing interview ends", async () => {
+      const first = await scheduleInterview(
+        recruiter,
+        interviewInput({ scheduledAt: new Date("2026-10-03T09:00:00Z"), durationMinutes: 60 }),
+      );
+
+      // Starts exactly when the first ends (10:00) — back-to-back, not overlapping.
+      const second = await scheduleInterview(
+        recruiter,
+        interviewInput({ scheduledAt: new Date("2026-10-03T10:00:00Z"), durationMinutes: 60 }),
+      );
+      expect(second.id).not.toBe(first.id);
+
+      await prisma.interview.deleteMany({ where: { id: { in: [first.id, second.id] } } });
+    });
+
+    it("checks every assigned panelist, not just the first", async () => {
+      const first = await scheduleInterview(
+        recruiter,
+        interviewInput({
+          scheduledAt: new Date("2026-10-04T09:00:00Z"),
+          durationMinutes: 60,
+          panelistUserIds: [interviewer2.userId],
+        }),
+      );
+
+      // Same time slot, different primary panelist list, but interviewer2
+      // (the second panelist here) is already booked in that window.
+      await expect(
+        scheduleInterview(
+          recruiter,
+          interviewInput({
+            scheduledAt: new Date("2026-10-04T09:00:00Z"),
+            durationMinutes: 60,
+            panelistUserIds: [interviewer1.userId, interviewer2.userId],
+          }),
+        ),
+      ).rejects.toBeInstanceOf(ValidationError);
+
+      await prisma.interview.delete({ where: { id: first.id } });
+    });
+
+    it("does not flag a conflict against a CANCELLED interview in the same slot", async () => {
+      const cancelled = await scheduleInterview(
+        recruiter,
+        interviewInput({ scheduledAt: new Date("2026-10-05T09:00:00Z"), durationMinutes: 60 }),
+      );
+      await cancelInterview(recruiter, cancelled.id, { version: 0, reasonId: cancellationReasonId });
+
+      const rescheduledInSameSlot = await scheduleInterview(
+        recruiter,
+        interviewInput({ scheduledAt: new Date("2026-10-05T09:00:00Z"), durationMinutes: 60 }),
+      );
+      expect(rescheduledInSameSlot.id).not.toBe(cancelled.id);
+
+      await prisma.interview.deleteMany({ where: { id: { in: [cancelled.id, rescheduledInSameSlot.id] } } });
+    });
+
+    it("excludes the interview itself when rescheduling it within its own current slot", async () => {
+      const interview = await scheduleInterview(
+        recruiter,
+        interviewInput({ scheduledAt: new Date("2026-10-06T09:00:00Z"), durationMinutes: 60 }),
+      );
+
+      // Editing only the notes, with the same version, must not trip the
+      // double-booking check against its own unchanged schedule.
+      const updated = await updateInterview(recruiter, interview.id, { version: 0, notes: "no schedule change" });
+      expect(updated.notes).toBe("no schedule change");
+
+      await prisma.interview.delete({ where: { id: interview.id } });
+    });
+
+    it("rejects rescheduling into a slot that conflicts with a different existing interview", async () => {
+      const other = await scheduleInterview(
+        recruiter,
+        interviewInput({ scheduledAt: new Date("2026-10-07T14:00:00Z"), durationMinutes: 60 }),
+      );
+      const toReschedule = await scheduleInterview(
+        recruiter,
+        interviewInput({ scheduledAt: new Date("2026-10-07T09:00:00Z"), durationMinutes: 60 }),
+      );
+
+      await expect(
+        updateInterview(recruiter, toReschedule.id, { version: 0, scheduledAt: new Date("2026-10-07T14:00:00Z") }),
+      ).rejects.toBeInstanceOf(ValidationError);
+
+      await prisma.interview.deleteMany({ where: { id: { in: [other.id, toReschedule.id] } } });
     });
   });
 
@@ -693,6 +947,220 @@ describe("InterviewService", () => {
       await prisma.interview.delete({ where: { id: interviewB.id } });
       await prisma.application.deleteMany({ where: { id: { in: [applicationA.id, applicationB.id] } } });
       await prisma.candidate.deleteMany({ where: { id: { in: [candidateA.id, candidateB.id] } } });
+    });
+  });
+
+  describe("reschedule/cancel notifications", () => {
+    let notifyCandidateId: string;
+    let notifyApplicationId: string;
+    const rescheduleTemplateNames = ["Interview Rescheduled — Candidate", "Interview Rescheduled — Panelist"];
+    const cancelTemplateNames = ["Interview Cancelled — Candidate", "Interview Cancelled — Panelist"];
+
+    beforeAll(async () => {
+      const candidate = await createCandidate(recruiter, {
+        name: "Notify Candidate",
+        phone: "+1 555-0920",
+        email: "notify-candidate@test.local",
+        consentGivenAt: new Date("2026-01-01T00:00:00Z"),
+        skills: [],
+        tags: [],
+      } as CandidateCreateInput);
+      notifyCandidateId = candidate.id;
+
+      const application = await createApplication(recruiter, { candidateId: notifyCandidateId, jobId });
+      notifyApplicationId = application.id;
+
+      // The notification module addresses these templates by name, not by ID —
+      // create them here rather than depending on prisma/seed.ts, which the
+      // test-database global setup deliberately never runs (migrate-only).
+      await prisma.communicationTemplate.createMany({
+        data: [
+          {
+            name: "Interview Rescheduled — Candidate",
+            subject: "Your {{interview.roundName}} interview has been rescheduled",
+            body: "Hi {{candidate.name}}, your {{job.title}} interview is now at {{interview.scheduledAt}} ({{interview.durationMinutes}} min, {{interview.mode}}).",
+            createdById: recruiter.userId,
+          },
+          {
+            name: "Interview Rescheduled — Panelist",
+            subject: "Interview rescheduled: {{candidate.name}}",
+            body: "Hi {{panelist.name}}, the {{interview.roundName}} interview for {{candidate.name}} is now at {{interview.scheduledAt}}.",
+            createdById: recruiter.userId,
+          },
+          {
+            name: "Interview Cancelled — Candidate",
+            subject: "Your {{interview.roundName}} interview was cancelled",
+            body: "Hi {{candidate.name}}, your {{job.title}} interview was cancelled. Reason: {{interview.cancellationReason}}.",
+            createdById: recruiter.userId,
+          },
+          {
+            name: "Interview Cancelled — Panelist",
+            subject: "Interview cancelled: {{candidate.name}}",
+            body: "Hi {{panelist.name}}, the {{interview.roundName}} interview for {{candidate.name}} was cancelled. Reason: {{interview.cancellationReason}}.",
+            createdById: recruiter.userId,
+          },
+        ],
+      });
+    });
+
+    afterAll(async () => {
+      await prisma.applicationEmailLog.deleteMany({ where: { applicationId: notifyApplicationId } });
+      await prisma.application.delete({ where: { id: notifyApplicationId } });
+      await prisma.candidate.delete({ where: { id: notifyCandidateId } });
+      await prisma.communicationTemplate.deleteMany({
+        where: { name: { in: [...rescheduleTemplateNames, ...cancelTemplateNames] } },
+      });
+    });
+
+    it("notifies the candidate and active panelists on reschedule, with rendered content and no duplicate on a notes-only edit", async () => {
+      const interview = await scheduleInterview(recruiter, {
+        applicationId: notifyApplicationId,
+        roundName: "Notify Round",
+        mode: "VIRTUAL",
+        scheduledAt: new Date("2026-09-05T10:00:00Z"),
+        panelistUserIds: [interviewer1.userId, interviewer2.userId],
+      } as InterviewCreateInput);
+
+      await updateInterview(recruiter, interview.id, {
+        version: 0,
+        scheduledAt: new Date("2026-09-06T11:00:00Z"),
+      });
+
+      const logs = await prisma.applicationEmailLog.findMany({
+        where: { applicationId: notifyApplicationId },
+        orderBy: { toEmail: "asc" },
+      });
+      expect(logs).toHaveLength(3);
+      expect(logs.every((log) => log.status === "SENT")).toBe(true);
+      const candidateLog = logs.find((log) => log.toEmail === "notify-candidate@test.local");
+      expect(candidateLog?.subject).toBe("Your Notify Round interview has been rescheduled");
+      expect(candidateLog?.body).toContain("Hi Notify Candidate, your Backend Engineer interview is now at");
+      expect(candidateLog?.body).toContain("2026-09-06T11:00:00.000Z");
+      const panelistLog = logs.find((log) => log.toEmail === "iv-interviewer1@test.local");
+      expect(panelistLog?.body).toContain("Hi Interviewer One,");
+      expect(logs.map((log) => log.toEmail).sort()).toEqual(
+        ["iv-interviewer1@test.local", "iv-interviewer2@test.local", "notify-candidate@test.local"].sort(),
+      );
+
+      // A notes-only edit changes none of scheduledAt/durationMinutes/mode — must not re-notify.
+      await updateInterview(recruiter, interview.id, { version: 1, roundName: "Notify Round (renamed)" });
+      const logsAfterNotesEdit = await prisma.applicationEmailLog.findMany({
+        where: { applicationId: notifyApplicationId },
+      });
+      expect(logsAfterNotesEdit).toHaveLength(3);
+
+      await prisma.applicationEmailLog.deleteMany({ where: { applicationId: notifyApplicationId } });
+      await prisma.interview.delete({ where: { id: interview.id } });
+    });
+
+    it("excludes an inactive panelist from reschedule notifications", async () => {
+      const inactivePanelist = await prisma.user.create({
+        data: {
+          name: "Inactive Panelist",
+          email: "iv-inactive-panelist@test.local",
+          passwordHash: await bcrypt.hash("Test123!Test123!", 4),
+          isActive: false,
+        },
+      });
+      await prisma.userRole.create({ data: { userId: inactivePanelist.id, roleId: interviewerRoleId } });
+
+      const interview = await scheduleInterview(recruiter, {
+        applicationId: notifyApplicationId,
+        roundName: "Notify Round Inactive Panelist",
+        mode: "VIRTUAL",
+        scheduledAt: new Date("2026-09-07T10:00:00Z"),
+        panelistUserIds: [interviewer1.userId],
+      } as InterviewCreateInput);
+      // Add the inactive panelist directly — assertActiveUsers would reject them on the way in.
+      await prisma.interviewPanelist.create({ data: { interviewId: interview.id, userId: inactivePanelist.id } });
+
+      await updateInterview(recruiter, interview.id, { version: 0, durationMinutes: 90 });
+
+      const logs = await prisma.applicationEmailLog.findMany({ where: { applicationId: notifyApplicationId } });
+      expect(logs.map((log) => log.toEmail).sort()).toEqual(
+        ["iv-interviewer1@test.local", "notify-candidate@test.local"].sort(),
+      );
+
+      await prisma.applicationEmailLog.deleteMany({ where: { applicationId: notifyApplicationId } });
+      await prisma.interview.delete({ where: { id: interview.id } });
+      await prisma.userRole.deleteMany({ where: { userId: inactivePanelist.id } });
+      await prisma.user.delete({ where: { id: inactivePanelist.id } });
+    });
+
+    it("skips a recipient with no email on file without failing or logging a row for them", async () => {
+      const noEmailCandidate = await createCandidate(recruiter, {
+        name: "No Email Notify Candidate",
+        phone: "+1 555-0921",
+        consentGivenAt: new Date("2026-01-01T00:00:00Z"),
+        skills: [],
+        tags: [],
+      } as CandidateCreateInput);
+      const application = await createApplication(recruiter, { candidateId: noEmailCandidate.id, jobId });
+
+      const interview = await scheduleInterview(recruiter, {
+        applicationId: application.id,
+        roundName: "No Email Round",
+        mode: "VIRTUAL",
+        scheduledAt: new Date("2026-09-08T10:00:00Z"),
+        panelistUserIds: [interviewer1.userId],
+      } as InterviewCreateInput);
+
+      await updateInterview(recruiter, interview.id, { version: 0, mode: "ONSITE" });
+
+      const logs = await prisma.applicationEmailLog.findMany({ where: { applicationId: application.id } });
+      expect(logs.map((log) => log.toEmail)).toEqual(["iv-interviewer1@test.local"]);
+
+      await prisma.applicationEmailLog.deleteMany({ where: { applicationId: application.id } });
+      await prisma.interview.delete({ where: { id: interview.id } });
+      await prisma.application.delete({ where: { id: application.id } });
+      await prisma.candidate.delete({ where: { id: noEmailCandidate.id } });
+    });
+
+    it("notifies with the cancellation reason interpolated on cancel", async () => {
+      const interview = await scheduleInterview(recruiter, {
+        applicationId: notifyApplicationId,
+        roundName: "Notify Cancel Round",
+        mode: "VIRTUAL",
+        scheduledAt: new Date("2026-09-09T10:00:00Z"),
+        panelistUserIds: [interviewer1.userId],
+      } as InterviewCreateInput);
+
+      await cancelInterview(recruiter, interview.id, { version: 0, reasonId: cancellationReasonId });
+
+      const logs = await prisma.applicationEmailLog.findMany({ where: { applicationId: notifyApplicationId } });
+      expect(logs).toHaveLength(2);
+      expect(logs.every((log) => log.status === "SENT")).toBe(true);
+      const candidateLog = logs.find((log) => log.toEmail === "notify-candidate@test.local");
+      expect(candidateLog?.body).toContain("Reason: Scheduling conflict.");
+      expect(logs.map((log) => log.toEmail).sort()).toEqual(
+        ["iv-interviewer1@test.local", "notify-candidate@test.local"].sort(),
+      );
+
+      await prisma.applicationEmailLog.deleteMany({ where: { applicationId: notifyApplicationId } });
+      await prisma.interview.delete({ where: { id: interview.id } });
+    });
+
+    it("duplicate-send prevention is inherited from the version guard: a stale-version reschedule attempt is rejected before any notification is sent", async () => {
+      const interview = await scheduleInterview(recruiter, {
+        applicationId: notifyApplicationId,
+        roundName: "Stale Version Round",
+        mode: "VIRTUAL",
+        scheduledAt: new Date("2026-09-10T10:00:00Z"),
+        panelistUserIds: [interviewer1.userId],
+      } as InterviewCreateInput);
+
+      await updateInterview(recruiter, interview.id, { version: 0, scheduledAt: new Date("2026-09-10T12:00:00Z") });
+      await prisma.applicationEmailLog.deleteMany({ where: { applicationId: notifyApplicationId } });
+
+      // A second caller still holding the stale version 0 must be rejected, and must not trigger a second notification.
+      await expect(
+        updateInterview(recruiter, interview.id, { version: 0, scheduledAt: new Date("2026-09-10T14:00:00Z") }),
+      ).rejects.toBeInstanceOf(ConflictError);
+
+      const logs = await prisma.applicationEmailLog.findMany({ where: { applicationId: notifyApplicationId } });
+      expect(logs).toHaveLength(0);
+
+      await prisma.interview.delete({ where: { id: interview.id } });
     });
   });
 

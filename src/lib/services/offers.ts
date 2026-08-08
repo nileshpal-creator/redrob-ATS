@@ -2,7 +2,15 @@ import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@/generated/prisma/client";
 import type { OfferStatus, PermissionAction } from "@/generated/prisma/enums";
 import { ENTITY } from "@/lib/entity-registry";
-import { can, ForbiddenError, getEffectiveScope, getTeamMemberIds, requirePermission } from "@/lib/authz/authorize";
+import {
+  can,
+  ForbiddenError,
+  getEffectiveScope,
+  getFieldAccess,
+  getTeamMemberIds,
+  requirePermission,
+} from "@/lib/authz/authorize";
+import { assertWritableFields, sanitizeForRead, sanitizeManyForRead } from "@/lib/authz/field-sanitizer";
 import type { SessionContext } from "@/lib/authz/session-context";
 import { ConflictError, NotFoundError, ValidationError } from "@/lib/errors";
 import { recordAudit } from "@/lib/audit/log";
@@ -83,6 +91,7 @@ export async function listOffers(context: SessionContext, query: OfferQuery) {
   if (!scope) {
     throw new ForbiddenError();
   }
+  const fieldAccess = await getFieldAccess(context, ENTITY.OFFER);
 
   let ownerFilter: Prisma.OfferWhereInput = {};
   if (scope === "OWN") {
@@ -109,7 +118,7 @@ export async function listOffers(context: SessionContext, query: OfferQuery) {
     prisma.offer.count({ where }),
   ]);
 
-  return { offers, total, page: query.page, pageSize: query.pageSize };
+  return { offers: sanitizeManyForRead(offers, fieldAccess), total, page: query.page, pageSize: query.pageSize };
 }
 
 export async function getOffer(context: SessionContext, id: string) {
@@ -118,7 +127,8 @@ export async function getOffer(context: SessionContext, id: string) {
     throw new NotFoundError("Offer not found.");
   }
   await assertOfferAccess(context, offer, "READ");
-  return offer;
+  const fieldAccess = await getFieldAccess(context, ENTITY.OFFER);
+  return sanitizeForRead(offer, fieldAccess);
 }
 
 export async function createOffer(context: SessionContext, input: OfferCreateInput) {
@@ -148,6 +158,9 @@ export async function createOffer(context: SessionContext, input: OfferCreateInp
 
   const customFields = await validateOfferCustomFields(input.customFields);
 
+  const fieldAccess = await getFieldAccess(context, ENTITY.OFFER);
+  assertWritableFields({ ...input, customFields }, fieldAccess);
+
   // The findFirst above is a courtesy for a clean error message — it can't
   // prevent two concurrent creates from both passing it, so the
   // offer_one_active_per_application partial unique index (see the Offer
@@ -160,6 +173,8 @@ export async function createOffer(context: SessionContext, input: OfferCreateInp
         applicationId: input.applicationId,
         compensation: input.compensation,
         expectedJoiningDate: input.expectedJoiningDate,
+        designation: input.designation,
+        location: input.location,
         notes: input.notes,
         customFields: customFields as Prisma.InputJsonValue,
         createdById: context.userId,
@@ -181,7 +196,7 @@ export async function createOffer(context: SessionContext, input: OfferCreateInp
     changes: { after: { applicationId: input.applicationId, compensation: input.compensation } },
   });
 
-  return created;
+  return sanitizeForRead(created, fieldAccess);
 }
 
 export async function updateOffer(context: SessionContext, id: string, input: OfferUpdateInput) {
@@ -195,9 +210,14 @@ export async function updateOffer(context: SessionContext, id: string, input: Of
   const customFields =
     input.customFields !== undefined ? await validateOfferCustomFields(input.customFields) : undefined;
 
+  const fieldAccess = await getFieldAccess(context, ENTITY.OFFER);
+  assertWritableFields({ ...input, ...(customFields !== undefined && { customFields }) }, fieldAccess);
+
   const data: Prisma.OfferUncheckedUpdateManyInput = {
     ...(input.compensation !== undefined && { compensation: input.compensation }),
     ...(input.expectedJoiningDate !== undefined && { expectedJoiningDate: input.expectedJoiningDate }),
+    ...(input.designation !== undefined && { designation: input.designation }),
+    ...(input.location !== undefined && { location: input.location }),
     ...(input.notes !== undefined && { notes: input.notes }),
     ...(customFields !== undefined && { customFields: customFields as Prisma.InputJsonValue }),
     version: { increment: 1 },
@@ -219,7 +239,7 @@ export async function updateOffer(context: SessionContext, id: string, input: Of
     changes: { before: existing, after: data },
   });
 
-  return updated;
+  return sanitizeForRead(updated, fieldAccess);
 }
 
 export async function transitionOffer(context: SessionContext, id: string, input: OfferTransitionInput) {
@@ -253,6 +273,7 @@ export async function transitionOffer(context: SessionContext, id: string, input
       data: {
         status: transition.to,
         ...(transition.reasonRequired && { outcomeReasonId: input.reasonId }),
+        ...(input.action === "EXTEND" && { respondByDate: input.respondByDate ?? null }),
         version: { increment: 1 },
       },
     });
@@ -308,5 +329,6 @@ export async function transitionOffer(context: SessionContext, id: string, input
     });
   }
 
-  return updated;
+  const fieldAccess = await getFieldAccess(context, ENTITY.OFFER);
+  return sanitizeForRead(updated, fieldAccess);
 }

@@ -26,8 +26,8 @@ describe("pipelineFunnelQuerySchema", () => {
 });
 
 describe("offerTatComplianceQuerySchema", () => {
-  it("defaults tatThresholdDays to 3", () => {
-    expect(offerTatComplianceQuerySchema.parse({}).tatThresholdDays).toBe(3);
+  it("leaves tatThresholdDays undefined when omitted — getOfferTatComplianceReport falls back to the org setting", () => {
+    expect(offerTatComplianceQuerySchema.parse({}).tatThresholdDays).toBeUndefined();
   });
 
   it("rejects a non-positive threshold", () => {

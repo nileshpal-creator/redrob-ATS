@@ -25,6 +25,7 @@ export const AUDIT_ACTIONS = {
   JOB_UPDATED: "job.updated",
   JOB_STATUS_CHANGED: "job.status_changed",
   JOB_RECRUITERS_UPDATED: "job.recruiters_updated",
+  JOB_APPROVAL_STEP_DECIDED: "job.approval_step_decided",
   CANDIDATE_CREATED: "candidate.created",
   CANDIDATE_UPDATED: "candidate.updated",
   CANDIDATE_DELETED: "candidate.deleted",
@@ -45,10 +46,12 @@ export const AUDIT_ACTIONS = {
   INTERVIEW_UPDATED: "interview.updated",
   INTERVIEW_COMPLETED: "interview.completed",
   INTERVIEW_CANCELLED: "interview.cancelled",
+  INTERVIEW_NO_SHOW: "interview.no_show",
   INTERVIEW_FEEDBACK_SUBMITTED: "interview.feedback_submitted",
   OFFER_CREATED: "offer.created",
   OFFER_UPDATED: "offer.updated",
   OFFER_STATUS_CHANGED: "offer.status_changed",
+  OFFER_LAPSED: "offer.lapsed",
   HANDOFF_INITIATED: "handoff.initiated",
   HANDOFF_STATUS_CHANGED: "handoff.status_changed",
   COMMUNICATION_TEMPLATE_CREATED: "communication_template.created",
@@ -71,6 +74,7 @@ export const AUDIT_ACTIONS = {
   INTERVIEW_REMINDER_FAILED: "interview_reminder.failed",
   ORGANIZATION_SETTINGS_UPDATED: "organization.settings_updated",
   SCHEDULER_RUN: "scheduler.run",
+  APPROVAL_STEP_CONFIG_UPDATED: "approval_step_config.updated",
 } as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[keyof typeof AUDIT_ACTIONS];

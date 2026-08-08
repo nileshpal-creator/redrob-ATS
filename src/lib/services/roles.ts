@@ -71,7 +71,7 @@ export async function deleteRole(context: SessionContext, id: string) {
 
   const existing = await prisma.role.findUnique({
     where: { id },
-    include: { _count: { select: { users: true } } },
+    include: { _count: { select: { users: true, approvalStepConfigs: true } } },
   });
   if (!existing) {
     throw new NotFoundError("Role not found.");
@@ -82,6 +82,11 @@ export async function deleteRole(context: SessionContext, id: string) {
   if (existing._count.users > 0) {
     throw new ValidationError(
       "This role is still assigned to users. Reassign them before deleting it.",
+    );
+  }
+  if (existing._count.approvalStepConfigs > 0) {
+    throw new ValidationError(
+      "This role is required by a configured approval step. Update the approval chain before deleting it.",
     );
   }
 

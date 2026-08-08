@@ -226,6 +226,52 @@ describe("CandidateService", () => {
     ).rejects.toBeInstanceOf(DuplicateCandidateError);
   });
 
+  it("lets only one of two concurrent creates for the same phone succeed", async () => {
+    // The findUnique pre-check in createCandidate is a courtesy message, not
+    // the real guard — two requests can both pass it before either writes.
+    // This proves the Candidate.phone unique constraint (and the P2002 ->
+    // DuplicateCandidateError catch) is what actually prevents the race, not
+    // just the pre-check — same shape as createOffer's own concurrent-create
+    // race test.
+    const phone = "+1 555-0501";
+    const results = await Promise.allSettled([
+      createCandidate(recruiter, baseInput({ phone, name: "Racer A" })),
+      createCandidate(recruiter, baseInput({ phone, name: "Racer B" })),
+    ]);
+
+    const fulfilled = results.filter((result) => result.status === "fulfilled");
+    const rejected = results.filter((result) => result.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+
+    const rejection = rejected[0] as PromiseRejectedResult;
+    expect(rejection.reason).toBeInstanceOf(DuplicateCandidateError);
+
+    const survivor = (fulfilled[0] as PromiseFulfilledResult<Awaited<ReturnType<typeof createCandidate>>>).value;
+    expect((rejection.reason as DuplicateCandidateError).existingCandidateId).toBe(survivor.id);
+  });
+
+  it("lets only one of two concurrent updates racing to the same new phone succeed", async () => {
+    const a = await createCandidate(recruiter, baseInput({ phone: "+1 555-0503" }));
+    const b = await createCandidate(recruiter, baseInput({ phone: "+1 555-0504" }));
+    const contestedPhone = "+1 555-0505";
+
+    const results = await Promise.allSettled([
+      updateCandidate(recruiter, a.id, { version: a.version, phone: contestedPhone }),
+      updateCandidate(recruiter, b.id, { version: b.version, phone: contestedPhone }),
+    ]);
+
+    // Both racers target the same brand-new phone ("+1 555-0505"); the
+    // findUnique pre-check for each can pass before either write commits, so
+    // the unique constraint on the updateMany itself must be what decides
+    // the winner.
+    const fulfilled = results.filter((result) => result.status === "fulfilled");
+    const rejected = results.filter((result) => result.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(DuplicateCandidateError);
+  });
+
   it("scopes listCandidates to OWN records for a plain Recruiter grant", async () => {
     const mine = await createCandidate(recruiter, baseInput({ phone: "+1 555-0111" }));
     await createCandidate(otherRecruiter, baseInput({ phone: "+1 555-0112" }));

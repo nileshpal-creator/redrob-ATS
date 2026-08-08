@@ -7,6 +7,7 @@ import {
   adminNav,
   applicationsNavItem,
   candidatesNavItem,
+  interviewsNavItem,
   jobsNavItem,
   primaryNav,
   reportsNavItem,
@@ -41,6 +42,7 @@ export function AppSidebar({
   showJobsNav,
   showCandidatesNav,
   showApplicationsNav,
+  showInterviewsNav,
   showReportsNav,
   showWorkflowsNav,
 }: {
@@ -48,6 +50,7 @@ export function AppSidebar({
   showJobsNav: boolean;
   showCandidatesNav: boolean;
   showApplicationsNav: boolean;
+  showInterviewsNav: boolean;
   showReportsNav: boolean;
   showWorkflowsNav: boolean;
 }) {
@@ -63,6 +66,7 @@ export function AppSidebar({
         {showJobsNav ? <NavLink item={jobsNavItem} /> : null}
         {showCandidatesNav ? <NavLink item={candidatesNavItem} /> : null}
         {showApplicationsNav ? <NavLink item={applicationsNavItem} /> : null}
+        {showInterviewsNav ? <NavLink item={interviewsNavItem} /> : null}
         {showReportsNav ? <NavLink item={reportsNavItem} /> : null}
         {showWorkflowsNav ? <NavLink item={workflowsNavItem} /> : null}
 

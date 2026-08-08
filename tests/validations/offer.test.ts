@@ -40,6 +40,16 @@ describe("offerCreateSchema", () => {
     });
     expect(result.success).toBe(true);
   });
+
+  it("accepts optional designation and location", () => {
+    const result = offerCreateSchema.safeParse({ ...base, designation: "Senior Engineer", location: "Remote" });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects an empty-string designation or location", () => {
+    expect(offerCreateSchema.safeParse({ ...base, designation: "" }).success).toBe(false);
+    expect(offerCreateSchema.safeParse({ ...base, location: "" }).success).toBe(false);
+  });
 });
 
 describe("offerUpdateSchema", () => {
@@ -63,6 +73,11 @@ describe("offerUpdateSchema", () => {
 
   it("rejects a zero or negative compensation", () => {
     expect(offerUpdateSchema.safeParse({ version: 0, compensation: 0 }).success).toBe(false);
+  });
+
+  it("accepts designation/location edits, including clearing them via null", () => {
+    expect(offerUpdateSchema.safeParse({ version: 0, designation: "Staff Engineer" }).success).toBe(true);
+    expect(offerUpdateSchema.safeParse({ version: 0, designation: null, location: null }).success).toBe(true);
   });
 });
 
@@ -91,6 +106,19 @@ describe("offerTransitionSchema", () => {
     expect(
       offerTransitionSchema.safeParse({ action: "APPROVE", version: 0, comments: "Looks good." }).success,
     ).toBe(true);
+  });
+
+  it("accepts an optional respondByDate on EXTEND but rejects it on any other action", () => {
+    expect(
+      offerTransitionSchema.safeParse({ action: "EXTEND", version: 0, respondByDate: "2026-12-01" }).success,
+    ).toBe(true);
+    expect(offerTransitionSchema.safeParse({ action: "EXTEND", version: 0 }).success).toBe(true);
+    expect(
+      offerTransitionSchema.safeParse({ action: "SUBMIT", version: 0, respondByDate: "2026-12-01" }).success,
+    ).toBe(false);
+    expect(
+      offerTransitionSchema.safeParse({ action: "ACCEPT", version: 0, respondByDate: "2026-12-01" }).success,
+    ).toBe(false);
   });
 });
 

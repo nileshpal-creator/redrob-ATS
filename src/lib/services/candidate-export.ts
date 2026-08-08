@@ -2,6 +2,8 @@ import ExcelJS from "exceljs";
 
 import { prisma } from "@/lib/prisma";
 import { ENTITY } from "@/lib/entity-registry";
+import { getFieldAccess } from "@/lib/authz/authorize";
+import { sanitizeManyForRead } from "@/lib/authz/field-sanitizer";
 import type { SessionContext } from "@/lib/authz/session-context";
 import { recordAudit } from "@/lib/audit/log";
 import { AUDIT_ACTIONS } from "@/lib/audit/actions";
@@ -53,12 +55,18 @@ export async function exportCandidates(context: SessionContext, query: Candidate
   // all) — a bare requirePermission() here would wrongly reject a plain
   // OWN/TEAM-scope grant, since export isn't checked against one record.
   const where = await buildCandidateScopedWhere(context, query);
-  const candidates = await prisma.candidate.findMany({
-    where,
-    include: candidateListInclude,
-    orderBy: { createdAt: "desc" },
-  });
-  const rows = candidates.map(toExportRow);
+  const [candidates, fieldAccess] = await Promise.all([
+    prisma.candidate.findMany({
+      where,
+      include: candidateListInclude,
+      orderBy: { createdAt: "desc" },
+    }),
+    getFieldAccess(context, ENTITY.CANDIDATE),
+  ]);
+  // An export is a read path like any other (§10.1's own "restricted the
+  // same way core fields are") — HIDDEN fields must not reach the file any
+  // more than they'd reach a JSON API response.
+  const rows = sanitizeManyForRead(candidates, fieldAccess).map(toExportRow);
 
   let buffer: Buffer;
   let mimeType: string;

@@ -31,7 +31,15 @@ import { CustomFieldsFormSection } from "@/components/custom-fields/custom-field
 type Person = { id: string; name: string; email: string };
 type ReasonOption = { id: string; label: string };
 
-type OfferStatus = "DRAFT" | "PENDING_APPROVAL" | "APPROVED" | "EXTENDED" | "ACCEPTED" | "DECLINED" | "REVOKED";
+type OfferStatus =
+  | "DRAFT"
+  | "PENDING_APPROVAL"
+  | "APPROVED"
+  | "EXTENDED"
+  | "ACCEPTED"
+  | "DECLINED"
+  | "REVOKED"
+  | "LAPSED";
 
 type OfferApprovalEntry = {
   id: string;
@@ -46,6 +54,8 @@ export type Offer = {
   id: string;
   compensation: string;
   expectedJoiningDate: string | null;
+  designation: string | null;
+  location: string | null;
   notes: string | null;
   customFields: Record<string, unknown>;
   status: OfferStatus;
@@ -68,6 +78,7 @@ const STATUS_BADGE_VARIANT: Record<OfferStatus, "default" | "secondary" | "destr
   ACCEPTED: "default",
   DECLINED: "destructive",
   REVOKED: "destructive",
+  LAPSED: "destructive",
 };
 
 // Mirrors NON_TERMINAL_STATUSES in src/lib/services/offers.ts — kept as a
@@ -94,11 +105,20 @@ function toDateInputValue(iso: string) {
 type OfferFormValues = {
   compensation: string;
   expectedJoiningDate: string;
+  designation: string;
+  location: string;
   notes: string;
   customFields: Record<string, unknown>;
 };
 
-const EMPTY_OFFER_FORM: OfferFormValues = { compensation: "", expectedJoiningDate: "", notes: "", customFields: {} };
+const EMPTY_OFFER_FORM: OfferFormValues = {
+  compensation: "",
+  expectedJoiningDate: "",
+  designation: "",
+  location: "",
+  notes: "",
+  customFields: {},
+};
 
 function OfferFormDialog({
   applicationId,
@@ -126,6 +146,8 @@ function OfferFormDialog({
         ? {
             compensation: editingOffer.compensation,
             expectedJoiningDate: editingOffer.expectedJoiningDate ? toDateInputValue(editingOffer.expectedJoiningDate) : "",
+            designation: editingOffer.designation ?? "",
+            location: editingOffer.location ?? "",
             notes: editingOffer.notes ?? "",
             customFields: editingOffer.customFields ?? {},
           }
@@ -152,6 +174,8 @@ function OfferFormDialog({
       const payload = {
         compensation,
         expectedJoiningDate: values.expectedJoiningDate || undefined,
+        designation: values.designation || undefined,
+        location: values.location || undefined,
         notes: values.notes || undefined,
         customFields: values.customFields,
       };
@@ -206,6 +230,17 @@ function OfferFormDialog({
                 value={values.expectedJoiningDate}
                 onChange={(event) => update("expectedJoiningDate", event.target.value)}
               />
+            </div>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label>Designation (optional)</Label>
+              <Input value={values.designation} onChange={(event) => update("designation", event.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label>Location (optional)</Label>
+              <Input value={values.location} onChange={(event) => update("location", event.target.value)} />
             </div>
           </div>
 
@@ -445,6 +480,7 @@ export function ApplicationOffers({
                 </p>
                 <Badge variant={STATUS_BADGE_VARIANT[offer.status]}>{offer.status.replace("_", " ")}</Badge>
               </div>
+              {offer.designation ? <p className="text-sm font-medium">{offer.designation}</p> : null}
               <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                 {offer.expectedJoiningDate ? (
                   <span className="flex items-center gap-1">
@@ -452,6 +488,7 @@ export function ApplicationOffers({
                     Joining {new Date(offer.expectedJoiningDate).toLocaleDateString()}
                   </span>
                 ) : null}
+                {offer.location ? <span>{offer.location}</span> : null}
                 <span>Drafted by {offer.createdBy.name}</span>
               </p>
               {(offer.status === "DECLINED" || offer.status === "REVOKED") && offer.outcomeReason ? (
