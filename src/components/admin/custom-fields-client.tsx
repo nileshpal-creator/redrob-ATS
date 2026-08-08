@@ -11,6 +11,7 @@ import {
   customObjectDefinitionSchema,
   type CustomObjectDefinitionInput,
 } from "@/lib/validations/custom-object";
+import { CustomObjectRecordsClient } from "@/components/admin/custom-object-records-client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -418,6 +419,7 @@ export function CustomFieldsClient({
       <TabsList>
         <TabsTrigger value="fields">Fields</TabsTrigger>
         <TabsTrigger value="objects">Custom Objects</TabsTrigger>
+        <TabsTrigger value="records">Records</TabsTrigger>
       </TabsList>
       <TabsContent value="fields" className="space-y-4">
         <div className="flex justify-end">
@@ -435,6 +437,9 @@ export function CustomFieldsClient({
           <AddCustomObjectDialog onCreated={(object) => setObjects((prev) => [...prev, object])} />
         </div>
         <DataTable columns={objectColumns} data={objects} emptyMessage="No custom objects yet." />
+      </TabsContent>
+      <TabsContent value="records" className="space-y-4">
+        <CustomObjectRecordsClient objects={objects} />
       </TabsContent>
     </Tabs>
   );
