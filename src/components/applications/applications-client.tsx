@@ -4,7 +4,7 @@ import { useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type ColumnDef, type RowSelectionState } from "@tanstack/react-table";
-import { Plus } from "lucide-react";
+import { Loader2, Plus } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -182,6 +182,7 @@ export function ApplicationsClient({
           <Button variant="outline" onClick={() => fetchPage(1)} disabled={isPending}>
             Filter
           </Button>
+          {isPending ? <Loader2 className="size-4 animate-spin text-muted-foreground" /> : null}
         </div>
         {canCreate ? (
           <Button onClick={() => router.push("/applications/new")}>
@@ -203,6 +204,7 @@ export function ApplicationsClient({
         getRowId={(row) => row.id}
         rowSelection={rowSelection}
         onRowSelectionChange={setRowSelection}
+        isLoading={isPending}
       />
 
       <div className="flex items-center justify-between text-sm text-muted-foreground">

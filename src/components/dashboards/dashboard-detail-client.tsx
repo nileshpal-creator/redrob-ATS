@@ -181,6 +181,7 @@ function WidgetFormFields({
             <Button
               variant="ghost"
               size="icon"
+              aria-label="Remove filter"
               onClick={() => onChange({ filters: draft.filters.filter((_, i) => i !== index) })}
             >
               <Trash2 className="size-4" />
@@ -394,12 +395,18 @@ function WidgetCard({
               widgetCount={widgetCount}
               onSaved={onChanged}
               trigger={
-                <Button variant="ghost" size="icon">
+                <Button variant="ghost" size="icon" aria-label={`Edit ${widget.title}`}>
                   <Pencil className="size-4" />
                 </Button>
               }
             />
-            <Button variant="ghost" size="icon" disabled={deleting} onClick={handleDelete}>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={`Delete ${widget.title}`}
+              disabled={deleting}
+              onClick={handleDelete}
+            >
               <Trash2 className="size-4" />
             </Button>
           </div>

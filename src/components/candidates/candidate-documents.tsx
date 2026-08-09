@@ -117,7 +117,7 @@ export function CandidateDocuments({
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-1">
-            <Button variant="ghost" size="icon" asChild>
+            <Button variant="ghost" size="icon" aria-label={`Download ${document.fileName}`} asChild>
               <a href={`/api/candidates/${candidateId}/documents/${document.id}`} download>
                 <Download className="size-4" />
               </a>
@@ -126,6 +126,7 @@ export function CandidateDocuments({
               <Button
                 variant="ghost"
                 size="icon"
+                aria-label={`Delete ${document.fileName}`}
                 disabled={deletingId === document.id}
                 onClick={() => handleDelete(document.id)}
               >

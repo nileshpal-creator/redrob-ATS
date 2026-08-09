@@ -124,18 +124,25 @@ function ChainEditor({
               </Select>
               {canEdit ? (
                 <>
-                  <Button variant="outline" size="icon" disabled={index === 0} onClick={() => move(index, -1)}>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    aria-label="Move step up"
+                    disabled={index === 0}
+                    onClick={() => move(index, -1)}
+                  >
                     <ArrowUp className="size-4" />
                   </Button>
                   <Button
                     variant="outline"
                     size="icon"
+                    aria-label="Move step down"
                     disabled={index === steps.length - 1}
                     onClick={() => move(index, 1)}
                   >
                     <ArrowDown className="size-4" />
                   </Button>
-                  <Button variant="outline" size="icon" onClick={() => removeStep(index)}>
+                  <Button variant="outline" size="icon" aria-label="Remove step" onClick={() => removeStep(index)}>
                     <Trash2 className="size-4" />
                   </Button>
                 </>

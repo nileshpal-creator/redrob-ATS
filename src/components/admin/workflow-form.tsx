@@ -450,6 +450,7 @@ export function WorkflowForm({
               <Button
                 variant="ghost"
                 size="icon"
+                aria-label="Remove condition"
                 onClick={() => setConditions((prev) => prev.filter((_, i) => i !== index))}
               >
                 <Trash2 className="size-4" />
@@ -491,6 +492,7 @@ export function WorkflowForm({
                 <Button
                   variant="ghost"
                   size="icon"
+                  aria-label="Remove action"
                   onClick={() => setActions((prev) => prev.filter((_, i) => i !== index))}
                 >
                   <Trash2 className="size-4" />

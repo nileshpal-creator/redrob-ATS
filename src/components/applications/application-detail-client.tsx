@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
+import { BackLink } from "@/components/layout/back-link";
 import { CustomFieldsFormSection } from "@/components/custom-fields/custom-fields-form-section";
 import { ApplicationTransitionActions } from "@/components/applications/application-transition-actions";
 import { ApplicationOwnerEditor } from "@/components/applications/application-owner-editor";
@@ -139,6 +140,7 @@ export function ApplicationDetailClient({
 
   return (
     <div className="max-w-4xl space-y-6">
+      <BackLink href="/applications" label="Applications" />
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">

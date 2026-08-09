@@ -9,6 +9,7 @@ import { AlertTriangle, KanbanSquare, Loader2, Pencil, ShieldOff, Trash2 } from 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { BackLink } from "@/components/layout/back-link";
 import {
   Dialog,
   DialogContent,
@@ -263,6 +264,7 @@ export function CandidateDetailClient({
 
   return (
     <div className="max-w-4xl space-y-6">
+      <BackLink href="/candidates" label="Candidates" />
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">{candidate.name}</h1>

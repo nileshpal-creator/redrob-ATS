@@ -141,11 +141,21 @@ export function InterviewCalendarClient({
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="icon" onClick={() => setWeekStart((prev) => addDays(prev, -7))}>
+          <Button
+            variant="outline"
+            size="icon"
+            aria-label="Previous week"
+            onClick={() => setWeekStart((prev) => addDays(prev, -7))}
+          >
             <ChevronLeft className="size-4" />
           </Button>
           <span className="min-w-40 text-center text-sm font-medium">{formatWeekLabel(weekStart)}</span>
-          <Button variant="outline" size="icon" onClick={() => setWeekStart((prev) => addDays(prev, 7))}>
+          <Button
+            variant="outline"
+            size="icon"
+            aria-label="Next week"
+            onClick={() => setWeekStart((prev) => addDays(prev, 7))}
+          >
             <ChevronRight className="size-4" />
           </Button>
           <Button variant="outline" size="sm" onClick={() => setWeekStart(toUtcDateOnly(new Date().toISOString()))}>

@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
+import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -88,9 +89,15 @@ export function AuditLogClient({ initialResult }: { initialResult: AuditResult }
         <Button variant="outline" onClick={() => fetchPage(1)} disabled={isPending}>
           Filter
         </Button>
+        {isPending ? <Loader2 className="size-4 animate-spin text-muted-foreground" /> : null}
       </div>
 
-      <DataTable columns={columns} data={result.entries} emptyMessage="No activity recorded yet." />
+      <DataTable
+        columns={columns}
+        data={result.entries}
+        emptyMessage="No activity recorded yet."
+        isLoading={isPending}
+      />
 
       <div className="flex items-center justify-between text-sm text-muted-foreground">
         <span>

@@ -8,6 +8,7 @@ import {
   useReactTable,
 } from "@tanstack/react-table";
 
+import { cn } from "@/lib/utils";
 import {
   Table,
   TableBody,
@@ -37,6 +38,7 @@ export function DataTable<TData>({
   getRowId,
   rowSelection,
   onRowSelectionChange,
+  isLoading = false,
 }: {
   columns: ColumnDef<TData, unknown>[];
   data: TData[];
@@ -44,6 +46,8 @@ export function DataTable<TData>({
   getRowId?: (row: TData) => string;
   rowSelection?: RowSelectionState;
   onRowSelectionChange?: (next: RowSelectionState) => void;
+  /** Dims the table while a refetch is in flight — data stays visible, just muted. */
+  isLoading?: boolean;
 }) {
   const table = useReactTable({
     data,
@@ -61,7 +65,10 @@ export function DataTable<TData>({
   });
 
   return (
-    <div className="rounded-md border">
+    <div
+      className={cn("rounded-md border transition-opacity", isLoading && "opacity-60")}
+      aria-busy={isLoading}
+    >
       <Table>
         <TableHeader>
           {table.getHeaderGroups().map((headerGroup) => (

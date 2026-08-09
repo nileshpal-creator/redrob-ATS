@@ -4,7 +4,7 @@ import { useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type ColumnDef } from "@tanstack/react-table";
-import { Download, Plus, Upload } from "lucide-react";
+import { Download, Loader2, Plus, Upload } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -226,6 +226,7 @@ export function CandidatesClient({
           <Button variant="outline" onClick={() => fetchPage(1)} disabled={isPending}>
             Filter
           </Button>
+          {isPending ? <Loader2 className="size-4 animate-spin text-muted-foreground" /> : null}
         </div>
         <div className="flex gap-2">
           <DropdownMenu>
@@ -252,7 +253,12 @@ export function CandidatesClient({
         </div>
       </div>
 
-      <DataTable columns={columns} data={result.candidates} emptyMessage="No candidates match these filters." />
+      <DataTable
+        columns={columns}
+        data={result.candidates}
+        emptyMessage="No candidates match these filters."
+        isLoading={isPending}
+      />
 
       <div className="flex items-center justify-between text-sm text-muted-foreground">
         <span>
