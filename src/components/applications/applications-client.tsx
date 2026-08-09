@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { DataTable } from "@/components/ui/data-table";
+import { FilterBar } from "@/components/ui/filter-bar";
 import {
   Select,
   SelectContent,
@@ -102,7 +103,9 @@ export function ApplicationsClient({
       ),
     },
     {
+      id: "candidate",
       header: "Candidate",
+      accessorFn: (row) => row.candidate.name,
       cell: ({ row }) => (
         <Link href={`/candidates/${row.original.candidate.id}`} className="font-medium hover:underline">
           {row.original.candidate.name}
@@ -124,6 +127,7 @@ export function ApplicationsClient({
     { header: "Stage", cell: ({ row }) => row.original.stage.name },
     {
       header: "Outcome",
+      accessorKey: "outcome",
       cell: ({ row }) => (
         <Badge variant={OUTCOME_BADGE_VARIANT[row.original.outcome]}>{row.original.outcome}</Badge>
       ),
@@ -131,6 +135,7 @@ export function ApplicationsClient({
     { header: "Owner", cell: ({ row }) => row.original.owner.name },
     {
       header: "In stage since",
+      accessorKey: "stageEnteredAt",
       cell: ({ row }) => new Date(row.original.stageEnteredAt).toLocaleDateString(),
     },
     {
@@ -147,8 +152,8 @@ export function ApplicationsClient({
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-end justify-between gap-2">
-        <div className="flex flex-wrap items-end gap-2">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <FilterBar>
           <Input
             placeholder="Search candidate name…"
             className="w-52"
@@ -183,7 +188,7 @@ export function ApplicationsClient({
             Filter
           </Button>
           {isPending ? <Loader2 className="size-4 animate-spin text-muted-foreground" /> : null}
-        </div>
+        </FilterBar>
         {canCreate ? (
           <Button onClick={() => router.push("/applications/new")}>
             <Plus /> New application

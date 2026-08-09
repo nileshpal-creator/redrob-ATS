@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DataTable } from "@/components/ui/data-table";
+import { FilterBar } from "@/components/ui/filter-bar";
 
 type AuditEntry = {
   id: string;
@@ -68,7 +69,7 @@ export function AuditLogClient({ initialResult }: { initialResult: AuditResult }
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-end gap-2">
+      <FilterBar>
         <div className="space-y-1">
           <label className="text-sm font-medium">Entity type</label>
           <Input
@@ -90,7 +91,7 @@ export function AuditLogClient({ initialResult }: { initialResult: AuditResult }
           Filter
         </Button>
         {isPending ? <Loader2 className="size-4 animate-spin text-muted-foreground" /> : null}
-      </div>
+      </FilterBar>
 
       <DataTable
         columns={columns}

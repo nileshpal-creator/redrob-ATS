@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DataTable } from "@/components/ui/data-table";
+import { FilterBar } from "@/components/ui/filter-bar";
 import { TagInput } from "@/components/ui/tag-input";
 import {
   Select,
@@ -117,6 +118,7 @@ export function CandidatesClient({
   const columns: ColumnDef<CandidateRow, unknown>[] = [
     {
       header: "Name",
+      accessorKey: "name",
       cell: ({ row }) => (
         <Link href={`/candidates/${row.original.id}`} className="font-medium hover:underline">
           {row.original.name}
@@ -148,6 +150,7 @@ export function CandidatesClient({
     },
     {
       header: "Added",
+      accessorKey: "createdAt",
       cell: ({ row }) => new Date(row.original.createdAt).toLocaleDateString(),
     },
   ];
@@ -156,8 +159,8 @@ export function CandidatesClient({
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-end justify-between gap-2">
-        <div className="flex flex-wrap items-end gap-2">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <FilterBar>
           <Input
             placeholder="Search name, phone, email…"
             className="w-52"
@@ -227,7 +230,7 @@ export function CandidatesClient({
             Filter
           </Button>
           {isPending ? <Loader2 className="size-4 animate-spin text-muted-foreground" /> : null}
-        </div>
+        </FilterBar>
         <div className="flex gap-2">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>

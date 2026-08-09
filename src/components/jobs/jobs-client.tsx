@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DataTable } from "@/components/ui/data-table";
+import { FilterBar } from "@/components/ui/filter-bar";
 import {
   Select,
   SelectContent,
@@ -93,6 +94,7 @@ export function JobsClient({
   const columns: ColumnDef<JobRow, unknown>[] = [
     {
       header: "Title",
+      accessorKey: "title",
       cell: ({ row }) => (
         <Link href={`/jobs/${row.original.id}`} className="font-medium hover:underline">
           {row.original.title}
@@ -103,27 +105,32 @@ export function JobsClient({
     { header: "Location", cell: ({ row }) => row.original.location.label },
     {
       header: "Status",
+      accessorKey: "status",
       cell: ({ row }) => (
         <Badge variant={STATUS_BADGE_VARIANT[row.original.status] ?? "default"}>
           {row.original.status.replace("_", " ")}
         </Badge>
       ),
     },
-    { header: "Priority", cell: ({ row }) => row.original.priority },
+    { header: "Priority", accessorKey: "priority" },
     {
       header: "Positions",
       cell: ({ row }) => `${row.original.positionsFilledCount} / ${row.original.positionsCount}`,
     },
     { header: "Recruiter", cell: ({ row }) => row.original.primaryRecruiter.name },
-    { header: "Age", cell: ({ row }) => agingLabel(row.original.createdAt) },
+    {
+      header: "Age",
+      accessorKey: "createdAt",
+      cell: ({ row }) => agingLabel(row.original.createdAt),
+    },
   ];
 
   const totalPages = Math.max(1, Math.ceil(result.total / result.pageSize));
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-end justify-between gap-2">
-        <div className="flex flex-wrap items-end gap-2">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <FilterBar>
           <Input
             placeholder="Search title…"
             className="w-48"
@@ -199,7 +206,7 @@ export function JobsClient({
             Filter
           </Button>
           {isPending ? <Loader2 className="size-4 animate-spin text-muted-foreground" /> : null}
-        </div>
+        </FilterBar>
         {canCreate ? (
           <Button onClick={() => router.push("/jobs/new")}>
             <Plus /> New job

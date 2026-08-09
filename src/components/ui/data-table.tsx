@@ -1,10 +1,14 @@
 "use client";
 
+import { useState } from "react";
+import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
 import {
   type ColumnDef,
   type RowSelectionState,
+  type SortingState,
   flexRender,
   getCoreRowModel,
+  getSortedRowModel,
   useReactTable,
 } from "@tanstack/react-table";
 
@@ -21,9 +25,14 @@ import {
 /**
  * Thin wrapper around @tanstack/react-table for the list views every module
  * needs (users, roles, custom fields, audit log, jobs, candidates,
- * applications). Sorting/filtering/pagination are added by passing the
- * corresponding table state + row models in from the caller — this
- * component only owns rendering.
+ * applications). Filtering/pagination are added by passing the corresponding
+ * table state + row models in from the caller — this component only owns
+ * rendering.
+ *
+ * Sorting is handled internally (client-side, over whatever `data` is passed
+ * in — typically the current page) and only applies to columns with an
+ * `accessorKey`/`accessorFn`; display-only columns (header/cell without an
+ * accessor) are left unsortable automatically.
  *
  * Row selection (Module 4's bulk-action toolbars) is opt-in: pass
  * `getRowId` + `rowSelection` + `onRowSelectionChange` and include your own
@@ -49,13 +58,20 @@ export function DataTable<TData>({
   /** Dims the table while a refetch is in flight — data stays visible, just muted. */
   isLoading?: boolean;
 }) {
+  const [sorting, setSorting] = useState<SortingState>([]);
+
   const table = useReactTable({
     data,
     columns,
     getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
     getRowId: getRowId ? (row) => getRowId(row) : undefined,
     enableRowSelection: Boolean(onRowSelectionChange),
-    state: rowSelection ? { rowSelection } : undefined,
+    state: {
+      sorting,
+      ...(rowSelection ? { rowSelection } : {}),
+    },
+    onSortingChange: setSorting,
     onRowSelectionChange: onRowSelectionChange
       ? (updater) => {
           const next = typeof updater === "function" ? updater(rowSelection ?? {}) : updater;
@@ -75,9 +91,24 @@ export function DataTable<TData>({
             <TableRow key={headerGroup.id}>
               {headerGroup.headers.map((header) => (
                 <TableHead key={header.id}>
-                  {header.isPlaceholder
-                    ? null
-                    : flexRender(header.column.columnDef.header, header.getContext())}
+                  {header.isPlaceholder ? null : header.column.getCanSort() ? (
+                    <button
+                      type="button"
+                      className="flex items-center gap-1 hover:text-foreground"
+                      onClick={header.column.getToggleSortingHandler()}
+                    >
+                      {flexRender(header.column.columnDef.header, header.getContext())}
+                      {header.column.getIsSorted() === "asc" ? (
+                        <ArrowUp className="size-3.5" />
+                      ) : header.column.getIsSorted() === "desc" ? (
+                        <ArrowDown className="size-3.5" />
+                      ) : (
+                        <ArrowUpDown className="size-3.5 text-muted-foreground/50" />
+                      )}
+                    </button>
+                  ) : (
+                    flexRender(header.column.columnDef.header, header.getContext())
+                  )}
                 </TableHead>
               ))}
             </TableRow>

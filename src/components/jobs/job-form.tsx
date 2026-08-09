@@ -20,6 +20,7 @@ import {
 import { CustomFieldsFormSection } from "@/components/custom-fields/custom-fields-form-section";
 import { RecruiterPicker, type RecruiterAssignment } from "@/components/jobs/recruiter-picker";
 import { ParentJobPicker } from "@/components/jobs/parent-job-picker";
+import { useUnsavedChangesWarning } from "@/hooks/use-unsaved-changes-warning";
 
 type ListValue = { id: string; label: string };
 
@@ -85,9 +86,17 @@ export function JobForm({
   });
   const [recruiters, setRecruiters] = useState<RecruiterAssignment[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  useUnsavedChangesWarning(dirty && !submitting);
 
   function update<K extends keyof JobFormValues>(key: K, value: JobFormValues[K]) {
     setValues((prev) => ({ ...prev, [key]: value }));
+    setDirty(true);
+  }
+
+  function updateRecruiters(next: RecruiterAssignment[]) {
+    setRecruiters(next);
+    setDirty(true);
   }
 
   function validate(): string | null {
@@ -284,7 +293,7 @@ export function JobForm({
       {mode === "create" ? (
         <div className="space-y-2">
           <Label>Recruiters</Label>
-          <RecruiterPicker value={recruiters} onChange={setRecruiters} />
+          <RecruiterPicker value={recruiters} onChange={updateRecruiters} />
         </div>
       ) : null}
 

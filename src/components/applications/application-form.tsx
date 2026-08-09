@@ -21,6 +21,7 @@ import {
   ApplicationDuplicateCheck,
   type PriorApplication,
 } from "@/components/applications/application-duplicate-check";
+import { useUnsavedChangesWarning } from "@/hooks/use-unsaved-changes-warning";
 
 type JobOption = { id: string; title: string };
 type StageOption = { id: string; name: string; isActive: boolean };
@@ -52,6 +53,28 @@ export function ApplicationForm({
   const [customFields, setCustomFields] = useState<Record<string, unknown>>({});
   const [priorApplications, setPriorApplications] = useState<PriorApplication[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  useUnsavedChangesWarning(dirty && !submitting);
+
+  function updateCandidate(next: CandidateOption | null) {
+    setCandidate(next);
+    setDirty(true);
+  }
+
+  function updateJob(next: JobOption | null) {
+    setJob(next);
+    setDirty(true);
+  }
+
+  function updateStageId(next: string) {
+    setStageId(next);
+    setDirty(true);
+  }
+
+  function updateCustomFields(next: Record<string, unknown>) {
+    setCustomFields(next);
+    setDirty(true);
+  }
 
   // Job's active stages, so the user can optionally override the default
   // (the job's first stage) — reset whenever the job selection changes.
@@ -123,12 +146,12 @@ export function ApplicationForm({
     <div className="max-w-2xl space-y-6">
       <div className="space-y-2">
         <Label>Candidate</Label>
-        <CandidatePicker value={candidate} onChange={setCandidate} />
+        <CandidatePicker value={candidate} onChange={updateCandidate} />
       </div>
 
       <div className="space-y-2">
         <Label>Job</Label>
-        <ParentJobPicker value={job} onChange={setJob} />
+        <ParentJobPicker value={job} onChange={updateJob} />
       </div>
 
       {candidate && job ? <ApplicationDuplicateCheck priorApplications={priorApplications} /> : null}
@@ -139,7 +162,7 @@ export function ApplicationForm({
           {stages === null ? (
             <p className="text-sm text-muted-foreground">Loading stages…</p>
           ) : (
-            <Select value={stageId} onValueChange={setStageId}>
+            <Select value={stageId} onValueChange={updateStageId}>
               <SelectTrigger className="w-full">
                 <SelectValue placeholder="Default stage" />
               </SelectTrigger>
@@ -155,7 +178,7 @@ export function ApplicationForm({
         </div>
       ) : null}
 
-      <CustomFieldsFormSection entityType="APPLICATION" value={customFields} onChange={setCustomFields} />
+      <CustomFieldsFormSection entityType="APPLICATION" value={customFields} onChange={updateCustomFields} />
 
       <div className="flex justify-end gap-2">
         <Button variant="outline" onClick={() => router.back()}>

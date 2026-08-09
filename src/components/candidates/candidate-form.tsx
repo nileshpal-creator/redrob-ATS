@@ -24,6 +24,7 @@ import {
 } from "@/components/candidates/candidate-duplicate-check";
 import { ExperienceHistoryEditor, type ExperienceEntry } from "@/components/candidates/experience-history-editor";
 import { EducationHistoryEditor, type EducationEntry } from "@/components/candidates/education-history-editor";
+import { useUnsavedChangesWarning } from "@/hooks/use-unsaved-changes-warning";
 
 type ListValue = { id: string; label: string };
 
@@ -126,9 +127,12 @@ export function CandidateForm({
   const [hardMatch, setHardMatch] = useState<DuplicateMatch | null>(null);
   const [softMatch, setSoftMatch] = useState<DuplicateMatch | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  useUnsavedChangesWarning(dirty && !submitting);
 
   function update<K extends keyof CandidateFormValues>(key: K, value: CandidateFormValues[K]) {
     setValues((prev) => ({ ...prev, [key]: value }));
+    setDirty(true);
   }
 
   async function checkDuplicates() {
