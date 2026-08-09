@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Search, X } from "lucide-react";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -34,8 +35,14 @@ export function CandidatePicker({
     setSearching(true);
     try {
       const response = await fetch(`/api/candidates?q=${encodeURIComponent(query)}&pageSize=10`);
+      if (!response.ok) {
+        toast.error("Failed to search candidates. Please try again.");
+        return;
+      }
       const data = await response.json();
       setResults(data.candidates ?? []);
+    } catch {
+      toast.error("Failed to search candidates. Please try again.");
     } finally {
       setSearching(false);
     }
@@ -61,7 +68,7 @@ export function CandidatePicker({
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={(event) => event.key === "Enter" && (event.preventDefault(), search())}
         />
-        <Button type="button" variant="outline" onClick={search} disabled={searching}>
+        <Button type="button" variant="outline" aria-label="Search candidates" onClick={search} disabled={searching}>
           <Search className="size-4" />
         </Button>
       </div>

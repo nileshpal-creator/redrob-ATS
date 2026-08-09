@@ -6,6 +6,7 @@ import { ENTITY } from "@/lib/entity-registry";
 import { NotFoundError } from "@/lib/errors";
 import { getWorkflowDefinition, getWorkflowFormReferenceData } from "@/lib/services/workflow-definitions";
 import type { WorkflowAction, WorkflowCondition } from "@/lib/validations/workflow";
+import { BackLink } from "@/components/layout/back-link";
 import { WorkflowForm } from "@/components/admin/workflow-form";
 import { WorkflowVersionHistory } from "@/components/admin/workflow-version-history";
 
@@ -37,6 +38,7 @@ export default async function WorkflowDetailPage({ params }: { params: Promise<{
 
   return (
     <div className="space-y-4">
+      <BackLink href="/admin/workflows" label="Workflows" />
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">{definition.name}</h1>
         <p className="text-muted-foreground">

@@ -964,11 +964,12 @@ Per the PRD's §11 module breakdown and §14 roadmap, not yet started:
   nothing blocks the deactivation itself. The pipeline-stage editor UI blocks this client-side
   (showing the caller how many active applications are still in the stage), but that's a
   courtesy, not enforcement — an API caller can bypass it.
-- **The per-job Pipeline page loads at most 100 applications.** The `/jobs/[id]/pipeline` server
-  component calls `listApplications` with a fixed `pageSize: 100` for the board/list view; a job
-  with more than 100 applications will not show the rest on that page (the global `/applications`
-  list, which paginates properly, is unaffected). Not encountered in practice at this scale, but
-  worth fixing before a very high-volume job's pipeline is used as the primary view for it.
+- ~~The per-job Pipeline page loads at most 100 applications.~~ **Resolved in the post-Module-13
+  UI polish pass.** `/jobs/[id]/pipeline` now re-fetches at the job's actual application count
+  (capped at 2,000, to bound the query rather than leave it truly unbounded) whenever the first
+  100-item batch doesn't already cover the total, so the board and list views always agree with
+  the job's real application count. If a job ever does exceed the 2,000-row cap, a banner says so
+  explicitly and links to the global `/applications` list instead of silently truncating.
 
 ## Post-launch: Priority-A audit gap closure
 

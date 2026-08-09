@@ -73,8 +73,14 @@ export function CandidateMergeDialog({
     setSearching(true);
     try {
       const response = await fetch(`/api/candidates?q=${encodeURIComponent(query)}&pageSize=10`);
+      if (!response.ok) {
+        toast.error("Failed to search candidates. Please try again.");
+        return;
+      }
       const data = await response.json();
       setResults((data.candidates ?? []).filter((candidate: CandidateOption) => candidate.id !== targetCandidateId));
+    } catch {
+      toast.error("Failed to search candidates. Please try again.");
     } finally {
       setSearching(false);
     }
@@ -143,7 +149,7 @@ export function CandidateMergeDialog({
                 onChange={(event) => setQuery(event.target.value)}
                 onKeyDown={(event) => event.key === "Enter" && (event.preventDefault(), search())}
               />
-              <Button type="button" variant="outline" onClick={search} disabled={searching}>
+              <Button type="button" variant="outline" aria-label="Search candidates" onClick={search} disabled={searching}>
                 <Search className="size-4" />
               </Button>
             </div>

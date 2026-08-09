@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
+import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -98,9 +99,15 @@ export function InterviewCalendarClient({
       if (filters.jobId) params.set("jobId", filters.jobId);
 
       startTransition(async () => {
-        const response = await fetch(`/api/interviews?${params.toString()}`);
-        if (response.ok) {
-          setResult(await response.json());
+        try {
+          const response = await fetch(`/api/interviews?${params.toString()}`);
+          if (response.ok) {
+            setResult(await response.json());
+          } else {
+            toast.error("Failed to load interviews. Please try again.");
+          }
+        } catch {
+          toast.error("Failed to load interviews. Please try again.");
         }
       });
     },

@@ -589,6 +589,25 @@ describe("ApplicationService", () => {
     await expect(listApplications(noAccessUser, { page: 1, pageSize: 25 })).rejects.toBeInstanceOf(ForbiddenError);
   });
 
+  it("total reflects the full matching count independent of pageSize — the Job Pipeline page's fix for its 100-item cap relies on re-querying with pageSize: total", async () => {
+    const created = await Promise.all(
+      Array.from({ length: 5 }, () => createApplication(recruiter, { candidateId, jobId, ownerId: recruiter.userId })),
+    );
+
+    const firstPage = await listApplications(recruiter, { jobId, page: 1, pageSize: 2 });
+    expect(firstPage.applications).toHaveLength(2);
+    expect(firstPage.total).toBeGreaterThanOrEqual(5);
+
+    const fullPage = await listApplications(recruiter, { jobId, page: 1, pageSize: firstPage.total });
+    expect(fullPage.applications).toHaveLength(firstPage.total);
+    const fullIds = fullPage.applications.map((application) => application.id);
+    for (const application of created) {
+      expect(fullIds).toContain(application.id);
+    }
+
+    await prisma.application.deleteMany({ where: { id: { in: created.map((application) => application.id) } } });
+  });
+
   it("lets a broad READ:ALL role (Hiring Manager) see applications it doesn't own", async () => {
     const application = await createApplication(recruiter, { candidateId, jobId, ownerId: recruiter.userId });
     const viaHiringManager = await getApplication(hiringManager, application.id);

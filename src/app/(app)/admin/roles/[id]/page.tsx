@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getSessionContext } from "@/lib/authz/session-context";
 import { guardPage } from "@/lib/authz/guard";
 import { ENTITY, ENTITY_LABELS } from "@/lib/entity-registry";
+import { BackLink } from "@/components/layout/back-link";
 import { RolePermissionEditor } from "@/components/admin/role-permission-editor";
 
 export default async function RolePermissionsPage({
@@ -31,6 +32,7 @@ export default async function RolePermissionsPage({
 
   return (
     <div className="space-y-4">
+      <BackLink href="/admin/roles" label="Roles" />
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">{role.name}</h1>
         <p className="text-muted-foreground">
