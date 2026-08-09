@@ -16,6 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { DataTable } from "@/components/ui/data-table";
+import { ConfirmDeleteDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -354,6 +355,7 @@ export function CustomFieldsClient({
       toast.success(`Field "${field.label}" deleted.`);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to delete field");
+      throw error;
     }
   }
 
@@ -364,6 +366,7 @@ export function CustomFieldsClient({
       toast.success(`Custom object "${object.name}" deleted.`);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to delete custom object");
+      throw error;
     }
   }
 
@@ -384,9 +387,16 @@ export function CustomFieldsClient({
       id: "actions",
       cell: ({ row }) => (
         <div className="flex justify-end">
-          <Button variant="outline" size="sm" onClick={() => handleDeleteField(row.original)}>
-            <Trash2 />
-          </Button>
+          <ConfirmDeleteDialog
+            trigger={
+              <Button variant="outline" size="sm" aria-label={`Delete ${row.original.label}`}>
+                <Trash2 />
+              </Button>
+            }
+            title={`Delete "${row.original.label}"?`}
+            description="This permanently deletes the custom field. This can't be undone."
+            onConfirm={() => handleDeleteField(row.original)}
+          />
         </div>
       ),
     },
@@ -406,9 +416,16 @@ export function CustomFieldsClient({
       id: "actions",
       cell: ({ row }) => (
         <div className="flex justify-end">
-          <Button variant="outline" size="sm" onClick={() => handleDeleteObject(row.original)}>
-            <Trash2 />
-          </Button>
+          <ConfirmDeleteDialog
+            trigger={
+              <Button variant="outline" size="sm" aria-label={`Delete ${row.original.name}`}>
+                <Trash2 />
+              </Button>
+            }
+            title={`Delete "${row.original.name}"?`}
+            description="This permanently deletes the custom object and its records. This can't be undone."
+            onConfirm={() => handleDeleteObject(row.original)}
+          />
         </div>
       ),
     },

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 
 import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -22,18 +23,31 @@ export function PanelistPicker({
   disabled?: boolean;
 }) {
   const [users, setUsers] = useState<DirectoryUser[] | null>(null);
+  const [loadError, setLoadError] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     fetch("/api/users")
-      .then((response) => response.json())
+      .then((response) => {
+        if (!response.ok) throw new Error("Failed to load users");
+        return response.json();
+      })
       .then((data: DirectoryUser[]) => {
         if (!cancelled) setUsers(data.filter((user) => user.isActive));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setLoadError(true);
+        toast.error("Failed to load users. Please try again.");
       });
     return () => {
       cancelled = true;
     };
   }, []);
+
+  if (loadError) {
+    return <p className="text-sm text-destructive">Failed to load users.</p>;
+  }
 
   if (users === null) {
     return <Skeleton className="h-32 w-full" />;

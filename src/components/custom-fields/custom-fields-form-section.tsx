@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -44,18 +45,31 @@ export function CustomFieldsFormSection({
   disabled?: boolean;
 }) {
   const [definitions, setDefinitions] = useState<CustomFieldDefinition[] | null>(null);
+  const [loadError, setLoadError] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     fetch(`/api/custom-fields?entityType=${encodeURIComponent(entityType)}`)
-      .then((response) => response.json())
+      .then((response) => {
+        if (!response.ok) throw new Error("Failed to load custom fields");
+        return response.json();
+      })
       .then((data: CustomFieldDefinition[]) => {
         if (!cancelled) setDefinitions(data.filter((definition) => definition.isActive));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setLoadError(true);
+        toast.error("Failed to load custom fields. Please try again.");
       });
     return () => {
       cancelled = true;
     };
   }, [entityType]);
+
+  if (loadError) {
+    return <p className="text-sm text-destructive">Failed to load custom fields.</p>;
+  }
 
   if (definitions === null) {
     return <Skeleton className="h-20 w-full" />;

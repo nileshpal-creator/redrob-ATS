@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { KanbanSquare, Pencil } from "lucide-react";
+import { KanbanSquare, Pencil, UserPlus } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -75,6 +75,7 @@ export function JobDetailClient({
   postings,
   canManagePostings,
   canRefer,
+  canCreateApplication,
 }: {
   job: JobDetail;
   availableTransitions: { action: string; to: string; reasonRequired: boolean; reasonListKey?: string }[];
@@ -85,6 +86,7 @@ export function JobDetailClient({
   postings: JobPostingRow[];
   canManagePostings: boolean;
   canRefer: boolean;
+  canCreateApplication: boolean;
 }) {
   return (
     <div className="max-w-4xl space-y-6">
@@ -102,6 +104,13 @@ export function JobDetailClient({
         </div>
         <div className="flex gap-2">
           {canRefer ? <ReferCandidateDialog jobId={job.id} /> : null}
+          {canCreateApplication ? (
+            <Button variant="outline" asChild>
+              <Link href={`/applications/new?jobId=${job.id}`}>
+                <UserPlus /> New application
+              </Link>
+            </Button>
+          ) : null}
           <Button variant="outline" asChild>
             <Link href={`/jobs/${job.id}/pipeline`}>
               <KanbanSquare /> Pipeline

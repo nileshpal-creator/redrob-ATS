@@ -4,7 +4,7 @@ import type { PermissionAction } from "@/generated/prisma/enums";
 import { ENTITY } from "@/lib/entity-registry";
 import { can, ForbiddenError } from "@/lib/authz/authorize";
 import type { SessionContext } from "@/lib/authz/session-context";
-import { NotFoundError } from "@/lib/errors";
+import { NotFoundError, ValidationError } from "@/lib/errors";
 import { recordAudit } from "@/lib/audit/log";
 import { AUDIT_ACTIONS } from "@/lib/audit/actions";
 import type { PipelineStagesReplaceInput } from "@/lib/validations/application";
@@ -107,6 +107,21 @@ export async function replacePipelineStages(
   );
 
   await prisma.$transaction(async (tx) => {
+    // Deactivating a stage that still has ACTIVE applications sitting in it
+    // used to be blocked only client-side (the pipeline-stage editor's own
+    // activeApplicationCountByStageId check) — an API caller could bypass
+    // that courtesy entirely. Checked inside the same transaction that does
+    // the deactivating, so a concurrent application create/stage-move can't
+    // race between this check and the write below.
+    for (const stage of toDeactivate) {
+      const activeCount = await tx.application.count({ where: { stageId: stage.id, outcome: "ACTIVE" } });
+      if (activeCount > 0) {
+        throw new ValidationError(
+          `${activeCount} active application${activeCount === 1 ? "" : "s"} ${activeCount === 1 ? "is" : "are"} still in "${stage.name}". Move them to another stage first.`,
+        );
+      }
+    }
+
     // The (jobId, name) partial unique index only exempts inactive rows, so
     // two kinds of transient collision are possible while this update runs
     // and must both be cleared before anything gets its real target name:

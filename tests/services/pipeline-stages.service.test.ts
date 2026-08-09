@@ -247,7 +247,39 @@ describe("PipelineStageService", () => {
     expect(newRow.isActive).toBe(true);
   });
 
-  it("keeps an Application's stageId intact when its stage is later deactivated", async () => {
+  it("blocks deactivating a stage that still has an ACTIVE application sitting in it", async () => {
+    const stages = await getPipelineStages(recruiter, jobId);
+    const targetStage = stages.find((stage) => stage.isActive)!;
+
+    const candidate = await createCandidate(recruiter, {
+      name: "Stage Guard Candidate",
+      phone: "+1 555-0951",
+      consentGivenAt: new Date("2026-01-01T00:00:00Z"),
+      skills: [],
+      tags: [],
+    } as CandidateCreateInput);
+    const application = await createApplication(recruiter, {
+      candidateId: candidate.id,
+      jobId,
+      stageId: targetStage.id,
+    });
+
+    const remaining = stages.filter((stage) => stage.id !== targetStage.id);
+    await expect(
+      replacePipelineStages(recruiter, jobId, {
+        stages: remaining.map((stage) => ({ id: stage.id, name: stage.name })),
+      }),
+    ).rejects.toThrow(/active application/i);
+
+    // Blocked means blocked — the stage must still be exactly as it was.
+    const stageRow = await prisma.pipelineStage.findUniqueOrThrow({ where: { id: targetStage.id } });
+    expect(stageRow.isActive).toBe(true);
+
+    await prisma.application.delete({ where: { id: application.id } });
+    await prisma.candidate.delete({ where: { id: candidate.id } });
+  });
+
+  it("allows deactivating a stage once its application is no longer ACTIVE, and leaves stageId untouched (never force-migrated or nulled)", async () => {
     const stages = await getPipelineStages(recruiter, jobId);
     // Filtered rather than stages[0] — earlier tests in this file may have
     // left an inactive stage sorted first, and creating an application
@@ -266,6 +298,10 @@ describe("PipelineStageService", () => {
       jobId,
       stageId: targetStage.id,
     });
+    // Bypasses transitionApplication's own reject/withdraw flow on purpose —
+    // this test is about pipeline-stages' behavior once an application is
+    // no longer ACTIVE, not about how it got that way.
+    await prisma.application.update({ where: { id: application.id }, data: { outcome: "REJECTED" } });
 
     const remaining = stages.filter((stage) => stage.id !== targetStage.id);
     await replacePipelineStages(recruiter, jobId, {

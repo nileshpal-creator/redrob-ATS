@@ -6,6 +6,7 @@ import { Loader2, Plus, Trash2 } from "lucide-react";
 
 import { CustomFieldsFormSection } from "@/components/custom-fields/custom-fields-form-section";
 import { Button } from "@/components/ui/button";
+import { ConfirmDeleteDialog } from "@/components/ui/confirm-dialog";
 import { DataTable } from "@/components/ui/data-table";
 import { Input } from "@/components/ui/input";
 import {
@@ -157,6 +158,7 @@ function RelationsDialog({
       toast.success("Unlinked.");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to unlink entity");
+      throw error;
     }
   }
 
@@ -181,9 +183,21 @@ function RelationsDialog({
                 <span>
                   {relation.relatedEntityType}: {relation.relatedEntityId}
                 </span>
-                <Button variant="ghost" size="sm" onClick={() => handleRemove(relation)}>
-                  <Trash2 />
-                </Button>
+                <ConfirmDeleteDialog
+                  trigger={
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      aria-label={`Unlink ${relation.relatedEntityType} ${relation.relatedEntityId}`}
+                    >
+                      <Trash2 />
+                    </Button>
+                  }
+                  title="Unlink this record?"
+                  description={`Removes the link to ${relation.relatedEntityType} ${relation.relatedEntityId}. You can re-link it afterward.`}
+                  confirmLabel="Unlink"
+                  onConfirm={() => handleRemove(relation)}
+                />
               </div>
             ))
           )}
@@ -252,6 +266,7 @@ export function CustomObjectRecordsClient({ objects }: { objects: CustomObjectRo
       toast.success("Record deleted.");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to delete record");
+      throw error;
     }
   }
 
@@ -276,9 +291,16 @@ export function CustomObjectRecordsClient({ objects }: { objects: CustomObjectRo
       cell: ({ row }) => (
         <div className="flex justify-end gap-2">
           <RelationsDialog record={row.original} onChange={handleRelationsChange} />
-          <Button variant="outline" size="sm" onClick={() => handleDelete(row.original)}>
-            <Trash2 />
-          </Button>
+          <ConfirmDeleteDialog
+            trigger={
+              <Button variant="outline" size="sm" aria-label={`Delete record ${row.original.id}`}>
+                <Trash2 />
+              </Button>
+            }
+            title="Delete this record?"
+            description="This permanently deletes the record and its links. This can't be undone."
+            onConfirm={() => handleDelete(row.original)}
+          />
         </div>
       ),
     },

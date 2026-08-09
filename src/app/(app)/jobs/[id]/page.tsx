@@ -29,7 +29,8 @@ export default async function JobDetailPage({ params }: { params: Promise<{ id: 
     cancelReasons,
     sources,
     postings,
-    canRefer,
+    canCreateApplication,
+    canCreateCandidate,
   ] = await Promise.all([
     getAvailableTransitions(context, job),
     can(context, ENTITY.JOB, "UPDATE", { ownerId: job.primaryRecruiterId }),
@@ -39,10 +40,10 @@ export default async function JobDetailPage({ params }: { params: Promise<{ id: 
     getControlledListValues("JOB_CANCEL_REASON"),
     getControlledListValues("CANDIDATE_SOURCE"),
     listJobPostings(context, id),
-    Promise.all([can(context, ENTITY.APPLICATION, "CREATE"), can(context, ENTITY.CANDIDATE, "CREATE")]).then(
-      ([canCreateApplication, canCreateCandidate]) => canCreateApplication && canCreateCandidate,
-    ),
+    can(context, ENTITY.APPLICATION, "CREATE"),
+    can(context, ENTITY.CANDIDATE, "CREATE"),
   ]);
+  const canRefer = canCreateApplication && canCreateCandidate;
 
   return (
     <JobDetailClient
@@ -59,6 +60,7 @@ export default async function JobDetailPage({ params }: { params: Promise<{ id: 
       postings={JSON.parse(JSON.stringify(postings))}
       canManagePostings={canEditFields}
       canRefer={canRefer}
+      canCreateApplication={canCreateApplication}
     />
   );
 }

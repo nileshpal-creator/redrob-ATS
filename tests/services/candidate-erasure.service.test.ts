@@ -426,6 +426,25 @@ describe("CandidateErasureService", () => {
       expect(second.anonymizedCount).toBe(0);
     });
 
+    it("only lets one of two concurrent sweep runs anonymize the same due candidate", async () => {
+      await prisma.organization.update({ where: { id: organizationId }, data: { candidateRetentionDays: 30 } });
+      const oldCreatedAt = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
+      const candidate = await freshCandidate({ createdAt: oldCreatedAt });
+
+      const now = new Date();
+      const [first, second] = await Promise.all([runDueRetentionSweeps(now), runDueRetentionSweeps(now)]);
+
+      // Each run's own findMany saw the same not-yet-anonymized candidate
+      // (evaluatedCount reflects the query, not the claim), but the atomic
+      // updateMany claim inside the loop means only one of the two actually
+      // anonymizes it — proving the race the non-atomic findUnique re-check
+      // used to allow is now closed.
+      expect(first.anonymizedCount + second.anonymizedCount).toBe(1);
+
+      const requests = await prisma.dataErasureRequest.findMany({ where: { candidateId: candidate.id } });
+      expect(requests).toHaveLength(1);
+    });
+
     it("does not sweep a candidate still within the retention window", async () => {
       await prisma.organization.update({ where: { id: organizationId }, data: { candidateRetentionDays: 365 } });
       const candidate = await freshCandidate();

@@ -198,12 +198,12 @@ export async function decideCandidateErasureRequest(
  * Skips a candidate with any ACTIVE (non-terminal) Application — sweeping
  * PII out from under someone still actively progressing through a pipeline
  * would be a functional regression, not a compliance feature. Idempotent:
- * re-running only ever matches candidates with anonymizedAt: null, and this
- * function itself sets that field, so a candidate anonymized by one run
- * simply drops out of a later run's own WHERE clause — the same
- * "idempotency falls out of the terminal-state transition" shape
- * runDueOfferExpirations already establishes, not a claim-slot state
- * machine.
+ * re-running only ever matches candidates with anonymizedAt: null, and each
+ * one is atomically claimed via a conditional updateMany (anonymizedAt:
+ * null guard) before anonymizeCandidateRecord runs, the same claim-then-act
+ * shape runDueOfferExpirations's version-guarded updateMany uses — so two
+ * overlapping sweeps (or a sweep racing a manually-decided erasure request)
+ * can't both anonymize, and double-write, the same candidate.
  */
 export async function runDueRetentionSweeps(
   now: Date = new Date(),
@@ -226,13 +226,19 @@ export async function runDueRetentionSweeps(
 
   let anonymizedCount = 0;
   for (const candidate of dueCandidates) {
-    // Re-check anonymizedAt is still null immediately before acting — a
-    // concurrent sweep or a manually-decided erasure request could have
-    // already anonymized this row between the query above and this loop
-    // iteration; anonymizeCandidateRecord itself has no guard against
-    // double-running, so the check belongs here, at the call site.
-    const fresh = await prisma.candidate.findUnique({ where: { id: candidate.id }, select: { anonymizedAt: true } });
-    if (fresh?.anonymizedAt) continue;
+    // Atomically claim the candidate (a conditional updateMany guarded on
+    // anonymizedAt: null, same claim-then-act shape runDueOfferExpirations
+    // uses for its version-guarded updateMany) instead of a plain
+    // findUnique re-check — a concurrent sweep or a manually-decided
+    // erasure request racing between the query above and this loop
+    // iteration can no longer both anonymize the same row; only one
+    // updateMany matches. anonymizeCandidateRecord itself has no guard
+    // against double-running, so the claim belongs here, at the call site.
+    const claimed = await prisma.candidate.updateMany({
+      where: { id: candidate.id, anonymizedAt: null },
+      data: { anonymizedAt: now },
+    });
+    if (claimed.count === 0) continue;
 
     await anonymizeCandidateRecord(candidate.id);
 

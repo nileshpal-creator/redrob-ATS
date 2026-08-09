@@ -14,6 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { DataTable } from "@/components/ui/data-table";
+import { ConfirmDeleteDialog } from "@/components/ui/confirm-dialog";
 import {
   Dialog,
   DialogContent,
@@ -141,6 +142,7 @@ export function RolesClient({ initialRoles }: { initialRoles: RoleRow[] }) {
       toast.success(`Role "${role.name}" deleted.`);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to delete role");
+      throw error;
     }
   }
 
@@ -172,14 +174,21 @@ export function RolesClient({ initialRoles }: { initialRoles: RoleRow[] }) {
               <Settings2 /> Permissions
             </Link>
           </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={row.original.isSystem || row.original.userCount > 0}
-            onClick={() => handleDelete(row.original)}
-          >
-            <Trash2 />
-          </Button>
+          <ConfirmDeleteDialog
+            trigger={
+              <Button
+                variant="outline"
+                size="sm"
+                aria-label={`Delete ${row.original.name}`}
+                disabled={row.original.isSystem || row.original.userCount > 0}
+              >
+                <Trash2 />
+              </Button>
+            }
+            title={`Delete "${row.original.name}"?`}
+            description="This permanently deletes the role. This can't be undone."
+            onConfirm={() => handleDelete(row.original)}
+          />
         </div>
       ),
     },
