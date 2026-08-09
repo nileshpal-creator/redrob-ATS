@@ -55,7 +55,12 @@ export const workflowsNavItem: NavItem = { title: "Workflows", href: "/admin/wor
 /** Shown only when the viewer has DASHBOARD:READ — see (app)/layout.tsx. */
 export const dashboardsNavItem: NavItem = { title: "Dashboards", href: "/dashboards", icon: LayoutGrid };
 
-/** Rendered only for super-admin roles — see AppSidebar. Every module adds its admin screens here. */
+/**
+ * Each item is shown only when the viewer's own permissions clear that
+ * specific page's guard — see (app)/layout.tsx's `adminNavVisibility` map,
+ * built to mirror each page.tsx's own guardPage/redirect check exactly.
+ * Every module adds its admin screens here.
+ */
 export const adminNav: NavItem[] = [
   { title: "Users", href: "/admin/users", icon: Users },
   { title: "Roles & Permissions", href: "/admin/roles", icon: ShieldCheck },

@@ -31,6 +31,7 @@ import { CustomFieldsFormSection } from "@/components/custom-fields/custom-field
 import { CandidateDocuments } from "@/components/candidates/candidate-documents";
 import { CandidateTimeline } from "@/components/candidates/candidate-timeline";
 import { CandidateMergeDialog } from "@/components/candidates/candidate-merge-dialog";
+import { cn } from "@/lib/utils";
 
 type ListValue = { id: string; label: string };
 type Person = { id: string; name: string; email: string };
@@ -180,6 +181,16 @@ type TimelineItem =
       createdAt: string;
     };
 
+type MyErasureRequest = {
+  id: string;
+  method: "ANONYMIZE" | "HARD_DELETE";
+  status: "PENDING" | "COMPLETED" | "REJECTED";
+  reason: string | null;
+  requestedAt: string;
+  decidedAt: string | null;
+  decisionNotes: string | null;
+};
+
 export function CandidateDetailClient({
   candidate,
   documentTypes,
@@ -187,6 +198,7 @@ export function CandidateDetailClient({
   canEdit,
   canDelete,
   canCreateApplication,
+  myErasureRequests: initialMyErasureRequests,
 }: {
   candidate: CandidateDetail;
   documentTypes: ListValue[];
@@ -194,6 +206,7 @@ export function CandidateDetailClient({
   canEdit: boolean;
   canDelete: boolean;
   canCreateApplication: boolean;
+  myErasureRequests: MyErasureRequest[];
 }) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -206,6 +219,8 @@ export function CandidateDetailClient({
   const [erasureMethod, setErasureMethod] = useState<"ANONYMIZE" | "HARD_DELETE">("ANONYMIZE");
   const [erasureReason, setErasureReason] = useState("");
   const [requestingErasure, setRequestingErasure] = useState(false);
+  const [myErasureRequests, setMyErasureRequests] = useState(initialMyErasureRequests);
+  const latestErasureRequest = myErasureRequests[0] as MyErasureRequest | undefined;
 
   async function handleRequestErasure() {
     setRequestingErasure(true);
@@ -219,6 +234,7 @@ export function CandidateDetailClient({
       if (!response.ok) {
         throw new Error(body.error ?? "Failed to submit erasure request");
       }
+      setMyErasureRequests((prev) => [body, ...prev]);
       toast.success("Erasure request submitted for review.");
       setErasureOpen(false);
       setErasureReason("");
@@ -275,7 +291,7 @@ export function CandidateDetailClient({
               </Link>
             </Button>
           ) : null}
-          {canDelete && !candidate.anonymizedAt ? (
+          {canDelete && !candidate.anonymizedAt && latestErasureRequest?.status !== "PENDING" ? (
             <Button variant="outline" onClick={() => setErasureOpen(true)}>
               <ShieldOff /> Request erasure
             </Button>
@@ -294,6 +310,34 @@ export function CandidateDetailClient({
           <p>
             This candidate&apos;s personal data was erased on {new Date(candidate.anonymizedAt).toLocaleDateString()}{" "}
             (§13, GDPR data-erasure). Pipeline history is preserved; profile fields cannot be edited further.
+          </p>
+        </div>
+      ) : null}
+
+      {latestErasureRequest && latestErasureRequest.status !== "COMPLETED" ? (
+        <div
+          className={cn(
+            "flex items-start gap-2 rounded-md border p-3 text-sm",
+            latestErasureRequest.status === "PENDING"
+              ? "border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+              : "border-destructive/50 bg-destructive/10 text-destructive",
+          )}
+        >
+          <ShieldOff className="mt-0.5 size-4 shrink-0" />
+          <p>
+            {latestErasureRequest.status === "PENDING" ? (
+              <>
+                Your {latestErasureRequest.method === "ANONYMIZE" ? "anonymize" : "hard-delete"} erasure request
+                submitted {new Date(latestErasureRequest.requestedAt).toLocaleDateString()} is pending compliance
+                review.
+              </>
+            ) : (
+              <>
+                Your {latestErasureRequest.method === "ANONYMIZE" ? "anonymize" : "hard-delete"} erasure request was
+                rejected{latestErasureRequest.decidedAt ? ` on ${new Date(latestErasureRequest.decidedAt).toLocaleDateString()}` : ""}
+                {latestErasureRequest.decisionNotes ? ` — "${latestErasureRequest.decisionNotes}"` : ""}.
+              </>
+            )}
           </p>
         </div>
       ) : null}

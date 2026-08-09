@@ -292,4 +292,122 @@ describe("CommunicationTemplateVersionService", () => {
       expect(resolved).toEqual({ subject: realTemplate.subject, body: realTemplate.body });
     });
   });
+
+  /**
+   * Mirrors prisma/seed.ts's own COMMUNICATION_TEMPLATE_ROLE_PERMISSIONS
+   * exactly (Recruiting Manager: CREATE/READ/UPDATE ALL; Hiring Manager:
+   * READ/APPROVE ALL) — proves the seeded grants actually give the whole
+   * version workflow to two *different* non-super-admin roles with real
+   * separation of duties, not just that the permission check itself works
+   * in the abstract.
+   */
+  describe("separation of duties (seeded Recruiting Manager / Hiring Manager grants)", () => {
+    let creatorRoleId: string;
+    let approverRoleId: string;
+    let creator: SessionContext;
+    let approver: SessionContext;
+
+    beforeAll(async () => {
+      const passwordHash = await bcrypt.hash("Test123!Test123!", 4);
+
+      const [creatorRole, approverRole] = await Promise.all([
+        prisma.role.create({
+          data: {
+            name: "Test TplVersion Creator (Recruiting Manager shape)",
+            rolePermissions: {
+              createMany: {
+                data: [
+                  { resource: "COMMUNICATION_TEMPLATE", action: "CREATE", scope: "ALL" },
+                  { resource: "COMMUNICATION_TEMPLATE", action: "READ", scope: "ALL" },
+                  { resource: "COMMUNICATION_TEMPLATE", action: "UPDATE", scope: "ALL" },
+                ],
+              },
+            },
+          },
+        }),
+        prisma.role.create({
+          data: {
+            name: "Test TplVersion Approver (Hiring Manager shape)",
+            rolePermissions: {
+              createMany: {
+                data: [
+                  { resource: "COMMUNICATION_TEMPLATE", action: "READ", scope: "ALL" },
+                  { resource: "COMMUNICATION_TEMPLATE", action: "APPROVE", scope: "ALL" },
+                ],
+              },
+            },
+          },
+        }),
+      ]);
+      creatorRoleId = creatorRole.id;
+      approverRoleId = approverRole.id;
+
+      const [creatorRow, approverRow] = await Promise.all([
+        prisma.user.create({ data: { name: "TplVersion Creator", email: "tplversion-creator@test.local", passwordHash } }),
+        prisma.user.create({ data: { name: "TplVersion Approver", email: "tplversion-approver@test.local", passwordHash } }),
+      ]);
+
+      await prisma.userRole.createMany({
+        data: [
+          { userId: creatorRow.id, roleId: creatorRoleId },
+          { userId: approverRow.id, roleId: approverRoleId },
+        ],
+      });
+
+      creator = contextFor({ ...creatorRow, roles: [{ id: creatorRoleId, name: creatorRole.name, isSuperAdmin: false }] });
+      approver = contextFor({ ...approverRow, roles: [{ id: approverRoleId, name: approverRole.name, isSuperAdmin: false }] });
+    });
+
+    afterAll(async () => {
+      await prisma.userRole.deleteMany({ where: { roleId: { in: [creatorRoleId, approverRoleId] } } });
+      await prisma.user.deleteMany({ where: { email: { in: ["tplversion-creator@test.local", "tplversion-approver@test.local"] } } });
+      await prisma.role.deleteMany({ where: { id: { in: [creatorRoleId, approverRoleId] } } });
+    });
+
+    it("lets the creator draft and submit, but not decide or roll back", async () => {
+      const draft = await createCommunicationTemplateVersion(creator, templateId, {
+        language: "en",
+        subject: "sod subject",
+        body: "sod body",
+      });
+      const submitted = await submitCommunicationTemplateVersion(creator, templateId, draft.id);
+      expect(submitted.status).toBe("PENDING_APPROVAL");
+
+      const list = await listCommunicationTemplateVersions(creator, templateId);
+      expect(list.some((version) => version.id === draft.id)).toBe(true);
+
+      await expect(decideCommunicationTemplateVersion(creator, templateId, draft.id, { decision: "APPROVE" })).rejects.toBeInstanceOf(
+        ForbiddenError,
+      );
+      await expect(rollbackCommunicationTemplateVersion(creator, templateId, draft.id)).rejects.toBeInstanceOf(ForbiddenError);
+
+      await prisma.communicationTemplateVersion.delete({ where: { id: draft.id } });
+    });
+
+    it("lets the approver decide and roll back, but not create a draft", async () => {
+      await expect(
+        createCommunicationTemplateVersion(approver, templateId, { language: "en", subject: "x", body: "x" }),
+      ).rejects.toBeInstanceOf(ForbiddenError);
+
+      const draft = await createCommunicationTemplateVersion(creator, templateId, {
+        language: "en",
+        subject: "approver-decides subject",
+        body: "approver-decides body",
+      });
+      await submitCommunicationTemplateVersion(creator, templateId, draft.id);
+
+      // The approver holds READ+APPROVE but no UPDATE — listing must not
+      // require UPDATE, or an approver could never see what's pending.
+      const listForApprover = await listCommunicationTemplateVersions(approver, templateId);
+      expect(listForApprover.some((version) => version.id === draft.id)).toBe(true);
+
+      const decided = await decideCommunicationTemplateVersion(approver, templateId, draft.id, { decision: "APPROVE" });
+      expect(decided.status).toBe("ACTIVE");
+
+      const restored = await rollbackCommunicationTemplateVersion(approver, templateId, draft.id);
+      expect(restored.status).toBe("ACTIVE");
+
+      await prisma.communicationTemplateVersion.delete({ where: { id: draft.id } });
+    });
+  });
 });

@@ -71,6 +71,23 @@ export async function requestCandidateErasure(
   return created;
 }
 
+/**
+ * Self-service status check for the candidate detail page — a requester
+ * can always see the status of erasure requests *they* filed for this
+ * candidate, without needing the ALL-scope CANDIDATE:APPROVE grant
+ * `listCandidateErasureRequests`/`decideCandidateErasureRequest` require.
+ * Scoped to `requestedById: context.userId`, so it can never surface
+ * another user's request — no additional permission check needed beyond
+ * having reached the candidate detail page at all (same "unconditionally
+ * visible to its own requester" shape as My Tasks).
+ */
+export async function listMyErasureRequestsForCandidate(context: SessionContext, candidateId: string) {
+  return prisma.dataErasureRequest.findMany({
+    where: { candidateId, requestedById: context.userId },
+    orderBy: { requestedAt: "desc" },
+  });
+}
+
 export async function listCandidateErasureRequests(context: SessionContext, query: DataErasureRequestQuery) {
   await assertAllScopeApprove(context);
 

@@ -8,6 +8,7 @@ import { ConflictError, NotFoundError, ValidationError } from "@/lib/errors";
 import {
   decideCandidateErasureRequest,
   listCandidateErasureRequests,
+  listMyErasureRequestsForCandidate,
   requestCandidateErasure,
   runDueRetentionSweeps,
 } from "@/lib/services/candidate-erasure";
@@ -205,6 +206,32 @@ describe("CandidateErasureService", () => {
       const { requests, total } = await listCandidateErasureRequests(decideUser, { page: 1, pageSize: 25 });
       expect(total).toBeGreaterThanOrEqual(1);
       expect(requests.some((r) => r.candidateId === candidate.id)).toBe(true);
+    });
+  });
+
+  describe("listMyErasureRequestsForCandidate", () => {
+    it("returns only the caller's own requests for that candidate, newest first, with no special grant needed", async () => {
+      const candidate = await freshCandidate();
+      const first = await requestCandidateErasure(deleteOnlyUser, candidate.id, { method: "ANONYMIZE" });
+      await decideCandidateErasureRequest(decideUser, first.id, { decision: "REJECT" });
+      const second = await requestCandidateErasure(deleteOnlyUser, candidate.id, { method: "HARD_DELETE" });
+
+      const mine = await listMyErasureRequestsForCandidate(deleteOnlyUser, candidate.id);
+      expect(mine.map((r) => r.id)).toEqual([second.id, first.id]);
+    });
+
+    it("never surfaces a request another user filed for the same candidate", async () => {
+      const candidate = await freshCandidate();
+      await requestCandidateErasure(deleteOnlyUser, candidate.id, { method: "ANONYMIZE" });
+
+      const mine = await listMyErasureRequestsForCandidate(decideUser, candidate.id);
+      expect(mine).toEqual([]);
+    });
+
+    it("returns an empty array for a candidate the caller never filed a request for", async () => {
+      const candidate = await freshCandidate();
+      const mine = await listMyErasureRequestsForCandidate(deleteOnlyUser, candidate.id);
+      expect(mine).toEqual([]);
     });
   });
 

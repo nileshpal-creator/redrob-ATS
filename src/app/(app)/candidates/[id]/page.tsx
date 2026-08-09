@@ -5,6 +5,7 @@ import { can, ForbiddenError } from "@/lib/authz/authorize";
 import { ENTITY } from "@/lib/entity-registry";
 import { getCandidateById, getCandidateTimeline } from "@/lib/services/candidates";
 import { getControlledListValues } from "@/lib/services/controlled-lists";
+import { listMyErasureRequestsForCandidate } from "@/lib/services/candidate-erasure";
 import { NotFoundError } from "@/lib/errors";
 import { CandidateDetailClient } from "@/components/candidates/candidate-detail-client";
 
@@ -19,12 +20,13 @@ export default async function CandidateDetailPage({ params }: { params: Promise<
     throw error;
   });
 
-  const [timeline, documentTypes, canEdit, canDelete, canCreateApplication] = await Promise.all([
+  const [timeline, documentTypes, canEdit, canDelete, canCreateApplication, myErasureRequests] = await Promise.all([
     getCandidateTimeline(context, id),
     getControlledListValues("DOCUMENT_TYPE"),
     can(context, ENTITY.CANDIDATE, "UPDATE", { ownerId: candidate.createdById }),
     can(context, ENTITY.CANDIDATE, "DELETE", { ownerId: candidate.createdById }),
     can(context, ENTITY.APPLICATION, "CREATE"),
+    listMyErasureRequestsForCandidate(context, id),
   ]);
 
   return (
@@ -35,6 +37,7 @@ export default async function CandidateDetailPage({ params }: { params: Promise<
       canEdit={canEdit}
       canDelete={canDelete}
       canCreateApplication={canCreateApplication}
+      myErasureRequests={JSON.parse(JSON.stringify(myErasureRequests))}
     />
   );
 }

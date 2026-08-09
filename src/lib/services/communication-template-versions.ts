@@ -34,9 +34,15 @@ async function getVersionOrThrow(templateId: string, versionId: string) {
   return version;
 }
 
-/** Admin-metadata tier, same as CommunicationTemplate itself — gated by UPDATE, no OWN/TEAM/ALL scope. */
+/**
+ * Gated by READ, not UPDATE — an approver only ever holds READ+APPROVE (see
+ * the seeded Hiring Manager grant), and still needs to see version history
+ * to act on a pending one. The page itself already requires READ to load
+ * (guardPage on /admin/communication-templates), so this doesn't widen
+ * access beyond "can see the page at all."
+ */
 export async function listCommunicationTemplateVersions(context: SessionContext, templateId: string) {
-  await requirePermission(context, ENTITY.COMMUNICATION_TEMPLATE, "UPDATE");
+  await requirePermission(context, ENTITY.COMMUNICATION_TEMPLATE, "READ");
   await assertTemplateExists(templateId);
 
   return prisma.communicationTemplateVersion.findMany({

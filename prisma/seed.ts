@@ -282,6 +282,26 @@ const DASHBOARD_ROLE_PERMISSIONS = [
   { role: "Recruiting Manager", action: "DELETE", scope: "TEAM" },
 ] as const;
 
+// §10.4 — Template Designer version workflow. Separation of duties:
+// Recruiting Manager drafts/edits templates and their versions;
+// Hiring Manager decides (approve/reject) and rolls back — the same
+// creator/approver split already established for JOB/OFFER (Hiring
+// Manager holds APPROVE ALL on both). Only ALL scope is meaningful here:
+// createCommunicationTemplate/updateCommunicationTemplate and every
+// CommunicationTemplateVersion service function
+// (create/submit/decide/rollback) call requirePermission with no
+// ownership context, so an OWN/TEAM grant would silently never match —
+// unlike Dashboard above, this resource tracks no per-record owner. No
+// DELETE grant for anyone, same "deactivate, don't delete" convention as
+// PipelineStage/WorkflowDefinition.
+const COMMUNICATION_TEMPLATE_ROLE_PERMISSIONS = [
+  { role: "Recruiting Manager", action: "CREATE", scope: "ALL" },
+  { role: "Recruiting Manager", action: "READ", scope: "ALL" },
+  { role: "Recruiting Manager", action: "UPDATE", scope: "ALL" },
+  { role: "Hiring Manager", action: "READ", scope: "ALL" },
+  { role: "Hiring Manager", action: "APPROVE", scope: "ALL" },
+] as const;
+
 async function main() {
   const organization = await prisma.organization.upsert({
     where: { id: "default" },
@@ -423,6 +443,16 @@ async function main() {
     });
   }
   console.log(`Seeded ${DASHBOARD_ROLE_PERMISSIONS.length} default Dashboard role permissions`);
+
+  for (const grant of COMMUNICATION_TEMPLATE_ROLE_PERMISSIONS) {
+    const role = await prisma.role.findUniqueOrThrow({ where: { name: grant.role } });
+    await prisma.rolePermission.upsert({
+      where: { roleId_resource_action: { roleId: role.id, resource: "COMMUNICATION_TEMPLATE", action: grant.action } },
+      update: { scope: grant.scope },
+      create: { roleId: role.id, resource: "COMMUNICATION_TEMPLATE", action: grant.action, scope: grant.scope },
+    });
+  }
+  console.log(`Seeded ${COMMUNICATION_TEMPLATE_ROLE_PERMISSIONS.length} default Communication Template role permissions`);
 
   const adminEmail = process.env.SEED_ADMIN_EMAIL;
   const adminPassword = process.env.SEED_ADMIN_PASSWORD;

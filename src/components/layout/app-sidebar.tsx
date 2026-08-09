@@ -39,7 +39,7 @@ function NavLink({ item }: { item: NavItem }) {
 }
 
 export function AppSidebar({
-  showAdminNav,
+  adminNavVisibility,
   showJobsNav,
   showCandidatesNav,
   showApplicationsNav,
@@ -48,7 +48,8 @@ export function AppSidebar({
   showWorkflowsNav,
   showDashboardsNav,
 }: {
-  showAdminNav: boolean;
+  /** Per-item visibility, keyed by href — see (app)/layout.tsx for how each is computed. */
+  adminNavVisibility: Record<string, boolean>;
   showJobsNav: boolean;
   showCandidatesNav: boolean;
   showApplicationsNav: boolean;
@@ -57,6 +58,8 @@ export function AppSidebar({
   showWorkflowsNav: boolean;
   showDashboardsNav: boolean;
 }) {
+  const visibleAdminNav = adminNav.filter((item) => adminNavVisibility[item.href]);
+
   return (
     <aside className="hidden w-60 shrink-0 border-r border-sidebar-border bg-sidebar md:flex md:flex-col">
       <div className="flex h-14 items-center border-b border-sidebar-border px-4">
@@ -74,12 +77,12 @@ export function AppSidebar({
         {showWorkflowsNav ? <NavLink item={workflowsNavItem} /> : null}
         {showDashboardsNav ? <NavLink item={dashboardsNavItem} /> : null}
 
-        {showAdminNav ? (
+        {visibleAdminNav.length > 0 ? (
           <>
             <div className="mt-4 mb-1 px-3 text-xs font-semibold tracking-wide text-sidebar-foreground/50 uppercase">
               Admin
             </div>
-            {adminNav.map((item) => (
+            {visibleAdminNav.map((item) => (
               <NavLink key={item.href} item={item} />
             ))}
           </>
