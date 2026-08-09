@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,9 +36,15 @@ export function AuditLogClient({ initialResult }: { initialResult: AuditResult }
     if (entityId) params.set("entityId", entityId);
 
     startTransition(async () => {
-      const response = await fetch(`/api/audit-log?${params.toString()}`);
-      if (response.ok) {
-        setResult(await response.json());
+      try {
+        const response = await fetch(`/api/audit-log?${params.toString()}`);
+        if (response.ok) {
+          setResult(await response.json());
+        } else {
+          toast.error("Failed to load audit log. Please try again.");
+        }
+      } catch {
+        toast.error("Failed to load audit log. Please try again.");
       }
     });
   }

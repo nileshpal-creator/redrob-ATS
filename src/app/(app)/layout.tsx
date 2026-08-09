@@ -5,6 +5,7 @@ import { can } from "@/lib/authz/authorize";
 import { ENTITY } from "@/lib/entity-registry";
 import { AppSidebar } from "@/components/layout/app-sidebar";
 import { AppTopbar } from "@/components/layout/app-topbar";
+import { AppMobileNav } from "@/components/layout/app-mobile-nav";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const context = await getSessionContext();
@@ -65,20 +66,26 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     "/admin/audit-log": canViewAuditLog,
   };
 
+  const navVisibility = {
+    adminNavVisibility,
+    showJobsNav,
+    showCandidatesNav,
+    showApplicationsNav,
+    showInterviewsNav,
+    showReportsNav,
+    showWorkflowsNav,
+    showDashboardsNav,
+  };
+
   return (
     <div className="flex h-svh">
-      <AppSidebar
-        adminNavVisibility={adminNavVisibility}
-        showJobsNav={showJobsNav}
-        showCandidatesNav={showCandidatesNav}
-        showApplicationsNav={showApplicationsNav}
-        showInterviewsNav={showInterviewsNav}
-        showReportsNav={showReportsNav}
-        showWorkflowsNav={showWorkflowsNav}
-        showDashboardsNav={showDashboardsNav}
-      />
+      <AppSidebar {...navVisibility} />
       <div className="flex flex-1 flex-col overflow-hidden">
-        <AppTopbar name={context.name} email={context.email} />
+        <AppTopbar
+          name={context.name}
+          email={context.email}
+          mobileNav={<AppMobileNav {...navVisibility} />}
+        />
         <main className="flex-1 overflow-y-auto p-6">{children}</main>
       </div>
     </div>

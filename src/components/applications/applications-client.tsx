@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type ColumnDef, type RowSelectionState } from "@tanstack/react-table";
 import { Plus } from "lucide-react";
+import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -66,10 +67,16 @@ export function ApplicationsClient({
     }
 
     startTransition(async () => {
-      const response = await fetch(`/api/applications?${params.toString()}`);
-      if (response.ok) {
-        setResult(await response.json());
-        setRowSelection({});
+      try {
+        const response = await fetch(`/api/applications?${params.toString()}`);
+        if (response.ok) {
+          setResult(await response.json());
+          setRowSelection({});
+        } else {
+          toast.error("Failed to load applications. Please try again.");
+        }
+      } catch {
+        toast.error("Failed to load applications. Please try again.");
       }
     });
   }

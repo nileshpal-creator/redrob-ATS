@@ -24,12 +24,20 @@ function initials(name: string) {
     .toUpperCase();
 }
 
-export function AppTopbar({ name, email }: { name: string; email: string }) {
+export function AppTopbar({
+  name,
+  email,
+  mobileNav,
+}: {
+  name: string;
+  email: string;
+  mobileNav?: React.ReactNode;
+}) {
   const { theme, setTheme } = useTheme();
 
   return (
     <header className="flex h-14 items-center justify-between border-b px-4">
-      <div />
+      <div>{mobileNav}</div>
       <div className="flex items-center gap-2">
         <Button
           variant="ghost"

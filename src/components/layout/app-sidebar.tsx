@@ -17,7 +17,19 @@ import {
 } from "@/config/nav";
 import { cn } from "@/lib/utils";
 
-function NavLink({ item }: { item: NavItem }) {
+export type AppNavVisibility = {
+  /** Per-item visibility, keyed by href — see (app)/layout.tsx for how each is computed. */
+  adminNavVisibility: Record<string, boolean>;
+  showJobsNav: boolean;
+  showCandidatesNav: boolean;
+  showApplicationsNav: boolean;
+  showInterviewsNav: boolean;
+  showReportsNav: boolean;
+  showWorkflowsNav: boolean;
+  showDashboardsNav: boolean;
+};
+
+function NavLink({ item, onNavigate }: { item: NavItem; onNavigate?: () => void }) {
   const pathname = usePathname();
   const isActive = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
   const Icon = item.icon;
@@ -25,6 +37,7 @@ function NavLink({ item }: { item: NavItem }) {
   return (
     <Link
       href={item.href}
+      onClick={onNavigate}
       className={cn(
         "flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors",
         isActive
@@ -38,7 +51,8 @@ function NavLink({ item }: { item: NavItem }) {
   );
 }
 
-export function AppSidebar({
+/** The nav link list shared by the desktop sidebar and the mobile drawer. */
+export function AppNavLinks({
   adminNavVisibility,
   showJobsNav,
   showCandidatesNav,
@@ -47,47 +61,44 @@ export function AppSidebar({
   showReportsNav,
   showWorkflowsNav,
   showDashboardsNav,
-}: {
-  /** Per-item visibility, keyed by href — see (app)/layout.tsx for how each is computed. */
-  adminNavVisibility: Record<string, boolean>;
-  showJobsNav: boolean;
-  showCandidatesNav: boolean;
-  showApplicationsNav: boolean;
-  showInterviewsNav: boolean;
-  showReportsNav: boolean;
-  showWorkflowsNav: boolean;
-  showDashboardsNav: boolean;
-}) {
+  onNavigate,
+}: AppNavVisibility & { onNavigate?: () => void }) {
   const visibleAdminNav = adminNav.filter((item) => adminNavVisibility[item.href]);
 
+  return (
+    <nav className="flex flex-1 flex-col gap-1 p-3">
+      {primaryNav.map((item) => (
+        <NavLink key={item.href} item={item} onNavigate={onNavigate} />
+      ))}
+      {showJobsNav ? <NavLink item={jobsNavItem} onNavigate={onNavigate} /> : null}
+      {showCandidatesNav ? <NavLink item={candidatesNavItem} onNavigate={onNavigate} /> : null}
+      {showApplicationsNav ? <NavLink item={applicationsNavItem} onNavigate={onNavigate} /> : null}
+      {showInterviewsNav ? <NavLink item={interviewsNavItem} onNavigate={onNavigate} /> : null}
+      {showReportsNav ? <NavLink item={reportsNavItem} onNavigate={onNavigate} /> : null}
+      {showWorkflowsNav ? <NavLink item={workflowsNavItem} onNavigate={onNavigate} /> : null}
+      {showDashboardsNav ? <NavLink item={dashboardsNavItem} onNavigate={onNavigate} /> : null}
+
+      {visibleAdminNav.length > 0 ? (
+        <>
+          <div className="mt-4 mb-1 px-3 text-xs font-semibold tracking-wide text-sidebar-foreground/50 uppercase">
+            Admin
+          </div>
+          {visibleAdminNav.map((item) => (
+            <NavLink key={item.href} item={item} onNavigate={onNavigate} />
+          ))}
+        </>
+      ) : null}
+    </nav>
+  );
+}
+
+export function AppSidebar(props: AppNavVisibility) {
   return (
     <aside className="hidden w-60 shrink-0 border-r border-sidebar-border bg-sidebar md:flex md:flex-col">
       <div className="flex h-14 items-center border-b border-sidebar-border px-4">
         <span className="text-sm font-semibold text-sidebar-foreground">Redrob ATS</span>
       </div>
-      <nav className="flex flex-1 flex-col gap-1 p-3">
-        {primaryNav.map((item) => (
-          <NavLink key={item.href} item={item} />
-        ))}
-        {showJobsNav ? <NavLink item={jobsNavItem} /> : null}
-        {showCandidatesNav ? <NavLink item={candidatesNavItem} /> : null}
-        {showApplicationsNav ? <NavLink item={applicationsNavItem} /> : null}
-        {showInterviewsNav ? <NavLink item={interviewsNavItem} /> : null}
-        {showReportsNav ? <NavLink item={reportsNavItem} /> : null}
-        {showWorkflowsNav ? <NavLink item={workflowsNavItem} /> : null}
-        {showDashboardsNav ? <NavLink item={dashboardsNavItem} /> : null}
-
-        {visibleAdminNav.length > 0 ? (
-          <>
-            <div className="mt-4 mb-1 px-3 text-xs font-semibold tracking-wide text-sidebar-foreground/50 uppercase">
-              Admin
-            </div>
-            {visibleAdminNav.map((item) => (
-              <NavLink key={item.href} item={item} />
-            ))}
-          </>
-        ) : null}
-      </nav>
+      <AppNavLinks {...props} />
     </aside>
   );
 }

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type ColumnDef } from "@tanstack/react-table";
 import { Download, Plus, Upload } from "lucide-react";
+import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -93,9 +94,15 @@ export function CandidatesClient({
   function fetchPage(page: number) {
     const params = buildParams(filters, page);
     startTransition(async () => {
-      const response = await fetch(`/api/candidates?${params.toString()}`);
-      if (response.ok) {
-        setResult(await response.json());
+      try {
+        const response = await fetch(`/api/candidates?${params.toString()}`);
+        if (response.ok) {
+          setResult(await response.json());
+        } else {
+          toast.error("Failed to load candidates. Please try again.");
+        }
+      } catch {
+        toast.error("Failed to load candidates. Please try again.");
       }
     });
   }

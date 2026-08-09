@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type ColumnDef } from "@tanstack/react-table";
 import { Plus } from "lucide-react";
+import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -76,9 +77,15 @@ export function JobsClient({
     }
 
     startTransition(async () => {
-      const response = await fetch(`/api/jobs?${params.toString()}`);
-      if (response.ok) {
-        setResult(await response.json());
+      try {
+        const response = await fetch(`/api/jobs?${params.toString()}`);
+        if (response.ok) {
+          setResult(await response.json());
+        } else {
+          toast.error("Failed to load jobs. Please try again.");
+        }
+      } catch {
+        toast.error("Failed to load jobs. Please try again.");
       }
     });
   }
