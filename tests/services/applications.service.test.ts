@@ -636,3 +636,263 @@ describe("ApplicationService", () => {
     await expect(deleteCandidate(recruiter, freshCandidate.id)).resolves.toBeUndefined();
   });
 });
+
+/**
+ * Regression coverage for a real bug report: opening a Job's Pipeline
+ * (src/app/(app)/jobs/[id]/pipeline/page.tsx) as a Recruiter threw
+ * ForbiddenError from `listApplications`. That page calls `listApplications`
+ * with no `ownerId` filter — it needs every application on the job, not
+ * just ones the viewing recruiter happens to own/created themselves — which
+ * only works if Recruiter's default APPLICATION:READ grant is ALL scope.
+ *
+ * This mirrors prisma/seed.ts's APPLICATION_ROLE_PERMISSIONS directly
+ * (Recruiter: CREATE ALL / READ ALL / UPDATE OWN; Hiring Manager: READ ALL;
+ * Recruiting Manager: CREATE ALL / READ TEAM / UPDATE TEAM), the same
+ * "hand-copy the seed fixture, so a future edit to seed.ts must be
+ * deliberately reflected here too" convention CandidateService's own
+ * "role permission matrix" describe block (tests/services/candidates.service.test.ts)
+ * already uses — unlike this file's *other* "Test App Recruiter" fixture
+ * above, which deliberately narrows APPLICATION:READ to OWN scope to unit
+ * test the OWN-scope mechanism in isolation, not to represent the real
+ * default grant.
+ */
+describe("ApplicationService — role permission matrix (mirrors prisma/seed.ts APPLICATION_ROLE_PERMISSIONS)", () => {
+  let matrixRecruiterRoleId: string;
+  let matrixHiringManagerRoleId: string;
+  let matrixRecruitingManagerRoleId: string;
+
+  let recruiterA: SessionContext;
+  let recruiterB: SessionContext;
+  let matrixHiringManager: SessionContext;
+  let matrixRecruitingManager: SessionContext;
+  let matrixReportee: SessionContext;
+
+  let matrixDepartmentId: string;
+  let matrixLocationId: string;
+  let matrixJobId: string;
+  let matrixCandidateId: string;
+
+  beforeAll(async () => {
+    const passwordHash = await bcrypt.hash("Test123!Test123!", 4);
+
+    const [recruiterRole, hiringManagerRole, recruitingManagerRole] = await Promise.all([
+      prisma.role.create({
+        data: {
+          name: "Test App Matrix Recruiter",
+          rolePermissions: {
+            createMany: {
+              data: [
+                { resource: "JOB", action: "CREATE", scope: "ALL" },
+                { resource: "JOB", action: "READ", scope: "ALL" },
+                { resource: "CANDIDATE", action: "CREATE", scope: "ALL" },
+                { resource: "CANDIDATE", action: "READ", scope: "ALL" },
+                { resource: "APPLICATION", action: "CREATE", scope: "ALL" },
+                { resource: "APPLICATION", action: "READ", scope: "ALL" },
+                { resource: "APPLICATION", action: "UPDATE", scope: "OWN" },
+              ],
+            },
+          },
+        },
+      }),
+      prisma.role.create({
+        data: {
+          name: "Test App Matrix Hiring Manager",
+          rolePermissions: { createMany: { data: [{ resource: "APPLICATION", action: "READ", scope: "ALL" }] } },
+        },
+      }),
+      prisma.role.create({
+        data: {
+          name: "Test App Matrix Recruiting Manager",
+          rolePermissions: {
+            createMany: {
+              data: [
+                { resource: "APPLICATION", action: "CREATE", scope: "ALL" },
+                { resource: "APPLICATION", action: "READ", scope: "TEAM" },
+                { resource: "APPLICATION", action: "UPDATE", scope: "TEAM" },
+              ],
+            },
+          },
+        },
+      }),
+    ]);
+    matrixRecruiterRoleId = recruiterRole.id;
+    matrixHiringManagerRoleId = hiringManagerRole.id;
+    matrixRecruitingManagerRoleId = recruitingManagerRole.id;
+
+    const [recruiterAUser, recruiterBUser, hiringManagerUser, recruitingManagerUser, reporteeUser] =
+      await Promise.all([
+        prisma.user.create({ data: { name: "Matrix Recruiter A", email: "matrix-app-recruiter-a@test.local", passwordHash } }),
+        prisma.user.create({ data: { name: "Matrix Recruiter B", email: "matrix-app-recruiter-b@test.local", passwordHash } }),
+        prisma.user.create({ data: { name: "Matrix App Hiring Manager", email: "matrix-app-hm@test.local", passwordHash } }),
+        prisma.user.create({ data: { name: "Matrix App Recruiting Manager", email: "matrix-app-rm@test.local", passwordHash } }),
+        prisma.user.create({ data: { name: "Matrix App Reportee", email: "matrix-app-reportee@test.local", passwordHash } }),
+      ]);
+
+    await prisma.user.update({ where: { id: reporteeUser.id }, data: { managerId: recruitingManagerUser.id } });
+
+    await prisma.userRole.createMany({
+      data: [
+        { userId: recruiterAUser.id, roleId: matrixRecruiterRoleId },
+        { userId: recruiterBUser.id, roleId: matrixRecruiterRoleId },
+        { userId: hiringManagerUser.id, roleId: matrixHiringManagerRoleId },
+        { userId: recruitingManagerUser.id, roleId: matrixRecruitingManagerRoleId },
+        { userId: reporteeUser.id, roleId: matrixRecruiterRoleId },
+      ],
+    });
+
+    recruiterA = contextFor({
+      ...recruiterAUser,
+      roles: [{ id: matrixRecruiterRoleId, name: "Test App Matrix Recruiter", isSuperAdmin: false }],
+    });
+    recruiterB = contextFor({
+      ...recruiterBUser,
+      roles: [{ id: matrixRecruiterRoleId, name: "Test App Matrix Recruiter", isSuperAdmin: false }],
+    });
+    matrixHiringManager = contextFor({
+      ...hiringManagerUser,
+      roles: [{ id: matrixHiringManagerRoleId, name: "Test App Matrix Hiring Manager", isSuperAdmin: false }],
+    });
+    matrixRecruitingManager = contextFor({
+      ...recruitingManagerUser,
+      roles: [{ id: matrixRecruitingManagerRoleId, name: "Test App Matrix Recruiting Manager", isSuperAdmin: false }],
+    });
+    matrixReportee = contextFor({
+      ...reporteeUser,
+      roles: [{ id: matrixRecruiterRoleId, name: "Test App Matrix Recruiter", isSuperAdmin: false }],
+    });
+
+    const department = await prisma.controlledList.create({
+      data: { key: "DEPARTMENT", label: "Departments", values: { create: { value: "eng", label: "Engineering" } } },
+    });
+    matrixDepartmentId = (await prisma.controlledListValue.findFirstOrThrow({ where: { listId: department.id } })).id;
+
+    const location = await prisma.controlledList.create({
+      data: { key: "LOCATION", label: "Locations", values: { create: { value: "remote", label: "Remote" } } },
+    });
+    matrixLocationId = (await prisma.controlledListValue.findFirstOrThrow({ where: { listId: location.id } })).id;
+
+    // Recruiter A creates the job and candidate — recruiterB/hiringManager/
+    // recruitingManager never touch either, so any access they get to the
+    // resulting application comes entirely from their APPLICATION grant.
+    const job = await createJob(recruiterA, {
+      title: "Pipeline Regression Job",
+      departmentId: matrixDepartmentId,
+      locationId: matrixLocationId,
+      employmentType: "FULL_TIME",
+      priority: "MEDIUM",
+      positionsCount: 1,
+      mustHaveCriteria: [],
+      goodToHaveCriteria: [],
+      recruiterUserIds: [recruiterAUser.id],
+      primaryRecruiterUserId: recruiterAUser.id,
+    } as JobCreateInput);
+    matrixJobId = job.id;
+
+    const candidate = await createCandidate(recruiterA, {
+      name: "Pipeline Regression Candidate",
+      phone: "+1 555-8100",
+      consentGivenAt: new Date("2026-01-01T00:00:00Z"),
+      skills: [],
+      tags: [],
+    } as CandidateCreateInput);
+    matrixCandidateId = candidate.id;
+  });
+
+  afterAll(async () => {
+    await prisma.applicationEvent.deleteMany({ where: { application: { jobId: matrixJobId } } });
+    await prisma.application.deleteMany({ where: { jobId: matrixJobId } });
+    await prisma.pipelineStage.deleteMany({ where: { jobId: matrixJobId } });
+    await prisma.job.deleteMany({ where: { id: matrixJobId } });
+    await prisma.candidate.deleteMany({ where: { id: matrixCandidateId } });
+    await prisma.controlledListValue.deleteMany({ where: { list: { key: { in: ["DEPARTMENT", "LOCATION"] } } } });
+    await prisma.controlledList.deleteMany({ where: { key: { in: ["DEPARTMENT", "LOCATION"] } } });
+    await prisma.userRole.deleteMany({
+      where: { roleId: { in: [matrixRecruiterRoleId, matrixHiringManagerRoleId, matrixRecruitingManagerRoleId] } },
+    });
+    await prisma.user.deleteMany({
+      where: {
+        email: {
+          in: [
+            "matrix-app-recruiter-a@test.local",
+            "matrix-app-recruiter-b@test.local",
+            "matrix-app-hm@test.local",
+            "matrix-app-rm@test.local",
+            "matrix-app-reportee@test.local",
+          ],
+        },
+      },
+    });
+    await prisma.role.deleteMany({
+      where: { id: { in: [matrixRecruiterRoleId, matrixHiringManagerRoleId, matrixRecruitingManagerRoleId] } },
+    });
+  });
+
+  it("Recruiter: READ:ALL lets a recruiter view a job's full pipeline, not just applications they own — the exact Job Pipeline scenario", async () => {
+    const application = await createApplication(recruiterA, {
+      candidateId: matrixCandidateId,
+      jobId: matrixJobId,
+      ownerId: recruiterA.userId,
+    });
+
+    // This is what src/app/(app)/jobs/[id]/pipeline/page.tsx calls: list
+    // every application on the job, no ownerId filter. recruiterB owns
+    // nothing here — under ALL scope this must still succeed and return it.
+    const { applications } = await listApplications(recruiterB, { jobId: matrixJobId, page: 1, pageSize: 25 });
+    expect(applications.map((row) => row.id)).toContain(application.id);
+
+    await expect(getApplication(recruiterB, application.id)).resolves.toBeTruthy();
+  });
+
+  it("Recruiter: UPDATE:OWN still blocks a non-owner from mutating it", async () => {
+    const application = await createApplication(recruiterA, {
+      candidateId: matrixCandidateId,
+      jobId: matrixJobId,
+      ownerId: recruiterA.userId,
+    });
+
+    await expect(
+      updateApplication(recruiterB, application.id, { version: application.version }),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it("Hiring Manager: READ:ALL can view the pipeline but has no CREATE grant", async () => {
+    const application = await createApplication(recruiterA, {
+      candidateId: matrixCandidateId,
+      jobId: matrixJobId,
+      ownerId: recruiterA.userId,
+    });
+
+    const { applications } = await listApplications(matrixHiringManager, { jobId: matrixJobId, page: 1, pageSize: 25 });
+    expect(applications.map((row) => row.id)).toContain(application.id);
+
+    await expect(
+      createApplication(matrixHiringManager, { candidateId: matrixCandidateId, jobId: matrixJobId }),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it("Recruiting Manager: READ:TEAM sees a direct report's application but not an unrelated recruiter's", async () => {
+    const reporteeApplication = await createApplication(matrixReportee, {
+      candidateId: matrixCandidateId,
+      jobId: matrixJobId,
+      ownerId: matrixReportee.userId,
+    });
+    const unrelatedApplication = await createApplication(recruiterA, {
+      candidateId: matrixCandidateId,
+      jobId: matrixJobId,
+      ownerId: recruiterA.userId,
+    });
+
+    const { applications } = await listApplications(matrixRecruitingManager, {
+      jobId: matrixJobId,
+      page: 1,
+      pageSize: 25,
+    });
+    const ids = applications.map((row) => row.id);
+    expect(ids).toContain(reporteeApplication.id);
+    expect(ids).not.toContain(unrelatedApplication.id);
+
+    await expect(getApplication(matrixRecruitingManager, unrelatedApplication.id)).rejects.toBeInstanceOf(
+      ForbiddenError,
+    );
+  });
+});
