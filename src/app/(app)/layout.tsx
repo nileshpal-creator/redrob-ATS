@@ -2,7 +2,9 @@ import { redirect } from "next/navigation";
 
 import { getSessionContext } from "@/lib/authz/session-context";
 import { can } from "@/lib/authz/authorize";
+import { canAccessAdminNavItem } from "@/lib/authz/admin-nav-permissions";
 import { ENTITY } from "@/lib/entity-registry";
+import { adminNav } from "@/config/nav";
 import { AppSidebar } from "@/components/layout/app-sidebar";
 import { AppTopbar } from "@/components/layout/app-topbar";
 import { AppMobileNav } from "@/components/layout/app-mobile-nav";
@@ -21,12 +23,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     canViewOfferReports,
     showWorkflowsNav,
     showDashboardsNav,
-    canViewUsers,
-    canViewRoles,
-    canViewCustomFields,
-    canViewCommunicationTemplates,
-    canViewOrganizationSettings,
-    canViewAuditLog,
+    adminNavVisibilityEntries,
   ] = await Promise.all([
     can(context, ENTITY.JOB, "READ"),
     can(context, ENTITY.CANDIDATE, "READ"),
@@ -35,36 +32,19 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     can(context, ENTITY.OFFER, "READ"),
     can(context, ENTITY.WORKFLOW_DEFINITION, "READ"),
     can(context, ENTITY.DASHBOARD, "READ"),
-    can(context, ENTITY.USER, "READ"),
-    can(context, ENTITY.ROLE, "READ"),
-    can(context, ENTITY.CUSTOM_FIELD_DEFINITION, "READ"),
-    can(context, ENTITY.COMMUNICATION_TEMPLATE, "READ"),
-    can(context, ENTITY.ORGANIZATION, "READ"),
-    can(context, ENTITY.AUDIT_LOG, "READ"),
+    // Sourced from ADMIN_NAV_PERMISSIONS (src/lib/authz/admin-nav-permissions.ts)
+    // — the same resource/action each admin page.tsx's own guardPage call
+    // requires — instead of a hand-written can() per item, so the sidebar
+    // and each page's actual guard can never silently drift apart.
+    Promise.all(
+      adminNav.map(async (item) => [item.href, await canAccessAdminNavItem(context, item.href)] as const),
+    ),
   ]);
   // Reports are reachable with either JOB:READ or OFFER:READ (see
   // src/app/(app)/reports/page.tsx) — showJobsNav already answers the first half.
   const showReportsNav = showJobsNav || canViewOfferReports;
 
-  // Per-item admin visibility — each key mirrors the exact guard its own
-  // page.tsx runs, rather than gating the whole section on isSuperAdmin. A
-  // custom role granted only e.g. USER:READ now actually sees a link to the
-  // one admin page it can reach, instead of the entire Admin section being
-  // invisible regardless of its own grants.
-  const adminNavVisibility: Record<string, boolean> = {
-    "/admin/users": canViewUsers,
-    "/admin/roles": canViewRoles,
-    "/admin/custom-fields": canViewCustomFields,
-    "/admin/communication-templates": canViewCommunicationTemplates,
-    "/admin/interview-reminders": canViewOrganizationSettings,
-    "/admin/offer-settings": canViewOrganizationSettings,
-    // Mirrors admin/approval-chains/page.tsx's own redirect condition
-    // exactly (JOB:READ or OFFER:READ) — showJobsNav/canViewOfferReports
-    // already answer both halves.
-    "/admin/approval-chains": showJobsNav || canViewOfferReports,
-    "/admin/data-retention": canViewOrganizationSettings,
-    "/admin/audit-log": canViewAuditLog,
-  };
+  const adminNavVisibility: Record<string, boolean> = Object.fromEntries(adminNavVisibilityEntries);
 
   const navVisibility = {
     adminNavVisibility,

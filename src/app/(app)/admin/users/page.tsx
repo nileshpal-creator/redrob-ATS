@@ -10,7 +10,14 @@ export default async function UsersPage() {
   if (!context) return null;
   await guardPage(context, ENTITY.USER, "READ");
 
-  const [users, roles] = await Promise.all([listUsers(context), listRoles(context)]);
+  // listRoles needs ROLE:READ — a separate grant from this page's own
+  // USER:READ gate (Recruiter/Hiring Manager/Recruiting Manager all get
+  // USER:READ by default per prisma/seed.ts's DIRECTORY_ROLE_PERMISSIONS,
+  // to see a directory of colleagues, but none get ROLE:READ). Only used
+  // here to populate the Add User dialog's role picker, so a viewer who
+  // lacks it still gets a working page — same fallback approval-chains/
+  // page.tsx already uses for its own listRoles call.
+  const [users, roles] = await Promise.all([listUsers(context), listRoles(context).catch(() => [])]);
 
   return (
     <div className="space-y-4">

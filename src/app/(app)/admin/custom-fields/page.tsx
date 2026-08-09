@@ -10,9 +10,14 @@ export default async function CustomFieldsPage() {
   if (!context) return null;
   await guardPage(context, ENTITY.CUSTOM_FIELD_DEFINITION, "READ");
 
+  // listCustomObjectDefinitions needs CUSTOM_OBJECT_DEFINITION:READ — a
+  // separate grant from this page's own CUSTOM_FIELD_DEFINITION:READ gate.
+  // A role could plausibly hold one without the other, so degrade to an
+  // empty list rather than crashing the whole page — same fallback
+  // approval-chains/page.tsx uses for its own secondary listRoles call.
   const [fields, objects] = await Promise.all([
     listCustomFieldDefinitions(context),
-    listCustomObjectDefinitions(context),
+    listCustomObjectDefinitions(context).catch(() => []),
   ]);
 
   return (
