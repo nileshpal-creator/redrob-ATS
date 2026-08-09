@@ -84,6 +84,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         <AppTopbar
           name={context.name}
           email={context.email}
+          roleNames={context.roles.map((role) => role.name)}
           mobileNav={<AppMobileNav {...navVisibility} />}
         />
         <main className="flex-1 overflow-y-auto p-6">{children}</main>

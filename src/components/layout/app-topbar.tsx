@@ -1,10 +1,12 @@
 "use client";
 
+import Link from "next/link";
 import { signOut } from "next-auth/react";
-import { LogOut, Moon, Sun } from "lucide-react";
+import { KeyRound, LogOut, Moon, Sun, UserRound } from "lucide-react";
 import { useTheme } from "next-themes";
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -27,10 +29,12 @@ function initials(name: string) {
 export function AppTopbar({
   name,
   email,
+  roleNames,
   mobileNav,
 }: {
   name: string;
   email: string;
+  roleNames: string[];
   mobileNav?: React.ReactNode;
 }) {
   const { theme, setTheme } = useTheme();
@@ -58,8 +62,33 @@ export function AppTopbar({
               <span className="hidden text-sm font-medium sm:inline">{name}</span>
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuLabel className="truncate">{email}</DropdownMenuLabel>
+          <DropdownMenuContent align="end" className="w-64">
+            <DropdownMenuLabel>
+              <div className="flex flex-col gap-1">
+                <span className="truncate font-medium text-foreground">{name}</span>
+                <span className="truncate font-normal text-muted-foreground">{email}</span>
+                {roleNames.length > 0 ? (
+                  <div className="flex flex-wrap gap-1 pt-1">
+                    {roleNames.map((roleName) => (
+                      <Badge key={roleName} variant="secondary" className="font-normal">
+                        {roleName}
+                      </Badge>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem asChild>
+              <Link href="/profile">
+                <UserRound /> My profile
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuItem asChild>
+              <Link href="/profile/password">
+                <KeyRound /> Change password
+              </Link>
+            </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={() => signOut({ callbackUrl: "/login" })}>
               <LogOut />

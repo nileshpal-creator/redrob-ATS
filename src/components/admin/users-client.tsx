@@ -5,7 +5,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { type ColumnDef } from "@tanstack/react-table";
 import { toast } from "sonner";
-import { Loader2, Plus } from "lucide-react";
+import { Loader2, Plus, Trash2 } from "lucide-react";
 
 import { createUserSchema, type CreateUserInput } from "@/lib/validations/user";
 import { Button } from "@/components/ui/button";
@@ -175,12 +175,86 @@ function AddUserDialog({
   );
 }
 
+/**
+ * User deletion is destructive and irreversible (unlike the Active switch's
+ * deactivate toggle), so — unlike every other delete action in this app,
+ * which is a bare button (see RolesClient) — this requires typing the
+ * user's email to confirm. No AlertDialog primitive exists in this codebase
+ * (grepped `src/components/ui`), so this reuses the plain Dialog primitive
+ * every other modal here is built on rather than adding a new dependency.
+ */
+function DeleteUserDialog({ user, onDeleted }: { user: UserRow; onDeleted: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [confirmText, setConfirmText] = useState("");
+  const [deleting, setDeleting] = useState(false);
+
+  async function handleDelete() {
+    setDeleting(true);
+    try {
+      await requestJson(`/api/users/${user.id}`, { method: "DELETE" });
+      toast.success(`${user.name} was deleted.`);
+      setOpen(false);
+      onDeleted();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to delete user");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) setConfirmText("");
+      }}
+    >
+      <DialogTrigger asChild>
+        <Button variant="outline" size="icon" aria-label={`Delete ${user.name}`}>
+          <Trash2 className="size-4 text-destructive" />
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Delete {user.name}?</DialogTitle>
+          <DialogDescription>
+            This permanently deletes the account and cannot be undone. Users with existing job,
+            candidate, or audit history can&apos;t be deleted — deactivate them instead. Type{" "}
+            <span className="font-medium text-foreground">{user.email}</span> to confirm.
+          </DialogDescription>
+        </DialogHeader>
+        <Input
+          value={confirmText}
+          onChange={(event) => setConfirmText(event.target.value)}
+          placeholder={user.email}
+          autoComplete="off"
+        />
+        <DialogFooter>
+          <Button
+            variant="destructive"
+            disabled={confirmText !== user.email || deleting}
+            onClick={handleDelete}
+          >
+            {deleting ? <Loader2 className="animate-spin" /> : <Trash2 />}
+            Delete user
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function UsersClient({
   initialUsers,
   roles,
+  currentUserId,
+  canDelete,
 }: {
   initialUsers: UserRow[];
   roles: RoleOption[];
+  currentUserId: string;
+  canDelete: boolean;
 }) {
   const [users, setUsers] = useState(initialUsers);
 
@@ -228,6 +302,22 @@ export function UsersClient({
           : "Never",
     },
   ];
+
+  if (canDelete) {
+    columns.push({
+      header: "",
+      id: "actions",
+      cell: ({ row }) =>
+        row.original.id === currentUserId ? null : (
+          <div className="flex justify-end">
+            <DeleteUserDialog
+              user={row.original}
+              onDeleted={() => setUsers((prev) => prev.filter((u) => u.id !== row.original.id))}
+            />
+          </div>
+        ),
+    });
+  }
 
   return (
     <div className="space-y-4">

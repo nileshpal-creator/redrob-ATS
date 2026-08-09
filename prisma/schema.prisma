@@ -88,8 +88,28 @@ model User {
 
   jobPostingsPosted JobPosting[] @relation("JobPostingPostedBy")
 
+  passwordResetTokens PasswordResetToken[]
+
   @@index([isActive])
   @@index([managerId])
+}
+
+// Forgot-password flow (§ account management). A raw token is emailed to the
+// user and never stored — only its SHA-256 hash is, mirroring the
+// timing-safe secret comparison already used for the scheduler's bearer
+// token (src/lib/scheduler/auth.ts). `usedAt` makes redemption single-use;
+// `expiresAt` is checked the same way offer-expiry.ts checks a stored
+// DateTime against `now` (`expiresAt: { gt: now }` for "still valid").
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
 }
 
 model Role {

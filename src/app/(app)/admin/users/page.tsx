@@ -23,6 +23,8 @@ export default async function UsersPage() {
       <UsersClient
         initialUsers={users}
         roles={roles.map((role) => ({ id: role.id, name: role.name }))}
+        currentUserId={context.userId}
+        canDelete={context.isSuperAdmin}
       />
     </div>
   );

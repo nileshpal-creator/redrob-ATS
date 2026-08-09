@@ -19,7 +19,11 @@ export const authConfig: NextAuthConfig = {
   callbacks: {
     authorized({ auth, request }) {
       const isLoggedIn = !!auth?.user;
-      const isAuthPage = request.nextUrl.pathname.startsWith("/login");
+      const { pathname } = request.nextUrl;
+      const isAuthPage =
+        pathname.startsWith("/login") ||
+        pathname.startsWith("/forgot-password") ||
+        pathname.startsWith("/reset-password");
 
       if (isAuthPage) {
         return !isLoggedIn || Response.redirect(new URL("/", request.nextUrl));
