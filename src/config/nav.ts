@@ -9,9 +9,11 @@ import {
   GitBranch,
   KanbanSquare,
   LayoutDashboard,
+  LayoutGrid,
   Mail,
   ScrollText,
   ShieldCheck,
+  ShieldOff,
   SlidersHorizontal,
   Timer,
   Users,
@@ -50,6 +52,9 @@ export const reportsNavItem: NavItem = { title: "Reports", href: "/reports", ico
 /** Shown only when the viewer has WORKFLOW_DEFINITION:READ — see (app)/layout.tsx. */
 export const workflowsNavItem: NavItem = { title: "Workflows", href: "/admin/workflows", icon: Workflow };
 
+/** Shown only when the viewer has DASHBOARD:READ — see (app)/layout.tsx. */
+export const dashboardsNavItem: NavItem = { title: "Dashboards", href: "/dashboards", icon: LayoutGrid };
+
 /** Rendered only for super-admin roles — see AppSidebar. Every module adds its admin screens here. */
 export const adminNav: NavItem[] = [
   { title: "Users", href: "/admin/users", icon: Users },
@@ -59,5 +64,6 @@ export const adminNav: NavItem[] = [
   { title: "Interview Reminders", href: "/admin/interview-reminders", icon: BellRing },
   { title: "Offer Settings", href: "/admin/offer-settings", icon: Timer },
   { title: "Approval Chains", href: "/admin/approval-chains", icon: GitBranch },
+  { title: "Data Retention", href: "/admin/data-retention", icon: ShieldOff },
   { title: "Audit Log", href: "/admin/audit-log", icon: ScrollText },
 ];

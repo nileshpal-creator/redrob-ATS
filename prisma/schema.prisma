@@ -51,9 +51,11 @@ model User {
   jobStatusChangesActed   JobStatusChange[]
   jobApprovalsAs          JobApproval[]            @relation("JobApprovalApprover")
 
-  candidatesCreated          Candidate[]         @relation("CandidateCreatedBy")
-  candidateDocumentsUploaded CandidateDocument[] @relation("CandidateDocumentUploadedBy")
-  candidateNotesAuthored     CandidateNote[]     @relation("CandidateNoteAuthor")
+  candidatesCreated          Candidate[]          @relation("CandidateCreatedBy")
+  candidateDocumentsUploaded CandidateDocument[]  @relation("CandidateDocumentUploadedBy")
+  candidateNotesAuthored     CandidateNote[]      @relation("CandidateNoteAuthor")
+  erasureRequestsRequested   DataErasureRequest[] @relation("DataErasureRequestedBy")
+  erasureRequestsDecided     DataErasureRequest[] @relation("DataErasureDecidedBy")
 
   applicationsOwned          Application[]         @relation("ApplicationOwner")
   applicationsCreated        Application[]         @relation("ApplicationCreatedBy")
@@ -73,7 +75,12 @@ model User {
 
   communicationTemplatesCreated CommunicationTemplate[] @relation("CommunicationTemplateCreatedBy")
 
+  communicationTemplateVersionsCreated   CommunicationTemplateVersion[] @relation("CommunicationTemplateVersionCreatedBy")
+  communicationTemplateVersionsSubmitted CommunicationTemplateVersion[] @relation("CommunicationTemplateVersionSubmittedBy")
+  communicationTemplateVersionsDecided   CommunicationTemplateVersion[] @relation("CommunicationTemplateVersionDecidedBy")
+
   savedReportsCreated SavedReport[] @relation("SavedReportCreatedBy")
+  dashboardsCreated   Dashboard[]   @relation("DashboardCreatedBy")
 
   workflowDefinitionsCreated WorkflowDefinition[]        @relation("WorkflowDefinitionCreatedBy")
   workflowVersionsCreated    WorkflowDefinitionVersion[] @relation("WorkflowVersionCreatedBy")
@@ -204,6 +211,15 @@ model Organization {
   // so a deployment that never touches this setting sees identical report
   // output to before.
   offerTatThresholdDays        Int      @default(3)
+  // §13: "retention limits." Days from Candidate.createdAt after which
+  // runDueRetentionSweeps automatically anonymizes a candidate who has no
+  // ACTIVE (non-terminal) application — null (the default) means no
+  // automatic sweep runs at all, matching this codebase's own "opt-in,
+  // never silently on" convention for every other org-level default
+  // (offerTatThresholdDays is the one exception, since 3 business days was
+  // already this app's pre-existing hardcoded default before it became
+  // configurable — there is no equivalent prior behavior to preserve here).
+  candidateRetentionDays       Int?
   createdAt                    DateTime @default(now())
   updatedAt                    DateTime @updatedAt
 
@@ -588,6 +604,12 @@ model Candidate {
   // no "create without consent" path.
   consentGivenAt       DateTime
 
+  // §10.4: which CommunicationTemplateVersion.language a personalized send
+  // should prefer (falls back to the template's default "en" content when
+  // null or no matching ACTIVE variant exists) — additive, not read by any
+  // automated send path yet except bulkEmailApplications.
+  preferredLanguage String?
+
   customFields Json?
 
   sourceId String?
@@ -604,16 +626,74 @@ model Candidate {
   // pattern as Job.version.
   version Int @default(0)
 
+  // §13: "GDPR-aligned consent capture and retention limits." Set once, by
+  // erasure-request approval or by the automatic retention sweep
+  // (runDueRetentionSweeps) — never unset. A non-null value means every PII
+  // field above has already been overwritten (see anonymizeCandidateInternal
+  // in src/lib/services/candidates.ts); this column is only a marker for
+  // "don't re-populate PII here" and UI display, not itself where the
+  // erasure happened.
+  anonymizedAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  documents    CandidateDocument[]
-  notes        CandidateNote[]
-  applications Application[]
+  documents       CandidateDocument[]
+  notes           CandidateNote[]
+  applications    Application[]
+  erasureRequests DataErasureRequest[]
 
   @@index([email])
   @@index([sourceId])
   @@index([createdById])
+}
+
+// §13 ("GDPR-aligned consent capture and retention limits"): a request to
+// erase one candidate's PII, either staff-initiated (requestedById set) or
+// system-initiated by the automatic retention sweep (requestedById null,
+// status created directly as COMPLETED — a policy-driven sweep needs no
+// per-candidate human sign-off, unlike a staff-initiated request). ANONYMIZE
+// overwrites PII fields in place, keeping the row (and its Application/
+// Interview/Offer/Handoff history) intact; HARD_DELETE reuses the exact same
+// block-if-applications-exist rule deleteCandidate already enforces — it is
+// not a way around that rule, just a second, audited entry point to it.
+model DataErasureRequest {
+  id     String                   @id @default(cuid())
+  method DataErasureMethod
+  status DataErasureRequestStatus @default(PENDING)
+  reason String?
+
+  // Nullable, onDelete: SetNull rather than Cascade — a HARD_DELETE decision
+  // must leave this row's own history (method/status/decidedAt/
+  // decisionNotes) standing as the audit record that the erasure happened,
+  // even though the candidate it was about no longer exists. A Cascade here
+  // would delete the request itself the instant it completes, which is
+  // backwards for a compliance audit trail.
+  candidateId String?
+  candidate   Candidate? @relation(fields: [candidateId], references: [id], onDelete: SetNull)
+
+  requestedById String?
+  requestedBy   User?    @relation("DataErasureRequestedBy", fields: [requestedById], references: [id])
+  requestedAt   DateTime @default(now())
+
+  decidedById   String?
+  decidedBy     User?     @relation("DataErasureDecidedBy", fields: [decidedById], references: [id])
+  decidedAt     DateTime?
+  decisionNotes String?
+
+  @@index([candidateId])
+  @@index([status])
+}
+
+enum DataErasureMethod {
+  ANONYMIZE
+  HARD_DELETE
+}
+
+enum DataErasureRequestStatus {
+  PENDING
+  COMPLETED
+  REJECTED
 }
 
 // Multi-document attachment (§11.2). `storageKey` is an opaque handle into
@@ -725,8 +805,65 @@ model CommunicationTemplate {
   updatedAt DateTime @updatedAt
 
   emailLogs ApplicationEmailLog[]
+  versions  CommunicationTemplateVersion[]
 
   @@index([channel, isActive])
+}
+
+enum CommunicationTemplateVersionStatus {
+  DRAFT
+  PENDING_APPROVAL
+  ACTIVE
+  REJECTED
+  ARCHIVED
+}
+
+// §10.4's version-history + approval-workflow layer on top of
+// CommunicationTemplate — additive, not a replacement: every existing send
+// path (bulkEmailApplications, interview reminders/notifications, the
+// workflow SEND_EMAIL action) keeps reading CommunicationTemplate.subject/
+// body directly and is completely unaware this model exists. Approving an
+// "en" version syncs those columns (see decideCommunicationTemplateVersion
+// in src/lib/services/communication-template-versions.ts); every other
+// language lives only here, resolved by getPersonalizedTemplateContent for
+// callers that opt in (currently just bulkEmailApplications, keyed off
+// Candidate.preferredLanguage).
+//
+// `updateCommunicationTemplate`'s existing direct-edit path is untouched —
+// this is a parallel, opt-in path, not a mandatory gate in front of it.
+//
+// At most one ACTIVE version per (templateId, language) — not
+// representable in schema.prisma (no partial-index syntax), so it's
+// hand-written in the migration, same pattern as PipelineStage's
+// active-name uniqueness.
+model CommunicationTemplateVersion {
+  id         String                @id @default(cuid())
+  templateId String
+  template   CommunicationTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  versionNumber Int
+  language      String @default("en")
+
+  subject String
+  body    String
+
+  status CommunicationTemplateVersionStatus @default(DRAFT)
+
+  submittedById String?
+  submittedBy   User?     @relation("CommunicationTemplateVersionSubmittedBy", fields: [submittedById], references: [id])
+  submittedAt   DateTime?
+
+  decidedById String?
+  decidedBy   User?     @relation("CommunicationTemplateVersionDecidedBy", fields: [decidedById], references: [id])
+  decidedAt   DateTime?
+  comments    String?
+
+  createdById String
+  createdBy   User     @relation("CommunicationTemplateVersionCreatedBy", fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+
+  @@unique([templateId, language, versionNumber])
+  @@index([templateId, language, status])
 }
 
 // Configurable per job/pipeline (§10.1–10.2, §11.4) — deliberately not a
@@ -1566,6 +1703,84 @@ model SavedReport {
   // "index the actual query pattern" precedent as
   // CommunicationTemplate.@@index([channel, isActive]).
   @@index([scheduleFrequency, lastRunAt])
+}
+
+// ---------------------------------------------------------------------------
+// §10.5 — Custom Dashboards & Reports (post-launch)
+// ---------------------------------------------------------------------------
+
+// A saved, shareable collection of widgets over any entity — including
+// custom objects and their own custom fields, not just the four pre-built
+// §11.12 reports SavedReport already covers. "Shareable" mirrors
+// SavedReport's own shape exactly: no per-record ACL model, an ALL-scope
+// DASHBOARD:READ grant simply sees every dashboard, the same way an
+// ALL-scope SAVED_REPORT:READ grant already does.
+model Dashboard {
+  id          String  @id @default(cuid())
+  name        String
+  description String?
+
+  createdById String
+  createdBy   User   @relation("DashboardCreatedBy", fields: [createdById], references: [id])
+
+  // Optimistic locking — same pattern as SavedReport.version.
+  version Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  widgets DashboardWidget[]
+
+  @@index([createdById])
+}
+
+enum DashboardAggregate {
+  COUNT
+  SUM
+  AVG
+  MIN
+  MAX
+}
+
+// One tile: an entity + an aggregate (+ optional group-by and filters).
+// Row-level security is never stored here — see the widget-query engine
+// (src/lib/reporting/dashboard-query.ts), which always re-fetches through
+// the target entity's own scoped list service at render time, the exact
+// "recomputed against the current viewer, never a row-set frozen at save
+// time" precedent SavedReport's own row-level-security note establishes.
+model DashboardWidget {
+  id          String    @id @default(cuid())
+  dashboardId String
+  dashboard   Dashboard @relation(fields: [dashboardId], references: [id], onDelete: Cascade)
+
+  title      String
+  // One of CUSTOM_FIELD_CAPABLE_ENTITIES (src/lib/entity-registry.ts), or a
+  // CustomObjectDefinition's own apiKey — validated at the service boundary
+  // against the live set of active custom objects, not a DB enum, the same
+  // reason CustomFieldDefinition.entityType is a plain string.
+  entityType String
+
+  aggregate  DashboardAggregate @default(COUNT)
+  // The field to aggregate (ignored for COUNT); "customFields.<key>"
+  // addresses a custom field, same dot-path convention FieldPermission.field
+  // already uses for the same reason (one flat namespace, no second schema).
+  fieldKey   String?
+  // The field to group results by; null means a single overall total.
+  groupByKey String?
+
+  // AND-only array of { field, operator, value } — deliberately the exact
+  // same shape as WorkflowCondition (src/lib/validations/workflow.ts), not
+  // a second filter DSL. Validated by Zod at the service boundary, same
+  // "JSON shape validated at the service boundary" convention as
+  // Job.customFields.
+  filters Json @default("[]")
+
+  sortOrder Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([dashboardId])
 }
 
 // ---------------------------------------------------------------------------

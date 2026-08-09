@@ -1,5 +1,6 @@
 import { withApiHandler } from "@/lib/api/handlers";
 import { ValidationError } from "@/lib/errors";
+import { candidateImportColumnMappingSchema } from "@/lib/validations/candidate";
 import { previewCandidateImport } from "@/lib/services/candidate-import";
 
 export const POST = withApiHandler(async (context, request) => {
@@ -11,6 +12,9 @@ export const POST = withApiHandler(async (context, request) => {
     throw new ValidationError("A file is required.");
   }
 
+  const mappingField = formData.get("mapping");
+  const mapping = typeof mappingField === "string" ? candidateImportColumnMappingSchema.parse(JSON.parse(mappingField)) : undefined;
+
   const buffer = Buffer.from(await file.arrayBuffer());
-  return previewCandidateImport(context, buffer, file.name);
+  return previewCandidateImport(context, buffer, file.name, mapping);
 });

@@ -37,8 +37,9 @@ All `M`-priority requirements from §11.1 are implemented:
   lists, not free text, per Phase 1). ✅
 - Positions-filled counter, present and defaulted to `0`, **not yet auto-updating** — no
   module through Module 2 writes to it; it becomes live once an Application/Offer module
-  exists to drive it. Aging indicator (from `createdAt`) is not yet built as a UI affordance.
-  ⚠️ partial, see [Known limitations](#known-limitations).
+  exists to drive it. ⚠️ partial, see [Known limitations](#known-limitations). An age indicator
+  (derived from `createdAt`) is built into both the job list ("Age" column) and job detail page
+  ("N days old"), and shipped as part of this same phase's own frontend. ✅
 - Link a job to a parent requisition where one need splits into multiple roles. ✅
 - Clone a closed job into a new requisition — tagged `P2` in the PRD, not built. ⏸ deferred
 
@@ -68,9 +69,9 @@ All `M`-priority requirements from §11.2 are implemented:
   PRD's AI & Automation Assistant (§11.11, "Future — Differentiated/Niche"), not built. ⏸
   deferred (see [Known limitations](#known-limitations))
 - A column-mapping UI for bulk import (matching arbitrary source-file headers to Candidate
-  fields) — not required by §11.2's stated scope; the current import instead expects a fixed
-  set of case-insensitive column names. ⚠️ partial, see
-  [Known limitations](#known-limitations)
+  fields) — added in Module 13: an upload → map columns → preview → commit wizard, with the
+  original case-insensitive-name auto-detect kept as the suggested default and as the fallback
+  for any direct API caller that skips the mapping step. ✅
 
 ### Module 4 — Applications / Candidate Pipeline (PRD §11.4)
 
@@ -190,10 +191,11 @@ chat) are correctly deferred:
   `PENDING`. ✅
 - Template-driven, variable-substituted messaging — a new admin-managed `CommunicationTemplate`
   model (name, subject, body with `{{key}}` placeholders via the existing `renderTemplate()`
-  helper) replaces the free-typed subject/body the bulk-email dialog previously had. This is
-  deliberately the *minimal* slice of the full Template Designer (§10.4) that this
-  M-requirement needs — not multi-language variants, conditional blocks, version history, or an
-  approval workflow, which stay their own future module. ✅ (scoped)
+  helper) replaces the free-typed subject/body the bulk-email dialog previously had. At the time
+  this module shipped, deliberately the *minimal* slice of the full Template Designer (§10.4):
+  not multi-language variants, conditional blocks, version history, or an approval workflow.
+  **The rest of §10.4 (scoped to the generic email-template engine, not offer-letter/document
+  generation) was built in Module 13** — see that section above. ✅
 - `src/lib/mail/` mirrors `StorageProvider`/`HrisProvider`'s "interface + one real
   implementation + env-driven factory" shape exactly — only a `ConsoleMailProvider` exists; a
   real Gmail/Outlook API connector (§12) needs OAuth credentials out of scope for this pass. ✅
@@ -216,13 +218,14 @@ the Template Designer:
 - Offer/TAT compliance reporting — measured `Offer.createdAt` → the approved
   `OfferApproval.decidedAt`, the one leg of Offer's lifecycle with its own immutable timestamp;
   the compliance threshold is a report parameter, not an invented stored org policy. ✅
-- Custom dashboard and report builder (§10.5) — **scoped down, not the full requirement.**
-  `SavedReport` lets a viewer name, save, and (for scheduled ones) share one of the four
-  pre-built reports above with its filters. There is no drag-and-drop widget layout, no
-  arbitrary-entity query, and no custom-field aggregation — building that full engine is a
-  separate, much larger effort. Row-level security (§10.5's own third bullet) *is* fully
-  implemented: running a saved report always re-applies the runner's own permission scope, never
-  a row-set fixed at save time. ⚠️ partial, see [Known limitations](#known-limitations)
+- Custom dashboard and report builder (§10.5) — at the time this module shipped, **scoped down,
+  not the full requirement**: `SavedReport` let a viewer name, save, and (for scheduled ones)
+  share one of the four pre-built reports above with its filters, with no drag-and-drop widget
+  layout, arbitrary-entity query, or custom-field aggregation. **The full engine was built in
+  Module 13** (`Dashboard`/`DashboardWidget`) — see that section above; `SavedReport` itself is
+  unchanged, the two coexist as separate features. Row-level security (§10.5's own third bullet)
+  was already fully implemented here: running a saved report always re-applies the runner's own
+  permission scope, never a row-set fixed at save time. ✅
 - Scheduled report delivery by email. ✅ (scoped) — the business logic
   (`runDueScheduledReports`) is real and fully tested; no cron/queue infrastructure exists
   anywhere in this app to actually invoke it periodically, the same environment limit every
@@ -302,6 +305,55 @@ mechanism for until now (no cron/queue/worker process existed anywhere in the ap
   secure, idempotent, bounded execution endpoint; genuine periodic invocation remains external
   infrastructure's job (Vercel Cron, AWS EventBridge, a Railway/Render cron job, a Kubernetes
   CronJob, Windows Task Scheduler, or a plain OS crontab).
+
+### Module 13 — V1 Gap Closure: GDPR Retention, Dashboard/Report Builder, Template Designer, UI Gaps
+
+Closes the remaining `M`-priority V1 gaps identified by a full PRD-vs-codebase status check, in
+priority order. No P2/Future work (AI/resume parsing, SMS, client portal, VMS) and no real
+external integrations (Gmail/Outlook, job boards, HRIS, e-signature) were touched — those stay a
+separate, later integration phase.
+
+- **GDPR retention/soft-delete workflow (§13).** A `DataErasureRequest` two-tier
+  request/decide model (mirrors `ApprovalStepConfig`'s own request/decide separation) with two
+  methods: ANONYMIZE (overwrite PII in place, preserve the row and its FK history) and
+  HARD_DELETE (reuses `deleteCandidate`'s existing block-if-has-applications rule). An
+  org-configurable `Organization.candidateRetentionDays` drives an automatic
+  `runDueRetentionSweeps` consumer, wired into Module 12's `runScheduledWork` orchestrator
+  alongside the other three consumers. `/admin/data-retention` admin screen; erasure-request
+  actions surfaced on the candidate detail page. ✅
+- **Full generic Dashboard/Report Builder (§10.5).** `Dashboard`/`DashboardWidget` models; a
+  query engine (`src/lib/reporting/dashboard-query.ts`) that re-runs each target entity's own
+  already-RBAC-scoped, already-field-sanitized `list*()` service function on every render —
+  never a second parallel query path, never a row-set frozen at save time — over any core entity
+  or active custom object, with `COUNT`/`SUM`/`AVG`/`MIN`/`MAX` aggregation, optional grouping,
+  and a `WorkflowCondition`-shaped AND-only filter DSL. `/dashboards` list +
+  `/dashboards/[id]` builder/viewer, form-based add/remove/reorder widgets (this app's Module 10
+  builder already established that "visual, drag-and-drop" scopes down to form-based; there is
+  no chart library here, so widgets render as stat tiles/tables, not charts). ✅
+- **Full Template Designer (§10.4), scoped to the generic template engine only — no
+  offer-letter/document generation, since §14's roadmap tags that P2.** A
+  `CommunicationTemplateVersion` model adds version history, a submit → approve/reject workflow
+  (gated by a new `COMMUNICATION_TEMPLATE:APPROVE` action), rollback to any previously-active
+  version, and per-language variants — all additive on top of `CommunicationTemplate`'s existing
+  `subject`/`body` columns, which every existing send path (`bulkEmailApplications`, interview
+  reminders/notifications, the workflow `SEND_EMAIL` action) keeps reading directly and
+  unchanged. Approving an `"en"` version syncs those columns; approving another language leaves
+  them untouched. `renderTemplate()` gained `{{#if key}}...{{else}}...{{/if}}` and
+  `{{#if key==value}}`/`{{#if key!=value}}` conditional blocks, evaluated against the exact same
+  flat context every caller already builds — free to every existing send path, opt-in via
+  syntax. `Candidate.preferredLanguage` plus `resolvePersonalizedTemplateContent` let
+  `bulkEmailApplications` personalize by language automatically; the three automated send paths
+  (interview reminders/notifications, workflow email) stay on the default/English content, since
+  wiring per-candidate language selection into their trigger paths was judged separate,
+  higher-risk integration work outside this pass's scope. Admin UI: a "Versions" dialog per
+  template on `/admin/communication-templates` (draft → submit → approve/reject/rollback,
+  language picker). ✅ (scoped)
+- **Small UI gaps.** The Job aging-indicator turned out to already exist since Module 2's
+  original commit (a stale doc claim, corrected below, not an actual gap). The role-permission
+  matrix now renders an `APPROVE` column and greys out any action `getApplicableActions` says
+  doesn't apply to that resource. The candidate bulk-import wizard gained a column-mapping step
+  (upload → map → preview → commit) so a file doesn't need to already use the expected header
+  names.
 
 ## Completed phases (Module 2)
 
@@ -784,15 +836,16 @@ Per the PRD's §11 module breakdown and §14 roadmap, not yet started:
 
 - **`positionsFilledCount` now auto-updates, as of Module 6.** The column existed from Module 2
   onward, defaulted to `0`; Module 6's `transitionOffer` increments it by one on every `ACCEPT`
-  transition (the offer, not the application, is what actually fills a position). No aging-
-  indicator UI still exists (see below).
-- **No aging-indicator UI.** `createdAt` is stored and available, but the job list/detail UI
-  does not yet render a derived "age" affordance.
-- **The role-permission matrix UI does not yet reflect per-resource applicable actions.**
-  `src/lib/authz/resource-actions.ts#getApplicableActions` was written in Module 2 so the
-  matrix could grey out, e.g., `APPROVE` for resources where it doesn't apply — it is not yet
-  consumed by the matrix component, which still renders the four Module 1 CRUD columns
-  unconditionally for every resource, including `JOB`.
+  transition (the offer, not the application, is what actually fills a position).
+- ~~No aging-indicator UI.~~ **Not actually a gap** — `agingLabel()` in both
+  `src/components/jobs/jobs-client.tsx` (an "Age" list column) and
+  `src/components/jobs/job-detail-client.tsx` (inline on the detail header) has rendered a
+  derived age from `createdAt` since Module 2's own original frontend commit; this bullet was
+  simply stale. Verified working in Module 13.
+- ~~The role-permission matrix UI does not yet reflect per-resource applicable actions.~~
+  **Resolved in Module 13** — `RolePermissionEditor` now renders an `APPROVE` column and calls
+  `getApplicableActions` per resource, disabling (and visually greying) any action that doesn't
+  apply to that row instead of offering it unconditionally.
 - ~~`FieldPermission` is not yet exercised by the Job module.~~ **Resolved post-launch** — see
   [Post-launch: Priority-A audit gap closure](#post-launch-priority-a-audit-gap-closure) below;
   `getFieldAccess`/`sanitizeForRead`/`assertWritableFields` are now actually enforced on
@@ -811,17 +864,17 @@ Per the PRD's §11 module breakdown and §14 roadmap, not yet started:
   multi-instance consistency. A production deployment needs a new `StorageProvider`
   implementation (e.g. S3) before candidate documents can be trusted to survive a redeploy or
   scale-out.
-- **No GDPR retention/soft-delete workflow beyond hard delete.** `DELETE /api/candidates/[id]`
-  permanently removes the record and its files; there is no "right to be forgotten" request
-  queue, retention-period policy, or anonymize-instead-of-delete option. §13's consent capture
-  is implemented; broader retention/erasure workflow tooling is not.
+- ~~No GDPR retention/soft-delete workflow beyond hard delete.~~ **Resolved in Module 13** — a
+  `DataErasureRequest` request/decide workflow (ANONYMIZE or HARD_DELETE), an org-configurable
+  `Organization.candidateRetentionDays` automatic sweep (`runDueRetentionSweeps`, wired into the
+  same `POST /api/scheduler/run` orchestrator Module 12 built), and a `/admin/data-retention`
+  admin screen. `DELETE /api/candidates/[id]` itself is unchanged — this is an additional,
+  audited path alongside it, not a replacement.
 - **Resume auto-parsing is deferred.** Uploading a resume stores the file; nothing extracts
   structured fields (name, experience, skills) from it. This is intentionally scoped to the
   PRD's AI & Automation Assistant (§11.11), sequenced after core parity per §14's roadmap.
-- **No column-mapping UI for bulk import.** The import preview expects a fixed set of
-  case-insensitive column names (see [api.md](api.md#post-apicandidatesimportpreview)); a
-  source file with differently-named columns must be relabeled before upload rather than
-  mapped in the UI.
+- ~~No column-mapping UI for bulk import.~~ **Resolved in Module 13** — see Module 3's own entry
+  above.
 - **Consent is a single timestamp, not granular by consent type.** `consentGivenAt` records
   that consent was given at creation time; it does not distinguish between, e.g., consent to
   store data versus consent to be contacted, and there is no mechanism to update or revoke it
@@ -854,11 +907,11 @@ Per the PRD's §11 module breakdown and §14 roadmap, not yet started:
   underlying gap this bullet used to describe — nothing inside this app invokes anything
   periodically — is unchanged and still real; see Module 12's own Known limitations bullets
   below.
-- **No generic drag-and-drop dashboard/report builder (§10.5's first bullet).** Module 9 built
-  the four pre-built §11.12 reports plus a `SavedReport` that picks one of them with filters —
-  not an arbitrary-entity, arbitrary-custom-field query/widget-layout engine. That full builder
-  is a separate, substantially larger effort than any of the four M-priority report types
-  themselves.
+- ~~No generic drag-and-drop dashboard/report builder (§10.5's first bullet).~~ **Resolved in
+  Module 13** — see the Module 13 section above. The "drag-and-drop" language is still
+  form-based (add/remove/reorder a widget list), the same scope-down Module 10's own builder UI
+  already established; the engine itself is genuinely arbitrary-entity, arbitrary-custom-field,
+  with row- and field-level security recomputed live on every render.
 - **No cron/queue infrastructure exists *inside* this app, even after Module 12.** `POST
   /api/scheduler/run` (Module 12) is a real, secure, idempotent, bounded execution endpoint for
   all three scheduler-driven capabilities — but nothing in this Next.js process invokes it

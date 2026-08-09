@@ -265,6 +265,23 @@ const WORKFLOW_DEFINITION_ROLE_PERMISSIONS = [
   { role: "Recruiting Manager", action: "UPDATE", scope: "TEAM" },
 ] as const;
 
+// §10.5 — Custom Dashboards & Reports. Ownership resolves against
+// Dashboard.createdById, same anchor as SavedReport, and the same
+// read-heavy-Hiring-Manager / team-scoped-Recruiting-Manager shape as that
+// module's own grant, since a Dashboard is the same kind of cross-cutting
+// analytics surface.
+const DASHBOARD_ROLE_PERMISSIONS = [
+  { role: "Recruiter", action: "CREATE", scope: "ALL" },
+  { role: "Recruiter", action: "READ", scope: "ALL" },
+  { role: "Recruiter", action: "UPDATE", scope: "OWN" },
+  { role: "Recruiter", action: "DELETE", scope: "OWN" },
+  { role: "Hiring Manager", action: "READ", scope: "ALL" },
+  { role: "Recruiting Manager", action: "CREATE", scope: "ALL" },
+  { role: "Recruiting Manager", action: "READ", scope: "TEAM" },
+  { role: "Recruiting Manager", action: "UPDATE", scope: "TEAM" },
+  { role: "Recruiting Manager", action: "DELETE", scope: "TEAM" },
+] as const;
+
 async function main() {
   const organization = await prisma.organization.upsert({
     where: { id: "default" },
@@ -396,6 +413,16 @@ async function main() {
     });
   }
   console.log(`Seeded ${WORKFLOW_DEFINITION_ROLE_PERMISSIONS.length} default Workflow Definition role permissions`);
+
+  for (const grant of DASHBOARD_ROLE_PERMISSIONS) {
+    const role = await prisma.role.findUniqueOrThrow({ where: { name: grant.role } });
+    await prisma.rolePermission.upsert({
+      where: { roleId_resource_action: { roleId: role.id, resource: "DASHBOARD", action: grant.action } },
+      update: { scope: grant.scope },
+      create: { roleId: role.id, resource: "DASHBOARD", action: grant.action, scope: grant.scope },
+    });
+  }
+  console.log(`Seeded ${DASHBOARD_ROLE_PERMISSIONS.length} default Dashboard role permissions`);
 
   const adminEmail = process.env.SEED_ADMIN_EMAIL;
   const adminPassword = process.env.SEED_ADMIN_PASSWORD;

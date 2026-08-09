@@ -26,6 +26,10 @@ export const ENTITY = {
   HANDOFF: "HANDOFF",
   COMMUNICATION_TEMPLATE: "COMMUNICATION_TEMPLATE",
   SAVED_REPORT: "SAVED_REPORT",
+  // §10.5: Custom Dashboards & Reports — distinct from SAVED_REPORT (§11.12's
+  // four pre-built reports) since it's part of the Customization Engine
+  // (Section 10), not the Reporting module.
+  DASHBOARD: "DASHBOARD",
   WORKFLOW_DEFINITION: "WORKFLOW_DEFINITION",
   // Not itself RBAC-gated (configuring the chain is gated as JOB:UPDATE /
   // OFFER:UPDATE at ALL scope — see src/lib/services/approvals.ts) —
@@ -37,6 +41,11 @@ export const ENTITY = {
   // audit-log entries (actorId: null, entityType: SCHEDULER) get a real,
   // distinct, searchable entity type rather than borrowing an unrelated one.
   SCHEDULER: "SCHEDULER",
+  // Not itself RBAC-gated (requesting/deciding goes through CANDIDATE:DELETE
+  // / CANDIDATE:APPROVE — see src/lib/services/candidate-erasure.ts) —
+  // registered only so its own audit-log entries get a real, distinct
+  // entity type rather than borrowing CANDIDATE's.
+  DATA_ERASURE_REQUEST: "DATA_ERASURE_REQUEST",
 } as const;
 
 export type EntityKey = (typeof ENTITY)[keyof typeof ENTITY];
@@ -58,9 +67,11 @@ export const ENTITY_LABELS: Record<string, string> = {
   [ENTITY.HANDOFF]: "Onboarding Handoffs",
   [ENTITY.COMMUNICATION_TEMPLATE]: "Communication Templates",
   [ENTITY.SAVED_REPORT]: "Saved Reports",
+  [ENTITY.DASHBOARD]: "Dashboards",
   [ENTITY.WORKFLOW_DEFINITION]: "Workflow Automations",
   [ENTITY.SCHEDULER]: "Scheduler",
   [ENTITY.APPROVAL_STEP_CONFIG]: "Approval Chains",
+  [ENTITY.DATA_ERASURE_REQUEST]: "Data Erasure Requests",
 };
 
 /** Entities core modules may attach admin-defined custom fields to (§10.1). */

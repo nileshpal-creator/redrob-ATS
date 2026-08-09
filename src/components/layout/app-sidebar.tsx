@@ -7,6 +7,7 @@ import {
   adminNav,
   applicationsNavItem,
   candidatesNavItem,
+  dashboardsNavItem,
   interviewsNavItem,
   jobsNavItem,
   primaryNav,
@@ -45,6 +46,7 @@ export function AppSidebar({
   showInterviewsNav,
   showReportsNav,
   showWorkflowsNav,
+  showDashboardsNav,
 }: {
   showAdminNav: boolean;
   showJobsNav: boolean;
@@ -53,6 +55,7 @@ export function AppSidebar({
   showInterviewsNav: boolean;
   showReportsNav: boolean;
   showWorkflowsNav: boolean;
+  showDashboardsNav: boolean;
 }) {
   return (
     <aside className="hidden w-60 shrink-0 border-r border-sidebar-border bg-sidebar md:flex md:flex-col">
@@ -69,6 +72,7 @@ export function AppSidebar({
         {showInterviewsNav ? <NavLink item={interviewsNavItem} /> : null}
         {showReportsNav ? <NavLink item={reportsNavItem} /> : null}
         {showWorkflowsNav ? <NavLink item={workflowsNavItem} /> : null}
+        {showDashboardsNav ? <NavLink item={dashboardsNavItem} /> : null}
 
         {showAdminNav ? (
           <>

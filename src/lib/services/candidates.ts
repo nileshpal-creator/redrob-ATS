@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import type { Prisma } from "@/generated/prisma/client";
+import { Prisma } from "@/generated/prisma/client";
 import type { PermissionAction } from "@/generated/prisma/enums";
 import { ENTITY } from "@/lib/entity-registry";
 import {
@@ -277,6 +277,9 @@ export async function updateCandidate(
   }
   await assertCandidateAccess(context, existing, "UPDATE");
   await assertCandidateNotHandedOff(id);
+  if (existing.anonymizedAt) {
+    throw new ValidationError("This candidate's data has been erased and can no longer be edited.");
+  }
 
   if (input.sourceId) {
     await assertControlledListValue("CANDIDATE_SOURCE", input.sourceId, "source");
@@ -351,7 +354,16 @@ export async function updateCandidate(
   return sanitizeForRead(updated, fieldAccess);
 }
 
-export async function deleteCandidate(context: SessionContext, id: string) {
+/**
+ * The physical hard-delete: blocks if the candidate has any applications
+ * (Module 4's own rule — hard-deleting would strand pipeline/interview/
+ * offer history), deletes stored documents, then the row itself. No RBAC
+ * check and no audit entry here — each caller (deleteCandidate's own
+ * CANDIDATE:DELETE gate, or a §13 erasure-request decision's own
+ * CANDIDATE:APPROVE-at-ALL-scope gate) authorizes and audits its own entry
+ * point, since the two are gated differently.
+ */
+export async function hardDeleteCandidateRecord(id: string): Promise<{ name: string; phone: string }> {
   const existing = await prisma.candidate.findUnique({
     where: { id },
     include: { documents: true },
@@ -359,13 +371,10 @@ export async function deleteCandidate(context: SessionContext, id: string) {
   if (!existing) {
     throw new NotFoundError("Candidate not found.");
   }
-  await assertCandidateAccess(context, existing, "DELETE");
 
-  // Module 4: a candidate with applications can't be silently hard-deleted —
-  // that would strand pipeline/interview/offer history. Application.candidateId
-  // defaults to onDelete: Restrict as a database-level backstop; this check
-  // exists so the caller gets a clean ValidationError instead of an unhandled
-  // constraint-violation error.
+  // Application.candidateId defaults to onDelete: Restrict as a database-
+  // level backstop; this check exists so the caller gets a clean
+  // ValidationError instead of an unhandled constraint-violation error.
   const applicationCount = await prisma.application.count({ where: { candidateId: id } });
   if (applicationCount > 0) {
     throw new ValidationError("This candidate has applications and cannot be deleted.");
@@ -378,12 +387,79 @@ export async function deleteCandidate(context: SessionContext, id: string) {
 
   await prisma.candidate.delete({ where: { id } });
 
+  return { name: existing.name, phone: existing.phone };
+}
+
+/**
+ * §13 ("GDPR-aligned consent capture and retention limits") — overwrites
+ * every PII-bearing field in place and never deletes the row, so
+ * Application/Interview/Offer/Handoff history stays intact. Stored
+ * documents (resumes, cover letters — squarely PII) are deleted outright;
+ * note bodies are redacted rather than the rows deleted, preserving each
+ * note's own timestamp/author for audit continuity. Callers (both the
+ * erasure-request decision path and the automatic retention sweep) check
+ * `anonymizedAt === null` before calling this — it does not re-check that
+ * itself, since both call sites already need the fresh row for other
+ * reasons and re-fetching here would just be a redundant query.
+ */
+export async function anonymizeCandidateRecord(id: string): Promise<void> {
+  const existing = await prisma.candidate.findUnique({
+    where: { id },
+    include: { documents: true },
+  });
+  if (!existing) {
+    throw new NotFoundError("Candidate not found.");
+  }
+
+  const storage = getStorageProvider();
+  for (const document of existing.documents) {
+    await storage.delete(document.storageKey);
+  }
+
+  await prisma.$transaction([
+    prisma.candidateDocument.deleteMany({ where: { candidateId: id } }),
+    prisma.candidateNote.updateMany({
+      where: { candidateId: id },
+      data: { body: "[redacted — candidate data erased]" },
+    }),
+    prisma.candidate.update({
+      where: { id },
+      data: {
+        name: `Anonymized Candidate ${id.slice(-8)}`,
+        // phone is @unique — a stable, collision-free placeholder derived
+        // from the row's own id, not a fixed literal every anonymized
+        // candidate would otherwise collide on.
+        phone: `anonymized-${id}`,
+        email: null,
+        location: null,
+        currentCompensation: null,
+        expectedCompensation: null,
+        noticePeriodDays: null,
+        earliestAvailability: null,
+        experienceHistory: Prisma.JsonNull,
+        educationHistory: Prisma.JsonNull,
+        customFields: Prisma.JsonNull,
+        anonymizedAt: new Date(),
+      },
+    }),
+  ]);
+}
+
+export async function deleteCandidate(context: SessionContext, id: string) {
+  const existing = await prisma.candidate.findUnique({ where: { id } });
+  if (!existing) {
+    throw new NotFoundError("Candidate not found.");
+  }
+  await assertCandidateAccess(context, existing, "DELETE");
+
+  const deleted = await hardDeleteCandidateRecord(id);
+
   await recordAudit({
     actorId: context.userId,
     action: AUDIT_ACTIONS.CANDIDATE_DELETED,
     entityType: ENTITY.CANDIDATE,
     entityId: id,
-    changes: { before: { name: existing.name, phone: existing.phone } },
+    changes: { before: deleted },
   });
 }
 
@@ -493,6 +569,9 @@ export async function addCandidateDocument(
   }
   await assertCandidateAccess(context, candidate, "UPDATE");
   await assertCandidateNotHandedOff(candidateId);
+  if (candidate.anonymizedAt) {
+    throw new ValidationError("This candidate's data has been erased and can no longer be edited.");
+  }
   await assertControlledListValue("DOCUMENT_TYPE", input.documentTypeId, "document type");
 
   if (input.buffer.byteLength > MAX_DOCUMENT_SIZE_BYTES) {
@@ -943,6 +1022,9 @@ export async function addCandidateNote(
     throw new NotFoundError("Candidate not found.");
   }
   await assertCandidateAccess(context, candidate, "UPDATE");
+  if (candidate.anonymizedAt) {
+    throw new ValidationError("This candidate's data has been erased and can no longer be edited.");
+  }
 
   const note = await prisma.candidateNote.create({
     data: { candidateId, body: input.body, authorId: context.userId },

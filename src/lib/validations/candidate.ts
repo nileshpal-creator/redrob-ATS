@@ -119,6 +119,15 @@ export const candidateImportCommitSchema = z.object({
 });
 export type CandidateImportCommitInput = z.infer<typeof candidateImportCommitSchema>;
 
+/**
+ * Expected import field -> the uploaded file's own column header. `null`
+ * (or an omitted key) means "don't map this field" — same as before this
+ * existed, mapImportRow falls back to auto-detecting by matching the
+ * field's own name case-insensitively.
+ */
+export const candidateImportColumnMappingSchema = z.record(z.string(), z.string().nullable());
+export type CandidateImportColumnMapping = z.infer<typeof candidateImportColumnMappingSchema>;
+
 export const candidateExportQuerySchema = candidateQuerySchema
   .omit({ page: true, pageSize: true })
   .extend({

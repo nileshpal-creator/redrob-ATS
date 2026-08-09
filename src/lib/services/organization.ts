@@ -40,6 +40,7 @@ export async function updateOrganizationSettings(context: SessionContext, input:
         interviewReminderLeadMinutes: input.interviewReminderLeadMinutes,
       }),
       ...(input.offerTatThresholdDays !== undefined && { offerTatThresholdDays: input.offerTatThresholdDays }),
+      ...(input.candidateRetentionDays !== undefined && { candidateRetentionDays: input.candidateRetentionDays }),
     },
   });
 
@@ -52,10 +53,12 @@ export async function updateOrganizationSettings(context: SessionContext, input:
       before: {
         interviewReminderLeadMinutes: organization.interviewReminderLeadMinutes,
         offerTatThresholdDays: organization.offerTatThresholdDays,
+        candidateRetentionDays: organization.candidateRetentionDays,
       },
       after: {
         interviewReminderLeadMinutes: updated.interviewReminderLeadMinutes,
         offerTatThresholdDays: updated.offerTatThresholdDays,
+        candidateRetentionDays: updated.candidateRetentionDays,
       },
     },
   });

@@ -20,8 +20,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { getApplicableActions } from "@/lib/authz/resource-actions";
+import { cn } from "@/lib/utils";
 
-const ACTIONS = ["CREATE", "READ", "UPDATE", "DELETE"] as const;
+const ACTIONS = ["CREATE", "READ", "UPDATE", "DELETE", "APPROVE"] as const;
 const SCOPES = [
   { value: "NONE", label: "No access" },
   { value: "OWN", label: "Own records" },
@@ -104,31 +106,41 @@ export function RolePermissionEditor({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {resources.map(({ resource, label }) => (
-              <TableRow key={resource}>
-                <TableCell className="font-medium">{label}</TableCell>
-                {ACTIONS.map((action) => (
-                  <TableCell key={action}>
-                    <Select
-                      disabled={isSuperAdmin}
-                      value={grid[gridKey(resource, action)] ?? "NONE"}
-                      onValueChange={(value) => setScope(resource, action, value)}
-                    >
-                      <SelectTrigger size="sm" className="w-36">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {SCOPES.map((scope) => (
-                          <SelectItem key={scope.value} value={scope.value}>
-                            {scope.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </TableCell>
-                ))}
-              </TableRow>
-            ))}
+            {resources.map(({ resource, label }) => {
+              const applicableActions = new Set(getApplicableActions(resource));
+              return (
+                <TableRow key={resource}>
+                  <TableCell className="font-medium">{label}</TableCell>
+                  {ACTIONS.map((action) => {
+                    const isApplicable = applicableActions.has(action);
+                    return (
+                      <TableCell key={action}>
+                        <Select
+                          disabled={isSuperAdmin || !isApplicable}
+                          value={grid[gridKey(resource, action)] ?? "NONE"}
+                          onValueChange={(value) => setScope(resource, action, value)}
+                        >
+                          <SelectTrigger
+                            size="sm"
+                            className={cn("w-36", !isApplicable && "opacity-40")}
+                            title={isApplicable ? undefined : `${action} doesn't apply to ${label}`}
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {SCOPES.map((scope) => (
+                              <SelectItem key={scope.value} value={scope.value}>
+                                {scope.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </TableCell>
+                    );
+                  })}
+                </TableRow>
+              );
+            })}
           </TableBody>
         </Table>
       </div>

@@ -24,9 +24,16 @@ export const organizationSettingsUpdateSchema = z
       .refine((values) => new Set(values).size === values.length, "Lead times must be unique.")
       .optional(),
     offerTatThresholdDays: z.coerce.number().int().positive().max(90).optional(),
+    // §13: "retention limits." null clears the setting (no automatic sweep);
+    // omitted leaves it untouched, same "PATCH touches only what's
+    // provided" convention as the other two settings.
+    candidateRetentionDays: z.coerce.number().int().positive().max(3650).nullable().optional(),
   })
   .refine(
-    (val) => val.interviewReminderLeadMinutes !== undefined || val.offerTatThresholdDays !== undefined,
+    (val) =>
+      val.interviewReminderLeadMinutes !== undefined ||
+      val.offerTatThresholdDays !== undefined ||
+      val.candidateRetentionDays !== undefined,
     "At least one setting must be provided.",
   );
 export type OrganizationSettingsUpdateInput = z.infer<typeof organizationSettingsUpdateSchema>;

@@ -41,7 +41,7 @@ describe("POST /api/scheduler/run", () => {
 
     const body = await response.json();
     expect(Array.isArray(body.consumers)).toBe(true);
-    expect(body.consumers).toHaveLength(4);
+    expect(body.consumers).toHaveLength(5);
     expect(typeof body.durationMs).toBe("number");
   });
 

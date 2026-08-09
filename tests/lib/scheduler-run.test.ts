@@ -3,18 +3,20 @@ import { describe, expect, it } from "vitest";
 import { runScheduledWork } from "@/lib/scheduler/run";
 
 describe("runScheduledWork", () => {
-  it("runs all four consumers and reports each one's own stats", async () => {
+  it("runs all five consumers and reports each one's own stats", async () => {
     const result = await runScheduledWork(new Date(), {
       interviewReminders: async () => ({ interviewsEvaluated: 0, sent: 0 }),
       scheduledReports: async () => ({ dueCount: 0, sentCount: 0 }),
       timeInStageWorkflows: async () => ({ evaluatedCount: 0, firedCount: 0 }),
       offerExpirations: async () => ({ evaluatedCount: 0, lapsedCount: 0 }),
+      retentionSweeps: async () => ({ evaluatedCount: 0, anonymizedCount: 0 }),
     });
 
-    expect(result.consumers).toHaveLength(4);
+    expect(result.consumers).toHaveLength(5);
     expect(result.consumers.map((c) => c.name).sort()).toEqual([
       "interview-reminders",
       "offer-expirations",
+      "retention-sweeps",
       "scheduled-reports",
       "time-in-stage-workflows",
     ]);
@@ -23,7 +25,7 @@ describe("runScheduledWork", () => {
     expect(typeof result.startedAt).toBe("string");
   });
 
-  it("isolates one consumer's failure — the other three still run and report success", async () => {
+  it("isolates one consumer's failure — the other four still run and report success", async () => {
     const result = await runScheduledWork(new Date(), {
       interviewReminders: async () => {
         throw new Error("Simulated interview-reminders crash");
@@ -31,6 +33,7 @@ describe("runScheduledWork", () => {
       scheduledReports: async () => ({ dueCount: 0, sentCount: 0 }),
       timeInStageWorkflows: async () => ({ evaluatedCount: 0, firedCount: 0 }),
       offerExpirations: async () => ({ evaluatedCount: 0, lapsedCount: 0 }),
+      retentionSweeps: async () => ({ evaluatedCount: 0, anonymizedCount: 0 }),
     });
 
     const failed = result.consumers.find((c) => c.name === "interview-reminders");
@@ -41,7 +44,7 @@ describe("runScheduledWork", () => {
     expect(others.every((c) => c.success)).toBe(true);
   });
 
-  it("reports failures for all four independently when all four throw", async () => {
+  it("reports failures for all five independently when all five throw", async () => {
     const result = await runScheduledWork(new Date(), {
       interviewReminders: async () => {
         throw new Error("a");
@@ -54,6 +57,9 @@ describe("runScheduledWork", () => {
       },
       offerExpirations: async () => {
         throw new Error("d");
+      },
+      retentionSweeps: async () => {
+        throw new Error("e");
       },
     });
 
@@ -68,6 +74,7 @@ describe("runScheduledWork", () => {
       scheduledReports: async () => ({}),
       timeInStageWorkflows: async () => ({}),
       offerExpirations: async () => ({}),
+      retentionSweeps: async () => ({}),
     });
 
     for (const consumer of result.consumers) {

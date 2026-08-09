@@ -34,6 +34,7 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
+import { TemplateVersionsDialog } from "@/components/admin/template-versions-dialog";
 
 export type CommunicationTemplateRow = {
   id: string;
@@ -226,7 +227,13 @@ function EditTemplateDialog({
  * schema.prisma's model comment). No delete: deactivate via the Active
  * switch instead, same convention as PipelineStage.
  */
-export function CommunicationTemplatesClient({ initialTemplates }: { initialTemplates: CommunicationTemplateRow[] }) {
+export function CommunicationTemplatesClient({
+  initialTemplates,
+  canApprove,
+}: {
+  initialTemplates: CommunicationTemplateRow[];
+  canApprove: boolean;
+}) {
   const [templates, setTemplates] = useState(initialTemplates);
   const [editing, setEditing] = useState<CommunicationTemplateRow | null>(null);
 
@@ -245,7 +252,8 @@ export function CommunicationTemplatesClient({ initialTemplates }: { initialTemp
       header: "",
       id: "actions",
       cell: ({ row }) => (
-        <div className="flex justify-end">
+        <div className="flex justify-end gap-2">
+          <TemplateVersionsDialog templateId={row.original.id} templateName={row.original.name} canApprove={canApprove} />
           <Button variant="outline" size="sm" onClick={() => setEditing(row.original)}>
             Edit
           </Button>

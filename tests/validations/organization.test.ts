@@ -47,4 +47,23 @@ describe("organizationSettingsUpdateSchema", () => {
   it("rejects duplicate interviewReminderLeadMinutes", () => {
     expect(organizationSettingsUpdateSchema.safeParse({ interviewReminderLeadMinutes: [60, 60] }).success).toBe(false);
   });
+
+  it("accepts candidateRetentionDays alone", () => {
+    const result = organizationSettingsUpdateSchema.safeParse({ candidateRetentionDays: 730 });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts a null candidateRetentionDays to clear the setting", () => {
+    const result = organizationSettingsUpdateSchema.safeParse({ candidateRetentionDays: null });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.candidateRetentionDays).toBeNull();
+    }
+  });
+
+  it("rejects a non-positive or above-cap candidateRetentionDays", () => {
+    expect(organizationSettingsUpdateSchema.safeParse({ candidateRetentionDays: 0 }).success).toBe(false);
+    expect(organizationSettingsUpdateSchema.safeParse({ candidateRetentionDays: 3651 }).success).toBe(false);
+    expect(organizationSettingsUpdateSchema.safeParse({ candidateRetentionDays: 3650 }).success).toBe(true);
+  });
 });

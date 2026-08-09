@@ -4,7 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
-import { AlertTriangle, KanbanSquare, Loader2, Pencil, Trash2 } from "lucide-react";
+import { AlertTriangle, KanbanSquare, Loader2, Pencil, ShieldOff, Trash2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -17,6 +17,15 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { CustomFieldsFormSection } from "@/components/custom-fields/custom-fields-form-section";
 import { CandidateDocuments } from "@/components/candidates/candidate-documents";
@@ -48,6 +57,7 @@ type CandidateDetail = {
   customFields: Record<string, unknown>;
   version: number;
   createdAt: string;
+  anonymizedAt: string | null;
   source: { label: string } | null;
   createdBy: Person;
   documents: {
@@ -192,6 +202,33 @@ export function CandidateDetailClient({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
+  const [erasureOpen, setErasureOpen] = useState(false);
+  const [erasureMethod, setErasureMethod] = useState<"ANONYMIZE" | "HARD_DELETE">("ANONYMIZE");
+  const [erasureReason, setErasureReason] = useState("");
+  const [requestingErasure, setRequestingErasure] = useState(false);
+
+  async function handleRequestErasure() {
+    setRequestingErasure(true);
+    try {
+      const response = await fetch(`/api/candidates/${candidate.id}/erasure-requests`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ method: erasureMethod, reason: erasureReason || undefined }),
+      });
+      const body = await response.json();
+      if (!response.ok) {
+        throw new Error(body.error ?? "Failed to submit erasure request");
+      }
+      toast.success("Erasure request submitted for review.");
+      setErasureOpen(false);
+      setErasureReason("");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to submit erasure request");
+    } finally {
+      setRequestingErasure(false);
+    }
+  }
+
   async function handleDelete() {
     setDeleting(true);
     try {
@@ -228,12 +265,19 @@ export function CandidateDetailClient({
               </Link>
             </Button>
           ) : null}
-          {canEdit ? <CandidateMergeDialog targetCandidateId={candidate.id} version={candidate.version} defaultSourceCandidateId={possibleDuplicateOf ?? undefined} /> : null}
-          {canEdit ? (
+          {canEdit && !candidate.anonymizedAt ? (
+            <CandidateMergeDialog targetCandidateId={candidate.id} version={candidate.version} defaultSourceCandidateId={possibleDuplicateOf ?? undefined} />
+          ) : null}
+          {canEdit && !candidate.anonymizedAt ? (
             <Button variant="outline" asChild>
               <Link href={`/candidates/${candidate.id}/edit`}>
                 <Pencil /> Edit
               </Link>
+            </Button>
+          ) : null}
+          {canDelete && !candidate.anonymizedAt ? (
+            <Button variant="outline" onClick={() => setErasureOpen(true)}>
+              <ShieldOff /> Request erasure
             </Button>
           ) : null}
           {canDelete ? (
@@ -243,6 +287,16 @@ export function CandidateDetailClient({
           ) : null}
         </div>
       </div>
+
+      {candidate.anonymizedAt ? (
+        <div className="flex items-start gap-2 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+          <ShieldOff className="mt-0.5 size-4 shrink-0" />
+          <p>
+            This candidate&apos;s personal data was erased on {new Date(candidate.anonymizedAt).toLocaleDateString()}{" "}
+            (§13, GDPR data-erasure). Pipeline history is preserved; profile fields cannot be edited further.
+          </p>
+        </div>
+      ) : null}
 
       {possibleDuplicateOf ? (
         <div className="flex items-start gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-400">
@@ -387,6 +441,46 @@ export function CandidateDetailClient({
           </Card>
         </TabsContent>
       </Tabs>
+
+      <Dialog open={erasureOpen} onOpenChange={setErasureOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Request data erasure</DialogTitle>
+            <DialogDescription>
+              Submits a §13 GDPR erasure request for a compliance admin to review. Anonymize overwrites this
+              candidate&apos;s personal fields while keeping their application/interview/offer history intact; hard
+              delete removes the record outright (blocked if any application exists).
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Method</Label>
+              <Select value={erasureMethod} onValueChange={(value) => setErasureMethod(value as typeof erasureMethod)}>
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ANONYMIZE">Anonymize (keep pipeline history)</SelectItem>
+                  <SelectItem value="HARD_DELETE">Hard delete (no applications only)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Reason (optional)</Label>
+              <Textarea value={erasureReason} onChange={(event) => setErasureReason(event.target.value)} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setErasureOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleRequestErasure} disabled={requestingErasure}>
+              {requestingErasure ? <Loader2 className="animate-spin" /> : null}
+              Submit request
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <DialogContent>

@@ -1,3 +1,4 @@
+import { runDueRetentionSweeps } from "@/lib/services/candidate-erasure";
 import { runDueInterviewReminders } from "@/lib/services/interview-reminders";
 import { runDueOfferExpirations } from "@/lib/services/offer-expiry";
 import { runDueScheduledReports } from "@/lib/services/scheduled-reports";
@@ -22,14 +23,16 @@ export type SchedulerRunResult = {
  *
  *   External Scheduler → POST /api/scheduler/run → runScheduledWork() →
  *     runDueInterviewReminders / runDueScheduledReports /
- *     runDueTimeInStageWorkflows / runDueOfferExpirations
+ *     runDueTimeInStageWorkflows / runDueOfferExpirations /
+ *     runDueRetentionSweeps
  *
- * Deliberately not a generic polymorphic job-queue table — the four
+ * Deliberately not a generic polymorphic job-queue table — the five
  * consumers' own due-detection differs enough (a fixed lead time before an
  * absolute instant, a daily/weekly cadence against a last-run timestamp, a
- * stage-age threshold, a per-offer response deadline) that forcing them
- * into one shared "ScheduledJob" row shape would only be a paraphrase of
- * what each already does well on its own, not a simplification. This
+ * stage-age threshold, a per-offer response deadline, a per-candidate
+ * creation-age retention window) that forcing them into one shared
+ * "ScheduledJob" row shape would only be a paraphrase of what each already
+ * does well on its own, not a simplification. This
  * function's only job is invocation, isolation, and reporting — each
  * consumer owns its own idempotency, batching, and retry logic (see their
  * own files).
@@ -50,6 +53,7 @@ export async function runScheduledWork(
     scheduledReports?: (now: Date) => Promise<unknown>;
     timeInStageWorkflows?: (now: Date) => Promise<unknown>;
     offerExpirations?: (now: Date) => Promise<unknown>;
+    retentionSweeps?: (now: Date) => Promise<unknown>;
   } = {},
 ): Promise<SchedulerRunResult> {
   const start = Date.now();
@@ -57,6 +61,7 @@ export async function runScheduledWork(
   const scheduledReports = consumerOverrides.scheduledReports ?? runDueScheduledReports;
   const timeInStageWorkflows = consumerOverrides.timeInStageWorkflows ?? runDueTimeInStageWorkflows;
   const offerExpirations = consumerOverrides.offerExpirations ?? runDueOfferExpirations;
+  const retentionSweeps = consumerOverrides.retentionSweeps ?? runDueRetentionSweeps;
 
   async function runConsumer(name: string, fn: () => Promise<unknown>): Promise<ConsumerResult> {
     const consumerStart = Date.now();
@@ -82,6 +87,7 @@ export async function runScheduledWork(
     runConsumer("scheduled-reports", () => scheduledReports(now)),
     runConsumer("time-in-stage-workflows", () => timeInStageWorkflows(now)),
     runConsumer("offer-expirations", () => offerExpirations(now)),
+    runConsumer("retention-sweeps", () => retentionSweeps(now)),
   ]);
 
   return {

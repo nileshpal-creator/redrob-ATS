@@ -19,6 +19,7 @@ import { buildCustomFieldValueSchema } from "@/lib/custom-fields/dynamic-schema"
 import { renderTemplate } from "@/lib/templates/render";
 import { assertApplicationNotHandedOff } from "@/lib/services/handoffs";
 import { getActiveCommunicationTemplateOrThrow } from "@/lib/services/communication-templates";
+import { resolvePersonalizedTemplateContent } from "@/lib/services/communication-template-versions";
 import { getMailProvider } from "@/lib/mail";
 import { evaluateApplicationWorkflows } from "@/lib/services/workflows";
 import type {
@@ -516,7 +517,7 @@ export async function bulkEmailApplications(context: SessionContext, input: Appl
       const application = await prisma.application.findUnique({
         where: { id: applicationId },
         include: {
-          candidate: { select: { name: true, email: true } },
+          candidate: { select: { name: true, email: true, preferredLanguage: true } },
           job: { select: { title: true } },
         },
       });
@@ -529,12 +530,16 @@ export async function bulkEmailApplications(context: SessionContext, input: Appl
         throw new ValidationError("Candidate has no email on file.");
       }
 
+      // §10.4: personalizes to the candidate's own preferred language when
+      // an ACTIVE variant exists for it; otherwise renders the template's
+      // default (English) content exactly as before this existed.
+      const content = await resolvePersonalizedTemplateContent(template, application.candidate.preferredLanguage);
       const renderContext = {
         "candidate.name": application.candidate.name,
         "job.title": application.job.title,
       };
-      const subject = renderTemplate(template.subject, renderContext);
-      const body = renderTemplate(template.body, renderContext);
+      const subject = renderTemplate(content.subject, renderContext);
+      const body = renderTemplate(content.body, renderContext);
 
       const result = await provider.send({ to: application.candidate.email, subject, body });
 

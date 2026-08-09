@@ -1,5 +1,43 @@
 # Changelog
 
+## Module 13 — V1 gap closure: GDPR retention, Dashboard/Report Builder, Template Designer, UI gaps
+
+A concise V1 PRD status check identified the remaining M-priority gaps in priority order; see
+[project-status.md](docs/project-status.md#module-13--v1-gap-closure-gdpr-retention-dashboardreport-builder-template-designer-ui-gaps)
+for the full write-up. No P2/Future work and no real external integrations were touched.
+
+### Added
+
+- **GDPR retention/soft-delete workflow (§13).** `DataErasureRequest` two-tier request/decide
+  model (ANONYMIZE or HARD_DELETE); org-configurable `Organization.candidateRetentionDays`
+  driving a new `runDueRetentionSweeps` scheduler consumer (5th, alongside Module 12's four);
+  `/admin/data-retention` admin screen; erasure-request actions on the candidate detail page.
+- **Full generic Dashboard/Report Builder (§10.5).** `Dashboard`/`DashboardWidget` models; a
+  query engine re-running each target entity's own already-scoped, already-field-sanitized
+  `list*()` service on every render (never a second query path, never frozen at save time) over
+  any core entity or active custom object; `COUNT`/`SUM`/`AVG`/`MIN`/`MAX` aggregation, optional
+  grouping, and a `WorkflowCondition`-shaped filter DSL; `/dashboards` list + builder/viewer
+  pages.
+- **Full Template Designer (§10.4), scoped to the generic email-template engine** — no
+  offer-letter/document generation (§14 tags that P2). `CommunicationTemplateVersion` adds
+  version history, submit → approve/reject (new `COMMUNICATION_TEMPLATE:APPROVE` action),
+  rollback, and per-language variants, additive on top of `CommunicationTemplate`'s existing
+  columns every send path already reads. `renderTemplate()` gained `{{#if}}`/`{{else}}`
+  conditional blocks. `Candidate.preferredLanguage` + `resolvePersonalizedTemplateContent`
+  personalize `bulkEmailApplications` automatically. New "Versions" dialog on
+  `/admin/communication-templates`.
+- **Role-permission matrix now shows an `APPROVE` column** and greys out any action
+  `getApplicableActions` says doesn't apply to that resource, instead of offering every action
+  unconditionally.
+- **Candidate bulk-import column-mapping wizard.** Upload → map columns → preview → commit;
+  the original case-insensitive-name auto-detect is kept as the suggested default and as the
+  fallback for direct API callers that skip the mapping step.
+
+### Fixed
+
+- **Stale documentation claim**: the Job list/detail "aging indicator" was already implemented
+  since Module 2's original commit; `docs/project-status.md` incorrectly listed it as a gap.
+
 ## Post-launch — Priority-A audit gap closure
 
 A PRD-audit pass after Module 12 confirmed 13 gaps as Priority A. All 13 are closed; see
