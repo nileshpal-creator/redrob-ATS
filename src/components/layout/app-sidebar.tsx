@@ -15,6 +15,7 @@ import {
   workflowsNavItem,
   type NavItem,
 } from "@/config/nav";
+import { Logo } from "@/components/brand/logo";
 import { cn } from "@/lib/utils";
 
 export type AppNavVisibility = {
@@ -38,13 +39,21 @@ function NavLink({ item, onNavigate }: { item: NavItem; onNavigate?: () => void 
     <Link
       href={item.href}
       onClick={onNavigate}
+      data-tour={`nav-${item.href}`}
       className={cn(
-        "flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+        "group relative flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-all motion-safe:duration-150",
         isActive
           ? "bg-sidebar-accent text-sidebar-accent-foreground"
-          : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+          : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground motion-safe:hover:translate-x-0.5",
       )}
     >
+      <span
+        aria-hidden
+        className={cn(
+          "absolute inset-y-1 left-0 w-0.5 rounded-full bg-sidebar-primary transition-opacity",
+          isActive ? "opacity-100" : "opacity-0",
+        )}
+      />
       <Icon className="size-4" />
       {item.title}
     </Link>
@@ -80,7 +89,10 @@ export function AppNavLinks({
 
       {visibleAdminNav.length > 0 ? (
         <>
-          <div className="mt-4 mb-1 px-3 text-xs font-semibold tracking-wide text-sidebar-foreground/50 uppercase">
+          <div
+            data-tour="nav-admin-section"
+            className="mt-4 mb-1 px-3 text-xs font-semibold tracking-wide text-sidebar-foreground/50 uppercase"
+          >
             Admin
           </div>
           {visibleAdminNav.map((item) => (
@@ -95,9 +107,10 @@ export function AppNavLinks({
 export function AppSidebar(props: AppNavVisibility) {
   return (
     <aside className="hidden w-60 shrink-0 border-r border-sidebar-border bg-sidebar md:flex md:flex-col">
-      <div className="flex h-14 items-center border-b border-sidebar-border px-4">
+      <Link href="/" className="flex h-14 items-center gap-2 border-b border-sidebar-border px-4">
+        <Logo size={26} />
         <span className="text-sm font-semibold text-sidebar-foreground">Redrob ATS</span>
-      </div>
+      </Link>
       <AppNavLinks {...props} />
     </aside>
   );

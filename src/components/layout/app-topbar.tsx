@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { signOut } from "next-auth/react";
-import { KeyRound, LogOut, Moon, Sun, UserRound } from "lucide-react";
+import { HelpCircle, KeyRound, LogOut, Moon, Sun, UserRound } from "lucide-react";
 import { useTheme } from "next-themes";
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -16,6 +16,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useOnboarding } from "@/components/onboarding/onboarding-provider";
 
 function initials(name: string) {
   return name
@@ -38,24 +40,30 @@ export function AppTopbar({
   mobileNav?: React.ReactNode;
 }) {
   const { theme, setTheme } = useTheme();
+  const { startTour } = useOnboarding();
 
   return (
     <header className="flex h-14 items-center justify-between border-b px-4">
       <div>{mobileNav}</div>
       <div className="flex items-center gap-2">
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label="Toggle theme"
-          onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-        >
-          <Sun className="dark:hidden" />
-          <Moon className="hidden dark:block" />
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Toggle theme"
+              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+            >
+              <Sun className="dark:hidden" />
+              <Moon className="hidden dark:block" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Toggle theme</TooltipContent>
+        </Tooltip>
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" className="h-9 gap-2 px-2">
+            <Button variant="ghost" className="h-9 gap-2 px-2" data-tour="user-menu">
               <Avatar className="size-7">
                 <AvatarFallback>{initials(name)}</AvatarFallback>
               </Avatar>
@@ -88,6 +96,10 @@ export function AppTopbar({
               <Link href="/profile/password">
                 <KeyRound /> Change password
               </Link>
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={startTour}>
+              <HelpCircle /> Replay tour
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={() => signOut({ callbackUrl: "/login" })}>

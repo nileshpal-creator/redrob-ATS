@@ -15,5 +15,9 @@ export const { auth: middleware } = NextAuth(authConfig);
 // page, wrong for an API client (fetch, another service, an expired
 // session) that expects a parseable error, not a redirect.
 export const config = {
-  matcher: ["/((?!api|_next/static|_next/image|favicon.ico).*)"],
+  // logo.png/icon.png: the brand mark, served from public/ (logo.png) and
+  // the app-icon file convention (icon.png) — both need to load on the
+  // signed-out /login page itself, so they're excluded the same way
+  // favicon.ico already is.
+  matcher: ["/((?!api|_next/static|_next/image|favicon.ico|logo.png|icon.png).*)"],
 };

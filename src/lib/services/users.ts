@@ -238,3 +238,15 @@ export async function changePassword(context: SessionContext, input: ChangePassw
     changes: {},
   });
 }
+
+/**
+ * No RBAC check, no audit trail — every signed-in user may always dismiss
+ * their own first-time onboarding tour, and doing so is a UI preference,
+ * not a security- or business-relevant event.
+ */
+export async function completeOnboarding(context: SessionContext) {
+  await prisma.user.update({
+    where: { id: context.userId },
+    data: { onboardingCompletedAt: new Date() },
+  });
+}

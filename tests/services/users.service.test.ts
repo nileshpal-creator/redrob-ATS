@@ -5,7 +5,7 @@ import { prisma } from "@/lib/prisma";
 import type { SessionContext } from "@/lib/authz/session-context";
 import { ForbiddenError } from "@/lib/authz/authorize";
 import { NotFoundError, ValidationError } from "@/lib/errors";
-import { changePassword, deleteUser, getOwnProfile } from "@/lib/services/users";
+import { changePassword, completeOnboarding, deleteUser, getOwnProfile } from "@/lib/services/users";
 
 function contextFor(user: {
   id: string;
@@ -218,6 +218,27 @@ describe("UsersService", () => {
         where: { entityType: "USER", entityId: superAdminA.id, action: "user.password_changed" },
       });
       expect(entry).not.toBeNull();
+    });
+  });
+
+  describe("completeOnboarding", () => {
+    it("stamps onboardingCompletedAt for the caller, with no RBAC gate", async () => {
+      const before = await prisma.user.findUniqueOrThrow({ where: { id: noAccessUserRow.id } });
+      expect(before.onboardingCompletedAt).toBeNull();
+
+      await completeOnboarding(noAccessContext);
+
+      const after = await prisma.user.findUniqueOrThrow({ where: { id: noAccessUserRow.id } });
+      expect(after.onboardingCompletedAt).not.toBeNull();
+    });
+
+    it("does not record an audit log entry — this is a UI preference, not an audited event", async () => {
+      await completeOnboarding(superAdminAContext);
+
+      const entry = await prisma.auditLog.findFirst({
+        where: { entityType: "USER", entityId: superAdminA.id, action: { contains: "onboarding" } },
+      });
+      expect(entry).toBeNull();
     });
   });
 

@@ -22,15 +22,16 @@ datasource db {
 // ---------------------------------------------------------------------------
 
 model User {
-  id           String    @id @default(cuid())
-  name         String
-  email        String    @unique
-  passwordHash String
-  isActive     Boolean   @default(true)
-  avatarUrl    String?
-  lastLoginAt  DateTime?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  id                    String    @id @default(cuid())
+  name                  String
+  email                 String    @unique
+  passwordHash          String
+  isActive              Boolean   @default(true)
+  avatarUrl             String?
+  lastLoginAt           DateTime?
+  onboardingCompletedAt DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   // One-level reporting line, not a full Team entity — the PRD's "Recruiting
   // Manager oversees a team's requisitions" (§8) is the only team concept

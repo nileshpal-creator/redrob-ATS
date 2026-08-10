@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Menu } from "lucide-react";
 
 import { AppNavLinks, type AppNavVisibility } from "@/components/layout/app-sidebar";
+import { Logo } from "@/components/brand/logo";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 
@@ -18,7 +19,8 @@ export function AppMobileNav(props: AppNavVisibility) {
         </Button>
       </SheetTrigger>
       <SheetContent side="left" className="p-0">
-        <div className="flex h-14 items-center border-b border-sidebar-border px-4">
+        <div className="flex h-14 items-center gap-2 border-b border-sidebar-border px-4">
+          <Logo size={24} />
           <SheetTitle>Redrob ATS</SheetTitle>
           <SheetDescription>Main navigation</SheetDescription>
         </div>
