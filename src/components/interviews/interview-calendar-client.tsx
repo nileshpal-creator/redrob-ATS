@@ -34,11 +34,13 @@ type CalendarInterview = {
 type CalendarResult = { interviews: CalendarInterview[]; total: number; page: number; pageSize: number };
 
 const MODE_LABEL: Record<InterviewMode, string> = { ONSITE: "Onsite", VIRTUAL: "Virtual", PHONE: "Phone" };
-const STATUS_BADGE_VARIANT: Record<InterviewStatus, "default" | "secondary" | "destructive"> = {
-  SCHEDULED: "default",
-  COMPLETED: "secondary",
+// Status-color legend (docs/design-system.md) — kept in sync with the same
+// map in application-interviews.tsx by hand (client components, no shared import).
+const STATUS_BADGE_VARIANT: Record<InterviewStatus, "info" | "success" | "destructive" | "attention"> = {
+  SCHEDULED: "info",
+  COMPLETED: "success",
   CANCELLED: "destructive",
-  NO_SHOW: "destructive",
+  NO_SHOW: "attention",
 };
 
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];

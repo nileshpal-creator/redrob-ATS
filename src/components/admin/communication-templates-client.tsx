@@ -246,7 +246,7 @@ export function CommunicationTemplatesClient({
     { header: "Subject", cell: ({ row }) => <span className="text-muted-foreground">{row.original.subject}</span> },
     {
       header: "Status",
-      cell: ({ row }) => <Badge variant={row.original.isActive ? "secondary" : "outline"}>{row.original.isActive ? "Active" : "Inactive"}</Badge>,
+      cell: ({ row }) => <Badge variant={row.original.isActive ? "success" : "outline"}>{row.original.isActive ? "Active" : "Inactive"}</Badge>,
     },
     {
       header: "",

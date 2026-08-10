@@ -3,10 +3,11 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { CalendarClock, CheckCircle2, Loader2, Plus, Wallet } from "lucide-react";
+import { CalendarClock, CheckCircle2, Clock, Loader2, MinusCircle, Plus, Wallet, XCircle } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
@@ -73,15 +74,39 @@ export type Offer = {
   canApprove: boolean;
 };
 
-const STATUS_BADGE_VARIANT: Record<OfferStatus, "default" | "secondary" | "destructive" | "outline"> = {
+// Status-color legend (docs/design-system.md): success=green (the desired
+// outcome), warning=amber (waiting on an internal decision), info=blue
+// (waiting on the candidate), attention=orange (timed out, needs a nudge —
+// distinct from a hard decline), destructive=red (terminal negative).
+const STATUS_BADGE_VARIANT: Record<
+  OfferStatus,
+  "secondary" | "destructive" | "outline" | "success" | "warning" | "info" | "attention"
+> = {
   DRAFT: "outline",
-  PENDING_APPROVAL: "secondary",
+  PENDING_APPROVAL: "warning",
   APPROVED: "secondary",
-  EXTENDED: "default",
-  ACCEPTED: "default",
+  EXTENDED: "info",
+  ACCEPTED: "success",
   DECLINED: "destructive",
   REVOKED: "destructive",
-  LAPSED: "destructive",
+  LAPSED: "attention",
+};
+
+const APPROVAL_STATUS_BADGE_VARIANT: Record<
+  OfferApprovalEntry["status"],
+  "secondary" | "destructive" | "success" | "warning"
+> = {
+  PENDING: "warning",
+  APPROVED: "success",
+  REJECTED: "destructive",
+  SKIPPED: "secondary",
+};
+
+const APPROVAL_STATUS_ICON: Record<OfferApprovalEntry["status"], typeof CheckCircle2> = {
+  PENDING: Clock,
+  APPROVED: CheckCircle2,
+  REJECTED: XCircle,
+  SKIPPED: MinusCircle,
 };
 
 // Mirrors NON_TERMINAL_STATUSES in src/lib/services/offers.ts — kept as a
@@ -517,20 +542,23 @@ export function ApplicationOffers({
 
               {offer.approvals.length > 0 ? (
                 <div className="space-y-1 rounded-md border p-2.5">
-                  {offer.approvals.map((approval) => (
+                  {offer.approvals.map((approval) => {
+                    const ApprovalIcon = APPROVAL_STATUS_ICON[approval.status];
+                    return (
                     <p key={approval.id} className="flex items-center gap-2 text-xs">
-                      <CheckCircle2 className="size-3" />
+                      <ApprovalIcon className="size-3" />
                       {approval.stepName ? <span className="font-medium">{approval.stepName}</span> : null}
                       <span className={approval.stepName ? "text-muted-foreground" : "font-medium"}>
                         {approval.approver?.name ?? "Pending"}
                       </span>
-                      <Badge variant="outline">{approval.status}</Badge>
+                      <Badge variant={APPROVAL_STATUS_BADGE_VARIANT[approval.status]}>{approval.status}</Badge>
                       {approval.status === "PENDING" && approval.requiredRoleName ? (
                         <span className="text-muted-foreground">requires {approval.requiredRoleName}</span>
                       ) : null}
                       {approval.comments ? <span className="text-muted-foreground">— {approval.comments}</span> : null}
                     </p>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : null}
 
@@ -597,7 +625,15 @@ export function ApplicationOffers({
             </div>
           </div>
         ))}
-        {offers.length === 0 ? <p className="text-sm text-muted-foreground">No offers created yet.</p> : null}
+        {offers.length === 0 ? (
+          <EmptyState
+            icon={Wallet}
+            title="No offers yet"
+            description="Extend an offer once this candidate is ready to move forward."
+            size="sm"
+            action={canCreate ? { label: "New offer", onClick: () => setDialog({ type: "CREATE" }) } : undefined}
+          />
+        ) : null}
       </div>
 
       <OfferFormDialog

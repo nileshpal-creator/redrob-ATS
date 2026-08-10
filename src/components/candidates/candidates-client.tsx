@@ -4,13 +4,14 @@ import { useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type ColumnDef } from "@tanstack/react-table";
-import { Download, Loader2, Plus, Upload } from "lucide-react";
+import { Contact, Download, Loader2, Plus, Upload } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DataTable } from "@/components/ui/data-table";
+import { EmptyState } from "@/components/ui/empty-state";
 import { FilterBar } from "@/components/ui/filter-bar";
 import { TagInput } from "@/components/ui/tag-input";
 import {
@@ -156,6 +157,15 @@ export function CandidatesClient({
   ];
 
   const totalPages = Math.max(1, Math.ceil(result.total / result.pageSize));
+  const hasActiveFilters =
+    filters.q !== "" ||
+    filters.sourceId !== "" ||
+    filters.location !== "" ||
+    filters.skills.length > 0 ||
+    filters.tags.length > 0 ||
+    filters.noticePeriodMaxDays !== "" ||
+    filters.experienceMinYears !== "" ||
+    filters.compensationMaxExpected !== "";
 
   return (
     <div className="space-y-4">
@@ -259,7 +269,23 @@ export function CandidatesClient({
       <DataTable
         columns={columns}
         data={result.candidates}
-        emptyMessage="No candidates match these filters."
+        emptyMessage={
+          hasActiveFilters ? (
+            <EmptyState
+              icon={Contact}
+              title="No candidates match these filters."
+              description="Try adjusting or clearing your filters."
+              size="sm"
+            />
+          ) : (
+            <EmptyState
+              icon={Contact}
+              title="No candidates yet"
+              description="Candidates will appear here when you add them or receive applications."
+              action={canCreate ? { label: "Add candidate", onClick: () => router.push("/candidates/new") } : undefined}
+            />
+          )
+        }
         isLoading={isPending}
       />
 

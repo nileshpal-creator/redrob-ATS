@@ -40,8 +40,10 @@ export type JobPostingRow = {
   removedAt: string | null;
 };
 
-const STATUS_BADGE_VARIANT: Record<PostingStatus, "default" | "secondary" | "destructive"> = {
-  POSTED: "default",
+// Status-color legend (docs/design-system.md): success=green (live),
+// neutral=gray (removed), destructive=red (failed to post).
+const STATUS_BADGE_VARIANT: Record<PostingStatus, "success" | "secondary" | "destructive"> = {
+  POSTED: "success",
   REMOVED: "secondary",
   FAILED: "destructive",
 };

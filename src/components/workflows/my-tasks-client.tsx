@@ -4,10 +4,11 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Check, Loader2, ThumbsDown, ThumbsUp } from "lucide-react";
+import { Check, CheckCheck, Loader2, ThumbsDown, ThumbsUp } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Separator } from "@/components/ui/separator";
 
 type TaskStatus = "OPEN" | "DONE" | "APPROVED" | "REJECTED";
@@ -22,10 +23,13 @@ export type MyTaskRow = {
   application: { id: string; candidate: { name: string }; job: { title: string } };
 };
 
-const STATUS_BADGE_VARIANT: Record<TaskStatus, "default" | "secondary" | "destructive" | "outline"> = {
-  OPEN: "outline",
+// Status-color legend (docs/design-system.md): warning=amber (still open,
+// waiting on you), success=green (approved), neutral=gray (done, no
+// approve/reject verdict attached), destructive=red (rejected).
+const STATUS_BADGE_VARIANT: Record<TaskStatus, "warning" | "secondary" | "destructive" | "success"> = {
+  OPEN: "warning",
   DONE: "secondary",
-  APPROVED: "default",
+  APPROVED: "success",
   REJECTED: "destructive",
 };
 
@@ -72,7 +76,13 @@ export function MyTasksClient({ tasks }: { tasks: MyTaskRow[] }) {
   }
 
   if (tasks.length === 0) {
-    return <p className="text-sm text-muted-foreground">No tasks assigned to you.</p>;
+    return (
+      <EmptyState
+        icon={CheckCheck}
+        title="All caught up"
+        description="No tasks assigned to you right now — approvals and reminders will land here."
+      />
+    );
   }
 
   return (

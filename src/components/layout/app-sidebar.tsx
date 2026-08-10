@@ -16,6 +16,7 @@ import {
   type NavItem,
 } from "@/config/nav";
 import { Logo } from "@/components/brand/logo";
+import { MODULE_TEXT_CLASS, NAV_HREF_MODULE } from "@/lib/module-colors";
 import { cn } from "@/lib/utils";
 
 export type AppNavVisibility = {
@@ -34,6 +35,7 @@ function NavLink({ item, onNavigate }: { item: NavItem; onNavigate?: () => void 
   const pathname = usePathname();
   const isActive = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
   const Icon = item.icon;
+  const navModule = NAV_HREF_MODULE[item.href];
 
   return (
     <Link
@@ -54,7 +56,12 @@ function NavLink({ item, onNavigate }: { item: NavItem; onNavigate?: () => void 
           isActive ? "opacity-100" : "opacity-0",
         )}
       />
-      <Icon className="size-4" />
+      <Icon
+        className={cn(
+          "size-4",
+          navModule && (isActive ? MODULE_TEXT_CLASS[navModule] : cn(MODULE_TEXT_CLASS[navModule], "opacity-70")),
+        )}
+      />
       {item.title}
     </Link>
   );

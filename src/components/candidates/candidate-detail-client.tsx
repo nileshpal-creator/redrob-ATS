@@ -4,8 +4,9 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
-import { AlertTriangle, KanbanSquare, Loader2, Pencil, ShieldOff, Trash2 } from "lucide-react";
+import { AlertTriangle, KanbanSquare, Loader2, Mail, MapPin, Pencil, Phone, ShieldOff, Tag, Trash2 } from "lucide-react";
 
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -32,7 +33,7 @@ import { CustomFieldsFormSection } from "@/components/custom-fields/custom-field
 import { CandidateDocuments } from "@/components/candidates/candidate-documents";
 import { CandidateTimeline } from "@/components/candidates/candidate-timeline";
 import { CandidateMergeDialog } from "@/components/candidates/candidate-merge-dialog";
-import { cn } from "@/lib/utils";
+import { cn, getInitials } from "@/lib/utils";
 
 type ListValue = { id: string; label: string };
 type Person = { id: string; name: string; email: string };
@@ -266,14 +267,35 @@ export function CandidateDetailClient({
     <div className="max-w-4xl space-y-6">
       <BackLink href="/candidates" label="Candidates" />
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{candidate.name}</h1>
-          <p className="text-muted-foreground">
-            {candidate.phone}
-            {candidate.email ? ` · ${candidate.email}` : ""}
-            {candidate.location ? ` · ${candidate.location}` : ""}
-            {candidate.source ? ` · ${candidate.source.label}` : ""}
-          </p>
+        <div className="flex items-start gap-3">
+          <Avatar className="mt-0.5 size-11">
+            <AvatarFallback className="bg-module-candidates/10 text-module-candidates">
+              {getInitials(candidate.name)}
+            </AvatarFallback>
+          </Avatar>
+          <div className="space-y-1.5">
+            <h1 className="text-2xl font-semibold tracking-tight">{candidate.name}</h1>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
+              <span className="flex items-center gap-1.5">
+                <Phone className="size-3.5" /> {candidate.phone}
+              </span>
+              {candidate.email ? (
+                <span className="flex items-center gap-1.5">
+                  <Mail className="size-3.5" /> {candidate.email}
+                </span>
+              ) : null}
+              {candidate.location ? (
+                <span className="flex items-center gap-1.5">
+                  <MapPin className="size-3.5" /> {candidate.location}
+                </span>
+              ) : null}
+              {candidate.source ? (
+                <span className="flex items-center gap-1.5">
+                  <Tag className="size-3.5" /> {candidate.source.label}
+                </span>
+              ) : null}
+            </div>
+          </div>
         </div>
         <div className="flex gap-2">
           {canCreateApplication ? (

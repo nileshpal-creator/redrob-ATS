@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { KanbanSquare, Pencil, UserPlus } from "lucide-react";
+import { Building2, CalendarClock, KanbanSquare, MapPin, Pencil, Timer, UserPlus, Users } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { IconBadge } from "@/components/ui/icon-badge";
 import { Separator } from "@/components/ui/separator";
 import { BackLink } from "@/components/layout/back-link";
 import { CustomFieldsFormSection } from "@/components/custom-fields/custom-fields-form-section";
@@ -51,13 +52,27 @@ type JobDetail = {
   }[];
 };
 
-const STATUS_BADGE_VARIANT: Record<string, "default" | "secondary" | "success" | "warning" | "destructive"> = {
+// Status-color legend (docs/design-system.md) — kept in sync with the same
+// map in jobs-client.tsx by hand (client components, no shared server import).
+const STATUS_BADGE_VARIANT: Record<
+  string,
+  "default" | "secondary" | "success" | "warning" | "attention" | "destructive"
+> = {
   DRAFT: "secondary",
   PENDING_APPROVAL: "warning",
   OPEN: "success",
-  ON_HOLD: "warning",
+  ON_HOLD: "attention",
   CLOSED: "secondary",
   CANCELLED: "destructive",
+};
+
+// Priority-color legend (docs/design-system.md) — a separate scale from
+// status: urgency, not lifecycle state.
+const PRIORITY_BADGE_VARIANT: Record<string, "secondary" | "info" | "warning" | "attention"> = {
+  LOW: "secondary",
+  MEDIUM: "info",
+  HIGH: "warning",
+  URGENT: "attention",
 };
 
 function agingLabel(createdAt: string) {
@@ -92,15 +107,29 @@ export function JobDetailClient({
     <div className="max-w-4xl space-y-6">
       <BackLink href="/jobs" label="Jobs" />
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
             <h1 className="text-2xl font-semibold tracking-tight">{job.title}</h1>
             <Badge variant={STATUS_BADGE_VARIANT[job.status] ?? "default"}>{job.status.replace("_", " ")}</Badge>
+            <Badge variant={PRIORITY_BADGE_VARIANT[job.priority] ?? "secondary"}>{job.priority}</Badge>
           </div>
-          <p className="text-muted-foreground">
-            {job.department.label} &middot; {job.location.label} &middot; {job.employmentType.replace("_", " ")}
-            &middot; Priority: {job.priority} &middot; {agingLabel(job.createdAt)}
-          </p>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
+            <span className="flex items-center gap-1.5">
+              <Building2 className="size-3.5" /> {job.department.label}
+            </span>
+            <span className="flex items-center gap-1.5">
+              <MapPin className="size-3.5" /> {job.location.label}
+            </span>
+            <span className="flex items-center gap-1.5">
+              <Timer className="size-3.5" /> {job.employmentType.replace("_", " ")}
+            </span>
+            <span className="flex items-center gap-1.5">
+              <Users className="size-3.5" /> {job.primaryRecruiter.name}
+            </span>
+            <span className="flex items-center gap-1.5">
+              <CalendarClock className="size-3.5" /> {agingLabel(job.createdAt)}
+            </span>
+          </div>
         </div>
         <div className="flex gap-2">
           {canRefer ? <ReferCandidateDialog jobId={job.id} /> : null}
@@ -136,14 +165,14 @@ export function JobDetailClient({
       ) : null}
 
       <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Positions</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-2xl font-semibold">
-            {job.positionsFilledCount} / {job.positionsCount}
-          </p>
-          <p className="text-sm text-muted-foreground">filled — updates automatically once hiring begins</p>
+        <CardContent className="flex items-center gap-4">
+          <IconBadge module="jobs" icon={Users} size="lg" />
+          <div>
+            <p className="text-2xl font-semibold tabular-nums">
+              {job.positionsFilledCount} / {job.positionsCount}
+            </p>
+            <p className="text-sm text-muted-foreground">positions filled — updates automatically once hiring begins</p>
+          </div>
         </CardContent>
       </Card>
 

@@ -47,7 +47,7 @@ export function WorkflowsListClient({ workflows, canCreate }: { workflows: Workf
     {
       header: "Status",
       cell: ({ row }) => (
-        <Badge variant={row.original.isActive ? "secondary" : "outline"}>
+        <Badge variant={row.original.isActive ? "success" : "outline"}>
           {row.original.isActive ? "Active" : "Inactive"}
         </Badge>
       ),

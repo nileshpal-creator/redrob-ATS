@@ -57,10 +57,13 @@ export type Handoff = {
   canAcknowledge: boolean;
 };
 
-const STATUS_BADGE_VARIANT: Record<HandoffStatus, "default" | "secondary" | "destructive" | "outline"> = {
-  PENDING: "outline",
-  DELIVERED: "secondary",
-  ACCEPTED: "default",
+// Status-color legend (docs/design-system.md): warning=amber (waiting to
+// deliver), info=blue (delivered, awaiting acknowledgement), success=green
+// (accepted), destructive=red (delivery exception).
+const STATUS_BADGE_VARIANT: Record<HandoffStatus, "warning" | "info" | "success" | "destructive"> = {
+  PENDING: "warning",
+  DELIVERED: "info",
+  ACCEPTED: "success",
   EXCEPTION: "destructive",
 };
 

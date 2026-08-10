@@ -4,7 +4,7 @@ import { useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type ColumnDef, type RowSelectionState } from "@tanstack/react-table";
-import { Loader2, Plus } from "lucide-react";
+import { KanbanSquare, Loader2, Plus } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { DataTable } from "@/components/ui/data-table";
+import { EmptyState } from "@/components/ui/empty-state";
 import { FilterBar } from "@/components/ui/filter-bar";
 import {
   Select,
@@ -39,8 +40,11 @@ export type ApplicationRow = {
 
 type ApplicationsResult = { applications: ApplicationRow[]; total: number; page: number; pageSize: number };
 
-const OUTCOME_BADGE_VARIANT: Record<string, "default" | "secondary" | "destructive"> = {
-  ACTIVE: "default",
+// Status-color legend (docs/design-system.md): success=green (still active
+// in the pipeline), neutral=gray (withdrawn — no company decision either
+// way), destructive=red (rejected).
+const OUTCOME_BADGE_VARIANT: Record<string, "success" | "secondary" | "destructive"> = {
+  ACTIVE: "success",
   REJECTED: "destructive",
   WITHDRAWN: "secondary",
 };
@@ -149,6 +153,7 @@ export function ApplicationsClient({
   ];
 
   const totalPages = Math.max(1, Math.ceil(result.total / result.pageSize));
+  const hasActiveFilters = filters.q !== "" || filters.outcome !== "" || filters.jobId !== "";
 
   return (
     <div className="space-y-4">
@@ -205,7 +210,23 @@ export function ApplicationsClient({
       <DataTable
         columns={columns}
         data={result.applications}
-        emptyMessage="No applications match these filters."
+        emptyMessage={
+          hasActiveFilters ? (
+            <EmptyState
+              icon={KanbanSquare}
+              title="No applications match these filters."
+              description="Try adjusting or clearing your filters."
+              size="sm"
+            />
+          ) : (
+            <EmptyState
+              icon={KanbanSquare}
+              title="No applications yet"
+              description="Applications appear here once a candidate is added to a job's pipeline."
+              action={canCreate ? { label: "New application", onClick: () => router.push("/applications/new") } : undefined}
+            />
+          )
+        }
         getRowId={(row) => row.id}
         rowSelection={rowSelection}
         onRowSelectionChange={setRowSelection}

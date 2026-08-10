@@ -7,6 +7,7 @@ import { CalendarClock, Loader2, MapPin, Plus, Star, Users } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
@@ -66,11 +67,14 @@ export type Interview = {
 };
 
 const MODE_LABEL: Record<InterviewMode, string> = { ONSITE: "Onsite", VIRTUAL: "Virtual", PHONE: "Phone" };
-const STATUS_BADGE_VARIANT: Record<InterviewStatus, "default" | "secondary" | "destructive"> = {
-  SCHEDULED: "default",
-  COMPLETED: "secondary",
+// Status-color legend (docs/design-system.md): info=blue (upcoming),
+// success=green (completed), attention=orange (no-show — worth a follow-up,
+// distinct from a plain cancellation), destructive=red (cancelled).
+const STATUS_BADGE_VARIANT: Record<InterviewStatus, "info" | "success" | "destructive" | "attention"> = {
+  SCHEDULED: "info",
+  COMPLETED: "success",
   CANCELLED: "destructive",
-  NO_SHOW: "destructive",
+  NO_SHOW: "attention",
 };
 const RECOMMENDATION_LABEL: Record<Recommendation, string> = {
   STRONG_YES: "Strong yes",
@@ -647,7 +651,15 @@ export function ApplicationInterviews({
             </div>
           );
         })}
-        {interviews.length === 0 ? <p className="text-sm text-muted-foreground">No interviews scheduled yet.</p> : null}
+        {interviews.length === 0 ? (
+          <EmptyState
+            icon={CalendarClock}
+            title="No interviews yet"
+            description="Schedule a round once you're ready to talk with this candidate."
+            size="sm"
+            action={canSchedule ? { label: "Schedule interview", onClick: () => setDialog({ type: "SCHEDULE" }) } : undefined}
+          />
+        ) : null}
       </div>
 
       <ScheduleDialog

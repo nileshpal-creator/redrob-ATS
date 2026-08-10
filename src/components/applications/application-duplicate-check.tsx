@@ -7,8 +7,10 @@ import { Badge } from "@/components/ui/badge";
 
 export type PriorApplication = { id: string; outcome: "ACTIVE" | "REJECTED" | "WITHDRAWN"; createdAt: string };
 
-const OUTCOME_BADGE_VARIANT: Record<string, "default" | "secondary" | "destructive"> = {
-  ACTIVE: "default",
+// Status-color legend (docs/design-system.md) — kept in sync with the same
+// map in applications-client.tsx by hand (client components, no shared import).
+const OUTCOME_BADGE_VARIANT: Record<string, "success" | "secondary" | "destructive"> = {
+  ACTIVE: "success",
   REJECTED: "destructive",
   WITHDRAWN: "secondary",
 };

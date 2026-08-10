@@ -18,15 +18,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useOnboarding } from "@/components/onboarding/onboarding-provider";
-
-function initials(name: string) {
-  return name
-    .split(" ")
-    .map((part) => part[0])
-    .slice(0, 2)
-    .join("")
-    .toUpperCase();
-}
+import { getInitials } from "@/lib/utils";
 
 export function AppTopbar({
   name,
@@ -65,7 +57,7 @@ export function AppTopbar({
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" className="h-9 gap-2 px-2" data-tour="user-menu">
               <Avatar className="size-7">
-                <AvatarFallback>{initials(name)}</AvatarFallback>
+                <AvatarFallback>{getInitials(name)}</AvatarFallback>
               </Avatar>
               <span className="hidden text-sm font-medium sm:inline">{name}</span>
             </Button>

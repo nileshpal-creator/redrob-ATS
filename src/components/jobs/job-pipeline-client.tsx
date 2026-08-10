@@ -27,8 +27,10 @@ export type PipelineApplicationRow = {
   owner: { id: string; name: string };
 };
 
-const OUTCOME_BADGE_VARIANT: Record<string, "default" | "secondary" | "destructive"> = {
-  ACTIVE: "default",
+// Status-color legend (docs/design-system.md) — kept in sync with the same
+// map in applications-client.tsx by hand (client components, no shared import).
+const OUTCOME_BADGE_VARIANT: Record<string, "success" | "secondary" | "destructive"> = {
+  ACTIVE: "success",
   REJECTED: "destructive",
   WITHDRAWN: "secondary",
 };
@@ -116,6 +118,7 @@ export function JobPipelineClient({
       candidate: application.candidate,
       owner: application.owner,
       stage: application.stage,
+      stageEnteredAt: application.stageEnteredAt,
     }));
 
   const selectedRows = applications.filter((application) => rowSelection[application.id]);

@@ -25,9 +25,33 @@
   --success-foreground: oklch(0.985 0 0);
   --warning: oklch(0.72 0.16 65);
   --warning-foreground: oklch(0.145 0 0);
+  --info: oklch(0.52 0.17 235);
+  --info-foreground: oklch(0.985 0 0);
+  --attention: oklch(0.62 0.17 40);
+  --attention-foreground: oklch(0.145 0 0);
   --border: oklch(0.9 0.012 264);
   --input: oklch(0.9 0.012 264);
   --ring: oklch(0.55 0.17 264);
+
+  /* Module colors — one accent per ATS module, used at low opacity for tint
+     backgrounds (icon containers, soft badges) and at full opacity for icon
+     strokes/text/accent bars. Deliberately NOT full-page theme colors — see
+     docs/design-system.md. Jobs reuses the brand primary; every other module
+     gets a distinct hue so modules stay visually identifiable without the
+     app turning into a rainbow of full-saturation surfaces. */
+  --module-jobs: var(--primary);
+  --module-candidates: oklch(0.52 0.16 220);
+  --module-interviews: oklch(0.5 0.19 300);
+  --module-offers: oklch(0.5 0.15 155);
+  --module-handoff: oklch(0.5 0.13 180);
+  --module-reporting: oklch(0.56 0.16 55);
+  --module-workflows: oklch(0.48 0.19 325);
+
+  --gradient-brand-from: oklch(0.45 0.19 264 / 12%);
+  --gradient-brand-to: oklch(0.45 0.19 264 / 3%);
+  --gradient-brand-strong-from: oklch(0.45 0.19 264);
+  --gradient-brand-strong-to: oklch(0.55 0.19 276);
+
   --sidebar: oklch(0.99 0.004 264);
   --sidebar-foreground: oklch(0.18 0.014 264);
   --sidebar-primary: oklch(0.45 0.19 264);
@@ -59,9 +83,27 @@
   --success-foreground: oklch(0.145 0 0);
   --warning: oklch(0.8 0.16 75);
   --warning-foreground: oklch(0.145 0 0);
+  --info: oklch(0.75 0.15 235);
+  --info-foreground: oklch(0.145 0 0);
+  --attention: oklch(0.78 0.16 40);
+  --attention-foreground: oklch(0.145 0 0);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.65 0.16 264);
+
+  --module-jobs: var(--primary);
+  --module-candidates: oklch(0.75 0.14 220);
+  --module-interviews: oklch(0.75 0.16 300);
+  --module-offers: oklch(0.78 0.13 155);
+  --module-handoff: oklch(0.75 0.12 180);
+  --module-reporting: oklch(0.8 0.15 55);
+  --module-workflows: oklch(0.75 0.16 325);
+
+  --gradient-brand-from: oklch(0.75 0.14 264 / 16%);
+  --gradient-brand-to: oklch(0.75 0.14 264 / 4%);
+  --gradient-brand-strong-from: oklch(0.55 0.17 264);
+  --gradient-brand-strong-to: oklch(0.45 0.19 285);
+
   --sidebar: oklch(0.16 0.014 264);
   --sidebar-foreground: oklch(0.97 0.005 264);
   --sidebar-primary: oklch(0.488 0.243 264.376);
@@ -95,6 +137,17 @@
   --color-success-foreground: var(--success-foreground);
   --color-warning: var(--warning);
   --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-attention: var(--attention);
+  --color-attention-foreground: var(--attention-foreground);
+  --color-module-jobs: var(--module-jobs);
+  --color-module-candidates: var(--module-candidates);
+  --color-module-interviews: var(--module-interviews);
+  --color-module-offers: var(--module-offers);
+  --color-module-handoff: var(--module-handoff);
+  --color-module-reporting: var(--module-reporting);
+  --color-module-workflows: var(--module-workflows);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -123,5 +176,32 @@
   }
   ::selection {
     @apply bg-primary/20 text-foreground;
+  }
+}
+
+/*
+ * Motion tokens — durations only (easing stays Tailwind's default `ease` /
+ * `ease-out`). Referenced from JS where a transition needs an explicit
+ * duration (a count-up interval, a progress-bar width transition) so those
+ * numbers live in one place instead of being re-guessed per component.
+ * Everything else (hover/focus states, tw-animate-css enter/exit utilities)
+ * already goes through Tailwind's motion-safe: variant — this file doesn't
+ * duplicate that.
+ */
+:root {
+  --motion-fast: 150ms;
+  --motion-base: 300ms;
+  --motion-slow: 600ms;
+}
+
+@layer utilities {
+  /* Selective gradients — hero/summary surfaces, selected cards, onboarding
+     highlights. Deliberately brand-hued and low-contrast-shift (not a loud
+     rainbow), and never used as a full-page background. */
+  .bg-gradient-brand {
+    background-image: linear-gradient(135deg, var(--gradient-brand-from), var(--gradient-brand-to));
+  }
+  .bg-gradient-brand-strong {
+    background-image: linear-gradient(135deg, var(--gradient-brand-strong-from), var(--gradient-brand-strong-to));
   }
 }

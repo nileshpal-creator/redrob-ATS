@@ -4,13 +4,14 @@ import { useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type ColumnDef } from "@tanstack/react-table";
-import { Loader2, Plus } from "lucide-react";
+import { Briefcase, Loader2, Plus } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DataTable } from "@/components/ui/data-table";
+import { EmptyState } from "@/components/ui/empty-state";
 import { FilterBar } from "@/components/ui/filter-bar";
 import {
   Select,
@@ -41,11 +42,18 @@ type JobsResult = { jobs: JobRow[]; total: number; page: number; pageSize: numbe
 const STATUSES = ["DRAFT", "PENDING_APPROVAL", "OPEN", "ON_HOLD", "CLOSED", "CANCELLED"];
 const PRIORITIES = ["LOW", "MEDIUM", "HIGH", "URGENT"];
 
-const STATUS_BADGE_VARIANT: Record<string, "default" | "secondary" | "success" | "warning" | "destructive"> = {
+// Status-color legend (docs/design-system.md): success=green (open),
+// warning=amber (pending an internal decision), attention=orange (on hold —
+// distinct from "pending approval", both read as caution but mean different
+// things), neutral=gray, destructive=red (cancelled).
+const STATUS_BADGE_VARIANT: Record<
+  string,
+  "default" | "secondary" | "success" | "warning" | "attention" | "destructive"
+> = {
   DRAFT: "secondary",
   PENDING_APPROVAL: "warning",
   OPEN: "success",
-  ON_HOLD: "warning",
+  ON_HOLD: "attention",
   CLOSED: "secondary",
   CANCELLED: "destructive",
 };
@@ -126,6 +134,7 @@ export function JobsClient({
   ];
 
   const totalPages = Math.max(1, Math.ceil(result.total / result.pageSize));
+  const hasActiveFilters = Object.values(filters).some(Boolean);
 
   return (
     <div className="space-y-4">
@@ -217,7 +226,23 @@ export function JobsClient({
       <DataTable
         columns={columns}
         data={result.jobs}
-        emptyMessage="No jobs match these filters."
+        emptyMessage={
+          hasActiveFilters ? (
+            <EmptyState
+              icon={Briefcase}
+              title="No jobs match these filters."
+              description="Try adjusting or clearing your filters."
+              size="sm"
+            />
+          ) : (
+            <EmptyState
+              icon={Briefcase}
+              title="No jobs yet"
+              description="Jobs will appear here once you create one."
+              action={canCreate ? { label: "New job", onClick: () => router.push("/jobs/new") } : undefined}
+            />
+          )
+        }
         isLoading={isPending}
       />
 

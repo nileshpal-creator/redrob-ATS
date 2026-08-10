@@ -3,10 +3,11 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Check, Loader2, ThumbsDown, ThumbsUp } from "lucide-react";
+import { Check, Loader2, ThumbsDown, ThumbsUp, Workflow } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import { Separator } from "@/components/ui/separator";
 
 type Person = { id: string; name: string; email: string };
@@ -23,10 +24,12 @@ export type ApplicationTask = {
   completedAt: string | null;
 };
 
-const STATUS_BADGE_VARIANT: Record<TaskStatus, "default" | "secondary" | "destructive" | "outline"> = {
-  OPEN: "outline",
+// Status-color legend (docs/design-system.md) — kept in sync with the same
+// map in my-tasks-client.tsx by hand (client components, no shared import).
+const STATUS_BADGE_VARIANT: Record<TaskStatus, "warning" | "secondary" | "destructive" | "success"> = {
+  OPEN: "warning",
   DONE: "secondary",
-  APPROVED: "default",
+  APPROVED: "success",
   REJECTED: "destructive",
 };
 
@@ -84,7 +87,14 @@ export function ApplicationTasks({
   }
 
   if (tasks.length === 0) {
-    return <p className="text-sm text-muted-foreground">No tasks yet — created automatically by workflow automations.</p>;
+    return (
+      <EmptyState
+        icon={Workflow}
+        title="No tasks yet"
+        description="Created automatically by workflow automations — nothing to set up here."
+        size="sm"
+      />
+    );
   }
 
   return (

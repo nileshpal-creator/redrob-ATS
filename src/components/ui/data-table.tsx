@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Inbox } from "lucide-react";
 import {
   type ColumnDef,
   type RowSelectionState,
@@ -21,6 +21,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { EmptyState } from "@/components/ui/empty-state";
+
+const DEFAULT_EMPTY_STATE = <EmptyState icon={Inbox} title="No records found." size="sm" />;
 
 /**
  * Thin wrapper around @tanstack/react-table for the list views every module
@@ -43,7 +46,7 @@ import {
 export function DataTable<TData>({
   columns,
   data,
-  emptyMessage = "No records found.",
+  emptyMessage = DEFAULT_EMPTY_STATE,
   getRowId,
   rowSelection,
   onRowSelectionChange,
@@ -51,7 +54,8 @@ export function DataTable<TData>({
 }: {
   columns: ColumnDef<TData, unknown>[];
   data: TData[];
-  emptyMessage?: string;
+  /** A plain string still renders fine (centered, muted) — pass an <EmptyState> for an icon + CTA. */
+  emptyMessage?: React.ReactNode;
   getRowId?: (row: TData) => string;
   rowSelection?: RowSelectionState;
   onRowSelectionChange?: (next: RowSelectionState) => void;
