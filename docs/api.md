@@ -967,16 +967,24 @@ capability in this app (interview reminders, §11.5; scheduled report delivery, 
 workflow triggers, §10.2). See [architecture.md](architecture.md#module-12--scheduler-infrastructure-115--1112--102)
 for the full design.
 
-### `POST /api/scheduler/run`
+### `GET|POST /api/scheduler/run`
 
 **Not session-authenticated** — the one deliberate exception to this app's otherwise
 session-only API convention (`withApiHandler` is not used here), since an external cron provider
 has no user session to present.
 
-- **Authentication**: `Authorization: Bearer <SCHEDULER_SECRET>`, compared in constant time
-  (hashed to a fixed-length digest first, so the comparison never branches on the raw secret's
-  length). `SCHEDULER_SECRET` is a server-side-only environment variable — generate one with
-  `openssl rand -hex 32`, never commit a real value, never expose it to client-side code.
+Both methods run identical work. `POST` is for any caller that lets you choose your own header
+value freely (AWS EventBridge, Railway/Render, a plain crontab, ...). `GET` exists specifically
+for Vercel Cron Jobs, which only ever send a GET request and can't be configured to send POST or
+a custom header name.
+
+- **Authentication**: `Authorization: Bearer <secret>`, compared in constant time (hashed to a
+  fixed-length digest first, so the comparison never branches on the raw secret's length) against
+  **either** of two environment variables — `SCHEDULER_SECRET` (this app's own name; generate one
+  with `openssl rand -hex 32`) or `CRON_SECRET` (Vercel's reserved name for its native Cron Jobs
+  feature, which sets this automatically and sends it verbatim as the bearer token — you don't
+  choose this name or value yourself when using Vercel Cron). Never commit a real value for
+  either, never expose either to client-side code.
 - **Request body**: none.
 - **Response body** (`200`): `{ "startedAt": string, "durationMs": number, "consumers": [{ "name":
   string, "success": boolean, "stats"?: unknown, "error"?: string, "durationMs": number }] }` —
@@ -985,8 +993,8 @@ has no user session to present.
   call still returns `200` even if every consumer failed; check each entry's own `success`.
 - **Status codes**: `200` — every call that authenticates succeeds at the HTTP level, whatever
   each individual consumer's own outcome was · `401` missing/invalid/malformed `Authorization`
-  header, or `SCHEDULER_SECRET` not configured server-side (fails closed — there is no "allow all"
-  fallback when the secret is unset).
+  header, or neither `SCHEDULER_SECRET` nor `CRON_SECRET` configured server-side (fails closed —
+  there is no "allow all" fallback when neither secret is set).
 - **Idempotency**: safe to call repeatedly, concurrently, and after a timeout. Each consumer owns
   its own idempotency guard — see architecture.md for how interview reminders, scheduled reports,
   and TIME_IN_STAGE workflows each prevent a duplicate send/fire.
@@ -1003,11 +1011,11 @@ has no user session to present.
 
 | Provider | Setup |
 | --- | --- |
-| Vercel Cron | Add a `crons` entry in `vercel.json` targeting `/api/scheduler/run`; set `SCHEDULER_SECRET` as a project environment variable and configure the cron job to send it as `Authorization: Bearer $SCHEDULER_SECRET` (Vercel Cron's own `CRON_SECRET` convention, mirrored here under a different env var name since this app already reserves `SCHEDULER_SECRET`). |
-| AWS EventBridge | An EventBridge Scheduler rule targeting an API destination (or a small Lambda that calls `fetch`) with a fixed rate/cron expression, storing `SCHEDULER_SECRET` in Secrets Manager and injecting it as the `Authorization` header. |
+| Vercel Cron | `vercel.json`'s `crons` array (already committed) targets `GET /api/scheduler/run` on a schedule. Set `CRON_SECRET` as a **Production-scoped** project environment variable — Vercel generates the header itself (`Authorization: Bearer $CRON_SECRET`); there's no way to rename the variable or the header, and no way to make Vercel send POST instead. Vercel Cron Jobs only ever trigger against the Production deployment, never Preview, so this alone can't reach a Preview database. |
+| AWS EventBridge | An EventBridge Scheduler rule targeting an API destination (or a small Lambda that calls `fetch`) with a fixed rate/cron expression, storing `SCHEDULER_SECRET` in Secrets Manager and injecting it as the `Authorization` header, POSTing to `/api/scheduler/run`. |
 | Railway / Render cron job | Either platform's native "Cron Job" service type running `curl -X POST -H "Authorization: Bearer $SCHEDULER_SECRET" https://<host>/api/scheduler/run` on a schedule, with `SCHEDULER_SECRET` set as a service environment variable. |
-| Kubernetes CronJob | A `CronJob` manifest running a `curl`/`wget` container on a schedule, reading `SCHEDULER_SECRET` from a `Secret` mounted as an env var. |
-| Windows Task Scheduler | A scheduled task running `curl.exe` (or a PowerShell `Invoke-RestMethod`) with the `Authorization` header, on whatever machine/service account holds the secret. |
+| Kubernetes CronJob | A `CronJob` manifest running a `curl`/`wget` container on a schedule, reading `SCHEDULER_SECRET` from a `Secret` mounted as an env var, POSTing to `/api/scheduler/run`. |
+| Windows Task Scheduler | A scheduled task running `curl.exe` (or a PowerShell `Invoke-RestMethod`) with the `Authorization` header, on whatever machine/service account holds the secret, POSTing to `/api/scheduler/run`. |
 | Plain OS cron | A crontab entry running `curl -X POST -H "Authorization: Bearer $SCHEDULER_SECRET" https://<host>/api/scheduler/run`. |
 
 ## Organization Settings (Module 12)

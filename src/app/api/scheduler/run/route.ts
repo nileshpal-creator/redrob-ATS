@@ -23,13 +23,14 @@ import { ENTITY } from "@/lib/entity-registry";
  * secret instead (see src/lib/scheduler/auth.ts), the one deliberate
  * exception to this app's session-only convention, not a general new
  * unauthenticated route class.
+ *
+ * Both GET and POST run the identical work — GET exists specifically
+ * because Vercel Cron Jobs (vercel.json's `crons` config) only ever send a
+ * GET request; there's no way to configure Vercel Cron to send POST or a
+ * custom header name. Every other provider in docs/api.md's table (AWS
+ * EventBridge, Railway/Render, a plain crontab, ...) keeps using POST.
  */
-export async function POST(request: Request) {
-  const providedSecret = extractBearerToken(request.headers.get("authorization"));
-  if (!isValidSchedulerSecret(providedSecret)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
+async function handleSchedulerRun() {
   const result = await runScheduledWork();
 
   await recordAudit({
@@ -51,4 +52,20 @@ export async function POST(request: Request) {
   });
 
   return NextResponse.json(result);
+}
+
+export async function GET(request: Request) {
+  const providedSecret = extractBearerToken(request.headers.get("authorization"));
+  if (!isValidSchedulerSecret(providedSecret)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  return handleSchedulerRun();
+}
+
+export async function POST(request: Request) {
+  const providedSecret = extractBearerToken(request.headers.get("authorization"));
+  if (!isValidSchedulerSecret(providedSecret)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  return handleSchedulerRun();
 }
